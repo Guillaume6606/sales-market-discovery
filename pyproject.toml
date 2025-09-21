@@ -1,0 +1,58 @@
+[tool.poetry]
+name = "market-discovery"
+version = "0.1.0"
+description = "Flip Market Discovery + PMN skeleton"
+authors = ["You <you@example.com>"]
+readme = "README.md"
+packages = [{ include = "common", from = "libs" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115.0"
+uvicorn = {extras = ["standard"], version = "^0.30.0"}
+pydantic = "^2.8.2"
+pydantic-settings = "^2.4.0"
+sqlalchemy = "^2.0.35"
+alembic = "^1.13.2"
+psycopg2-binary = "^2.9.9"
+httpx = "^0.27.0"
+python-rapidjson = "^1.18"
+orjson = "^3.10.7"
+loguru = "^0.7.2"
+tenacity = "^9.0.0"
+pandas = "^2.2.2"
+numpy = "^2.0.1"
+rapidfuzz = "^3.9.6"
+duckdb = "^1.0.0"
+pyarrow = "^17.0.0"
+redis = "^5.0.7"
+arq = "^0.25.0"
+python-telegram-bot = "^21.4"
+jinja2 = "^3.1.4"
+python-dotenv = "^1.0.1"
+streamlit = "^1.37.1"
+plotly = "^5.23.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.8.0"
+ruff = "^0.5.7"
+mypy = "^1.11.1"
+pytest = "^8.3.2"
+pytest-asyncio = "^0.24.0"
+
+[tool.ruff]
+line-length = 100
+select = ["E","F","I","B","UP","N","S","C90"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
