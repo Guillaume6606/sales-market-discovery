@@ -2,7 +2,7 @@
 name = "market-discovery"
 version = "0.1.0"
 description = "Flip Market Discovery + PMN skeleton"
-authors = ["You <you@example.com>"]
+authors = ["guillaume.quinquet@hotmail.fr"]
 readme = "README.md"
 packages = [{ include = "common", from = "libs" }]
 

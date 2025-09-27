@@ -16,9 +16,6 @@ class Settings(BaseSettings):
 
     # APIs
     ebay_app_id: str | None = None
-    keepa_api_key: str | None = None
-    telegram_bot_token: str | None = None
-    telegram_chat_id: str | None = None
 
     class Config:
         env_file = ".env"
