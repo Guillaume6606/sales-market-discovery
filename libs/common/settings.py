@@ -4,6 +4,8 @@ from pydantic import Field
 class Settings(BaseSettings):
     app_env: str = Field(default="local")
     secret_key: str = Field(default="dev")
+    use_playwright: bool = Field(default=False)
+
     # DB
     postgres_user: str = "app"
     postgres_password: str = "app"

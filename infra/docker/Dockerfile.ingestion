@@ -1,15 +1,65 @@
-FROM python:3.11-slim
+FROM mcr.microsoft.com/playwright:v1.55.0-noble
 
-ENV POETRY_VERSION=1.8.3 POETRY_VIRTUALENVS_CREATE=false PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y build-essential curl git && rm -rf /var/lib/apt/lists/*
+ENV POETRY_VERSION=1.8.3
+ENV POETRY_VIRTUALENVS_CREATE=false
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies as root
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libgl1-mesa-dri mesa-vulkan-drivers libdrm2 libgbm1 \
+    python3 python3-pip python3-venv \
+    curl wget \
+    fontconfig \
+    fonts-noto-extra \
+    locales tzdata \
+    fonts-dejavu-core fonts-dejavu-extra \
+    fonts-liberation \
+    fonts-noto-core fonts-noto-color-emoji \
+    fonts-cantarell fonts-freefont-ttf fonts-urw-base35 \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+# Switch to pwuser for all subsequent operations
+USER pwuser
+
+# Create and activate virtual environment as pwuser
+RUN python3 -m venv /home/pwuser/venv
+ENV PATH="/home/pwuser/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/home/pwuser/venv"
+
+# Install Poetry in the virtual environment
 RUN pip install --no-cache-dir poetry==${POETRY_VERSION}
 
+# Set work directory
 WORKDIR /app
-COPY pyproject.toml poetry.lock* ./
+
+# Copy and install Python dependencies
+COPY --chown=pwuser:pwuser pyproject.toml poetry.lock* ./
+
+USER root
 RUN poetry install --no-root
+RUN poetry add patchright
+RUN playwright install
+RUN patchright install chrome
+RUN chown -R pwuser:pwuser /home/pwuser/venv
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-COPY ingestion ./ingestion
-COPY libs ./libs
+# Copy application code
+COPY --chown=pwuser:pwuser ingestion ./ingestion
+COPY --chown=pwuser:pwuser libs ./libs
+COPY --chown=pwuser:pwuser test-stealth-config.py /app/test-stealth-config.py
+COPY --chown=pwuser:pwuser infra/docker/start-ingestion.sh /start-ingestion.sh
 
-ENV PYTHONPATH=/app
-CMD ["arq", "ingestion.worker.WorkerSettings"]
+
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TZ=Europe/Paris
+RUN chmod +x /start-ingestion.sh
+
+USER pwuser
+
+# Set Python path to include the app and virtual environment
+ENV PYTHONPATH="/app:/home/pwuser/venv/lib/python3.12/site-packages"
+
+# Set default command
+CMD ["/start-ingestion.sh"]

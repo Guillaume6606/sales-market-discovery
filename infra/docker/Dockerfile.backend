@@ -1,7 +1,14 @@
 FROM python:3.11-slim
 
 ENV POETRY_VERSION=1.8.3 POETRY_VIRTUALENVS_CREATE=false PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y build-essential curl git && rm -rf /var/lib/apt/lists/*
+
+# Install basic system dependencies (no browser dependencies needed for backend)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir poetry==${POETRY_VERSION}
 
 WORKDIR /app
@@ -10,6 +17,7 @@ RUN poetry install --no-root
 
 COPY backend ./backend
 COPY libs ./libs
+COPY ingestion ./ingestion
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 

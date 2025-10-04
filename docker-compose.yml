@@ -28,7 +28,18 @@ services:
       dockerfile: infra/docker/Dockerfile.ingestion
     env_file: .env
     depends_on: [db, redis]
-    command: ["arq", "ingestion.worker.WorkerSettings"]
+    security_opt:
+      - seccomp:unconfined
+      - no-new-privileges:true
+    init: true
+    ipc: host
+    shm_size: "1gb"
+    user: "pwuser"
+    environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    tmpfs:
+      - /tmp
+      - /home/pwuser/.cache
 
   ui:
     build:

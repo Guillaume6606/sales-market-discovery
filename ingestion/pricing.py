@@ -8,6 +8,25 @@ def iqr_clip(series: pd.Series, k: float = 1.5) -> pd.Series:
     return series[(series >= lower) and (series <= upper)]
 
 def pmn_from_prices(prices: list[float]) -> dict:
+    """
+    Calculate Predicted Market Net (PMN) price from a list of historical prices.
+    
+    This function computes the median price as the PMN, along with confidence bounds
+    based on standard deviation. It filters outliers by removing the bottom and top
+    5% of prices when there are sufficient data points.
+    
+    Args:
+        prices: List of historical price values
+        
+    Returns:
+        Dictionary containing:
+            - pmn: Median price (predicted market net)
+            - pmn_low: Lower bound (pmn - std)
+            - pmn_high: Upper bound (pmn + std)
+            - n: Number of valid prices used in calculation
+            
+        Returns None values for pmn bounds if no prices provided.
+    """
     if not prices:
         return {"pmn": None, "pmn_low": None, "pmn_high": None, "n": 0}
     s = pd.Series(prices, dtype=float).dropna()
