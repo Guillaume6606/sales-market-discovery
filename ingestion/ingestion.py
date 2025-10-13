@@ -1,572 +1,449 @@
-from typing import List, Dict, Any
-import asyncio
+from typing import List, Dict, Any, Iterable
+from dataclasses import dataclass
+from decimal import Decimal
 from datetime import datetime, timezone, date, timedelta
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, func, extract
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import and_, func
 from loguru import logger
 
-from libs.common.models import ProductRef, ListingObservation, ProductDailyMetrics, MarketPriceNormal, Listing
+from libs.common.models import (
+    Category,
+    ProductTemplate,
+    ListingObservation,
+    ProductDailyMetrics,
+    MarketPriceNormal,
+    Listing,
+)
 from libs.common.db import SessionLocal
-from ingestion.connectors.ebay import fetch_ebay_sold, fetch_ebay_listings, parse_ebay_response
+from ingestion.connectors.ebay import fetch_ebay_sold, fetch_ebay_listings
 from ingestion.connectors.leboncoin_api import (
     fetch_leboncoin_api_listings,
     fetch_leboncoin_api_sold,
 )
-from ingestion.connectors.vinted import fetch_vinted_listings, fetch_vinted_sold
+from ingestion.constants import SUPPORTED_PROVIDERS
+from ingestion.connectors.vinted import fetch_vinted_listings
 from ingestion.pricing import pmn_from_prices
 
-async def ingest_ebay_sold(keyword: str, limit: int = 50) -> Dict[str, Any]:
-    """Ingest sold items from eBay for a given keyword"""
-    logger.info(f"Starting eBay sold items ingestion for keyword: {keyword}")
 
-    try:
-        # Fetch data from eBay
-        items = await fetch_ebay_sold(keyword, limit)
-
-        if not items:
-            logger.warning(f"No sold items found for keyword: {keyword}")
-            return {"status": "no_data", "count": 0}
-
-        # Process and store items
-        processed_count = 0
-        with SessionLocal() as db:
-            for item in items:
-                try:
-                    # Create or get product reference
-                    product = get_or_create_product(db, item, keyword)
-
-                    # Create listing observation
-                    observation = ListingObservation(
-                        product_id=product.product_id,
-                        source=item.source.value,
-                        listing_id=item.listing_id,
-                        title=item.title,
-                        price=item.price,
-                        currency=item.currency,
-                        condition=item.condition_raw,
-                        is_sold=item.is_sold,
-                        seller_rating=item.seller_rating,
-                        shipping_cost=item.shipping_cost,
-                        location=item.location,
-                        observed_at=item.observed_at
-                    )
-                    db.add(observation)
-                    processed_count += 1
-
-                except Exception as e:
-                    logger.error(f"Error processing sold item {item.listing_id}: {e}")
-                    continue
-
-            db.commit()
-
-        logger.info(f"Successfully ingested {processed_count} sold items for keyword: {keyword}")
-        return {"status": "success", "count": processed_count}
-
-    except Exception as e:
-        logger.error(f"Error in eBay sold items ingestion: {e}")
-        return {"status": "error", "error": str(e)}
-
-async def ingest_ebay_listings(keyword: str, limit: int = 50) -> Dict[str, Any]:
-    """Ingest current listings from eBay for a given keyword"""
-    logger.info(f"Starting eBay listings ingestion for keyword: {keyword}")
-
-    try:
-        # Fetch data from eBay
-        items = await fetch_ebay_listings(keyword, limit)
-
-        if not items:
-            logger.warning(f"No listings found for keyword: {keyword}")
-            return {"status": "no_data", "count": 0}
-
-        # Process and store items
-        processed_count = 0
-        with SessionLocal() as db:
-            for item in items:
-                try:
-                    # Create or get product reference
-                    product = get_or_create_product(db, item, keyword)
-
-                    # Check if we already have this listing to avoid duplicates
-                    existing = db.query(ListingObservation).filter(
-                        and_(
-                            ListingObservation.listing_id == item.listing_id,
-                            ListingObservation.source == item.source.value,
-                            ListingObservation.is_sold == False
-                        )
-                    ).first()
-
-                    if existing:
-                        # Update existing listing
-                        existing.price = item.price
-                        existing.title = item.title
-                        existing.condition = item.condition_raw
-                        existing.seller_rating = item.seller_rating
-                        existing.shipping_cost = item.shipping_cost
-                        existing.observed_at = item.observed_at
-                    else:
-                        # Create new listing observation
-                        observation = ListingObservation(
-                            product_id=product.product_id,
-                            source=item.source.value,
-                            listing_id=item.listing_id,
-                            title=item.title,
-                            price=item.price,
-                            currency=item.currency,
-                            condition=item.condition_raw,
-                            is_sold=item.is_sold,
-                            seller_rating=item.seller_rating,
-                            shipping_cost=item.shipping_cost,
-                            location=item.location,
-                            observed_at=item.observed_at
-                        )
-                        db.add(observation)
-
-                    processed_count += 1
-
-                except Exception as e:
-                    logger.error(f"Error processing listing {item.listing_id}: {e}")
-                    continue
-
-            db.commit()
-
-        logger.info(f"Successfully ingested {processed_count} listings for keyword: {keyword}")
-        return {"status": "success", "count": processed_count}
-
-    except Exception as e:
-        logger.error(f"Error in eBay listings ingestion: {e}")
-        return {"status": "error", "error": str(e)}
-
-async def ingest_leboncoin_listings(keyword: str, limit: int = 50) -> Dict[str, Any]:
-    """Ingest current listings from LeBonCoin for a given keyword"""
-    logger.info(f"Starting LeBonCoin listings ingestion for keyword: {keyword}")
-
-    try:
-        # Fetch data from LeBonCoin
-        items = await fetch_leboncoin_api_listings(keyword, limit)
-
-        if not items:
-            logger.warning(f"No listings found for keyword: {keyword}")
-            return {"status": "no_data", "count": 0}
-
-        # Process and store items
-        processed_count = 0
-        with SessionLocal() as db:
-            for item in items:
-                try:
-                    source = item.source if isinstance(item, Listing) else item.get("source")
-                    listing_id = item.listing_id if isinstance(item, Listing) else item.get("listing_id")
-                    if not source:
-                        source = "leboncoin"
-
-                    if not listing_id:
-                        logger.warning("Skipping LeBonCoin listing without listing_id")
-                        continue
-
-                    if isinstance(item, Listing):
-                        observed_at = item.observed_at
-                        price = item.price
-                        title = item.title
-                        currency = item.currency
-                        condition = item.condition_raw
-                        seller_rating = item.seller_rating
-                        location = item.location
-                    else:
-                        title = item.get("title", "")
-                        price = item.get("price")
-                        currency = item.get("currency", "EUR")
-                        condition = item.get("condition", "Unknown")
-                        seller_rating = 1.0 if item.get("is_pro") else 0.0
-                        location = item.get("location")
-                        observed_raw = item.get("observed_at")
-                        if observed_raw:
-                            observed_at = datetime.fromisoformat(observed_raw.replace('Z', '+00:00'))
-                        else:
-                            observed_at = datetime.now(timezone.utc)
-
-                    # Create or get product reference
-                    product = get_or_create_product_leboncoin(db, item, keyword)
-
-                    # Check if we already have this listing to avoid duplicates
-                    existing = db.query(ListingObservation).filter(
-                        and_(
-                            ListingObservation.listing_id == listing_id,
-                            ListingObservation.source == source,
-                            ListingObservation.is_sold == False
-                        )
-                    ).first()
-
-                    if existing:
-                        # Update existing listing
-                        existing.price = price
-                        existing.title = title
-                        existing.location = location
-                        existing.observed_at = observed_at
-                    else:
-                        # Create new listing observation
-                        observation = ListingObservation(
-                            product_id=product.product_id,
-                            source=source,
-                            listing_id=listing_id,
-                            title=title,
-                            price=price,
-                            currency=currency,
-                            condition=condition,
-                            is_sold=False,
-                            seller_rating=seller_rating,
-                            location=location,
-                            observed_at=observed_at
-                        )
-                        db.add(observation)
-
-                    processed_count += 1
-
-                except Exception as e:
-                    logger.error(f"Error processing LeBonCoin listing {listing_id}: {e}")
-                    continue
-
-            db.commit()
-
-        logger.info(f"Successfully ingested {processed_count} LeBonCoin listings for keyword: {keyword}")
-        return {"status": "success", "count": processed_count}
-
-    except Exception as e:
-        logger.error(f"Error in LeBonCoin listings ingestion: {e}")
-        return {"status": "error", "error": str(e)}
-
-async def ingest_leboncoin_sold(keyword: str, limit: int = 50) -> Dict[str, Any]:
-    """Ingest 'sold' items from LeBonCoin for a given keyword"""
-    logger.info(f"Starting LeBonCoin 'sold' items ingestion for keyword: {keyword}")
-
-    try:
-        # Fetch data from LeBonCoin (note: LeBonCoin doesn't have direct sold data)
-        items = await fetch_leboncoin_api_sold(keyword, limit)
-
-        if not items:
-            logger.warning(f"No items found for keyword: {keyword}")
-            return {"status": "no_data", "count": 0}
-
-        # Process and store items as sold items
-        processed_count = 0
-        with SessionLocal() as db:
-            for item in items:
-                try:
-                    source = item.source if isinstance(item, Listing) else item.get("source")
-                    listing_id = item.listing_id if isinstance(item, Listing) else item.get("listing_id")
-                    if not source:
-                        source = "leboncoin"
-                    if not listing_id:
-                        logger.warning("Skipping LeBonCoin sold item without listing_id")
-                        continue
-
-                    if isinstance(item, Listing):
-                        title = item.title
-                        price = item.price
-                        currency = item.currency
-                        condition = item.condition_raw
-                        seller_rating = item.seller_rating
-                        location = item.location
-                        observed_at = item.observed_at
-                    else:
-                        title = item.get("title", "")
-                        price = item.get("price")
-                        currency = item.get("currency", "EUR")
-                        condition = item.get("condition", "Unknown")
-                        seller_rating = 1.0 if item.get("is_pro") else 0.0
-                        location = item.get("location")
-                        observed_raw = item.get("observed_at")
-                        if observed_raw:
-                            observed_at = datetime.fromisoformat(observed_raw.replace('Z', '+00:00'))
-                        else:
-                            observed_at = datetime.now(timezone.utc)
-
-                    # Create or get product reference
-                    product = get_or_create_product_leboncoin(db, item, keyword)
-
-                    # Create listing observation as sold
-                    observation = ListingObservation(
-                        product_id=product.product_id,
-                        source=source,
-                        listing_id=listing_id,
-                        title=title,
-                        price=price,
-                        currency=currency,
-                        condition=condition,
-                        is_sold=True,  # Mark as sold
-                        seller_rating=seller_rating,
-                        location=location,
-                        observed_at=observed_at
-                    )
-                    db.add(observation)
-                    processed_count += 1
-
-                except Exception as e:
-                    listing_ref = str(listing_id) if listing_id else "unknown"
-                    logger.error(f"Error processing LeBonCoin sold item {listing_ref}: {e}")
-                    continue
-
-            db.commit()
-
-        logger.info(f"Successfully ingested {processed_count} LeBonCoin 'sold' items for keyword: {keyword}")
-        return {"status": "success", "count": processed_count}
-
-    except Exception as e:
-        logger.error(f"Error in LeBonCoin 'sold' items ingestion: {e}")
-        return {"status": "error", "error": str(e)}
-
-async def ingest_vinted_listings(keyword: str, limit: int = 50) -> Dict[str, Any]:
-    """Ingest current listings from Vinted for a given keyword"""
-    logger.info(f"Starting Vinted listings ingestion for keyword: {keyword}")
-
-    try:
-        # Fetch data from Vinted
-        items = await fetch_vinted_listings(keyword, limit)
-
-        if not items:
-            logger.warning(f"No listings found for keyword: {keyword}")
-            return {"status": "no_data", "count": 0}
-
-        # Process and store items
-        processed_count = 0
-        with SessionLocal() as db:
-            for item in items:
-                try:
-                    # Create or get product reference
-                    product = get_or_create_product_vinted(db, item, keyword)
-
-                    # Check if we already have this listing to avoid duplicates
-                    existing = db.query(ListingObservation).filter(
-                        and_(
-                            ListingObservation.listing_id == item.listing_id,
-                            ListingObservation.source == item.source.value,
-                            ListingObservation.is_sold == False
-                        )
-                    ).first()
-
-                    if existing:
-                        # Update existing listing
-                        existing.price = item.price
-                        existing.title = item.title
-                        existing.location = item.location
-                        existing.observed_at = item.observed_at
-                    else:
-                        # Create new listing observation
-                        observation = ListingObservation(
-                            product_id=product.product_id,
-                            source=item.source.value,
-                            listing_id=item.listing_id,
-                            title=item.title,
-                            price=item.price,
-                            currency=item.currency,
-                            condition=item.condition_raw,
-                            is_sold=False,
-                            seller_rating=item.seller_rating,
-                            location=item.location,
-                            observed_at=item.observed_at
-                        )
-                        db.add(observation)
-
-                    processed_count += 1
-
-                except Exception as e:
-                    logger.error(f"Error processing Vinted listing {item.listing_id}: {e}")
-                    continue
-
-            db.commit()
-
-        logger.info(f"Successfully ingested {processed_count} Vinted listings for keyword: {keyword}")
-        return {"status": "success", "count": processed_count}
-
-    except Exception as e:
-        logger.error(f"Error in Vinted listings ingestion: {e}")
-        return {"status": "error", "error": str(e)}
-
-async def ingest_vinted_sold(keyword: str, limit: int = 50) -> Dict[str, Any]:
-    """Ingest 'sold' items from Vinted for a given keyword"""
-    logger.info(f"Starting Vinted 'sold' items ingestion for keyword: {keyword}")
-
-    try:
-        # Fetch data from Vinted (note: Vinted doesn't have direct sold data)
-        items = await fetch_vinted_sold(keyword, limit)
-
-        if not items:
-            logger.warning(f"No items found for keyword: {keyword}")
-            return {"status": "no_data", "count": 0}
-
-        # Process and store items as sold items
-        processed_count = 0
-        with SessionLocal() as db:
-            for item in items:
-                try:
-                    # Create or get product reference
-                    product = get_or_create_product_vinted(db, item, keyword)
-
-                    # Create listing observation as sold
-                    observation = ListingObservation(
-                        product_id=product.product_id,
-                        source=item.source.value,
-                        listing_id=item.listing_id,
-                        title=item.title,
-                        price=item.price,
-                        currency=item.currency,
-                        condition=item.condition_raw,
-                        is_sold=True,  # Mark as sold
-                        seller_rating=item.seller_rating,
-                        location=item.location,
-                        observed_at=item.observed_at
-                    )
-                    db.add(observation)
-                    processed_count += 1
-
-                except Exception as e:
-                    logger.error(f"Error processing Vinted sold item {item.listing_id}: {e}")
-                    continue
-
-            db.commit()
-
-        logger.info(f"Successfully ingested {processed_count} Vinted 'sold' items for keyword: {keyword}")
-        return {"status": "success", "count": processed_count}
-
-    except Exception as e:
-        logger.error(f"Error in Vinted 'sold' items ingestion: {e}")
-        return {"status": "error", "error": str(e)}
-
-def get_or_create_product(db: Session, item: Dict[str, Any], keyword: str) -> ProductRef:
-    """Get existing product or create new one based on item data"""
-    # Try to find existing product by listing_id
-    existing_obs = db.query(ListingObservation).filter(
-        ListingObservation.listing_id == item["listing_id"]
-    ).first()
-
-    if existing_obs:
-        return existing_obs.product
-
-    # Try to find product by title similarity or create new
-    product = ProductRef(
-        canonical_title=item["title"],
-        brand=extract_brand_from_title(item["title"]),
-        category=keyword,  # Use keyword as category for now
-        created_at=datetime.now(timezone.utc)
+@dataclass
+class ProductTemplateSnapshot:
+    product_id: str
+    name: str
+    description: str | None
+    search_query: str
+    category_id: str
+    category_name: str | None
+    brand: str | None
+    price_min: float | None
+    price_max: float | None
+    providers: List[str]
+    is_active: bool
+
+
+def _decimal_to_float(value: Decimal | float | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _snapshot_product(product: ProductTemplate) -> ProductTemplateSnapshot:
+    category_name = product.category.name if product.category else None
+    providers = product.providers or []
+    return ProductTemplateSnapshot(
+        product_id=str(product.product_id),
+        name=product.name,
+        description=product.description,
+        search_query=product.search_query,
+        category_id=str(product.category_id),
+        category_name=category_name,
+        brand=product.brand,
+        price_min=_decimal_to_float(product.price_min),
+        price_max=_decimal_to_float(product.price_max),
+        providers=list(providers),
+        is_active=product.is_active,
     )
-    db.add(product)
-    db.flush()  # Get the product_id
 
-    return product
 
-def get_or_create_product_leboncoin(db: Session, item: Listing | Dict[str, Any], keyword: str) -> ProductRef:
-    """Get existing product or create new one based on LeBonCoin item data"""
-    if isinstance(item, Listing):
-        listing_id = item.listing_id
-        title = item.title
+def _load_product_snapshot(product_id: str) -> ProductTemplateSnapshot | None:
+    with SessionLocal() as db:
+        product = (
+            db.query(ProductTemplate)
+            .options(joinedload(ProductTemplate.category))
+            .filter(ProductTemplate.product_id == product_id)
+            .first()
+        )
+        if not product or not product.is_active:
+            return None
+        return _snapshot_product(product)
+
+
+def _compose_search_term(snapshot: ProductTemplateSnapshot) -> str:
+    if snapshot.brand:
+        if snapshot.brand.lower() not in snapshot.search_query.lower():
+            return f"{snapshot.search_query} {snapshot.brand}".strip()
+    return snapshot.search_query
+
+
+def _matches_price(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
+    if listing.price is None:
+        if snapshot.price_min is not None or snapshot.price_max is not None:
+            return False
+        return True
+    if snapshot.price_min is not None and listing.price < snapshot.price_min:
+        return False
+    if snapshot.price_max is not None and listing.price > snapshot.price_max:
+        return False
+    return True
+
+
+def _matches_brand(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
+    """
+    Check if listing matches the product's brand.
+    
+    RELAXED MATCHING: Brand filtering is intentionally permissive because:
+    1. _compose_search_term() already includes brand in the search query
+    2. Search APIs (LeBonCoin, eBay, Vinted) already filter by that search term
+    3. Over-filtering here causes false negatives (e.g., "PS4" listings when brand="Sony")
+    
+    We only apply strict brand matching if:
+    - Brand is set AND
+    - Brand is NOT in the search query (rare case: manual brand filter without search context)
+    
+    Example: search_query="PS4" + brand="Sony"
+    - _compose_search_term() → "PS4 Sony" (brand added to search)
+    - LeBonCoin returns PS4 listings (already brand-filtered by search)
+    - We should NOT filter again, as "PS4 500GB" is a valid Sony PS4
+    """
+    if not snapshot.brand:
+        return True
+    
+    brand_lower = snapshot.brand.lower()
+    
+    # CRITICAL FIX: If brand exists, _compose_search_term() adds it to the search.
+    # The search API already filtered by brand, so trust those results.
+    # This prevents over-filtering cases like "PS4" where titles don't say "Sony"
+    composed_term = _compose_search_term(snapshot)
+    if brand_lower in composed_term.lower():
+        # Brand is in the search term, so search API already handled filtering
+        logger.debug(f"Skipping brand filter - brand '{snapshot.brand}' already in search term")
+        return True
+    
+    # Only apply strict brand matching if brand is NOT in search term (rare edge case)
+    if listing.brand and listing.brand.lower() == brand_lower:
+        return True
+
+    if listing.title and brand_lower in listing.title.lower():
+        return True
+
+    return False
+
+
+def _filter_listings(snapshot: ProductTemplateSnapshot, listings: Iterable[Listing]) -> List[Listing]:
+    """
+    Filter listings based on product template criteria.
+    Logs filtering stats for debugging.
+    """
+    filtered: List[Listing] = []
+    rejected_price = 0
+    rejected_brand = 0
+    
+    for listing in listings:
+        if not _matches_price(snapshot, listing):
+            rejected_price += 1
+            continue
+        if not _matches_brand(snapshot, listing):
+            rejected_brand += 1
+            logger.debug(
+                f"Listing '{listing.title[:50]}...' rejected: brand '{snapshot.brand}' "
+                f"not found in title or brand field"
+            )
+            continue
+        filtered.append(listing)
+    
+    if rejected_price > 0 or rejected_brand > 0:
+        logger.info(
+            f"Filtered {len(listings)} listings: {len(filtered)} kept, "
+            f"{rejected_price} rejected (price), {rejected_brand} rejected (brand)"
+        )
+    
+    return filtered
+
+
+def _dedupe_listings(listings: Iterable[Listing]) -> List[Listing]:
+    seen: set[tuple[str, str]] = set()
+    deduped: List[Listing] = []
+    for listing in listings:
+        key = (listing.source, listing.listing_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(listing)
+    return deduped
+
+
+def _upsert_listing(
+    db: Session,
+    product: ProductTemplate,
+    listing: Listing,
+    *,
+    force_is_sold: bool | None = None,
+) -> None:
+    listing_source = listing.source
+    existing = (
+        db.query(ListingObservation)
+        .filter(
+            and_(
+                ListingObservation.listing_id == listing.listing_id,
+                ListingObservation.source == listing_source,
+                ListingObservation.product_id == product.product_id,
+            )
+        )
+        .first()
+    )
+
+    observed_at = listing.observed_at
+    if observed_at and observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+
+    is_sold = force_is_sold if force_is_sold is not None else listing.is_sold
+
+    if existing:
+        existing.price = listing.price
+        existing.title = listing.title
+        existing.currency = listing.currency
+        existing.condition = listing.condition_raw
+        existing.is_sold = is_sold
+        existing.seller_rating = listing.seller_rating
+        existing.shipping_cost = listing.shipping_cost
+        existing.location = listing.location
+        existing.observed_at = observed_at
+        existing.url = listing.url
     else:
-        listing_id = item.get("listing_id")
-        title = item.get("title", "")
+        observation = ListingObservation(
+            product_id=product.product_id,
+            source=listing_source,
+            listing_id=listing.listing_id,
+            title=listing.title,
+            price=listing.price,
+            currency=listing.currency,
+            condition=listing.condition_raw,
+            is_sold=is_sold,
+            seller_rating=listing.seller_rating,
+            shipping_cost=listing.shipping_cost,
+            location=listing.location,
+            observed_at=observed_at,
+            url=listing.url,
+        )
+        db.add(observation)
 
-    if not listing_id:
-        raise ValueError("Listing id is required to create or lookup product")
 
-    # Try to find existing product by listing_id
-    existing_obs = db.query(ListingObservation).filter(
-        ListingObservation.listing_id == listing_id
-    ).first()
+def _persist_listings(
+    product_id: str,
+    listings: List[Listing],
+    *,
+    force_is_sold: bool | None = None,
+) -> int:
+    if not listings:
+        return 0
 
-    if existing_obs:
-        return existing_obs.product
+    processed_count = 0
+    with SessionLocal() as db:
+        product = (
+            db.query(ProductTemplate)
+            .filter(ProductTemplate.product_id == product_id)
+            .first()
+        )
+        if not product:
+            logger.warning(f"Product template {product_id} no longer exists; skipping persistence")
+            return 0
 
-    # Extract brand from LeBonCoin specific data
-    brand = "Unknown"
-    if title:
-        brand = extract_brand_from_title_leboncoin(title)
+        for listing in listings:
+            try:
+                _upsert_listing(db, product, listing, force_is_sold=force_is_sold)
+                processed_count += 1
+            except Exception as exc:
+                logger.error(
+                    f"Failed to persist listing {listing.listing_id} for product {product_id}: {exc}"
+                )
 
-    # Try to find product by title similarity or create new
-    product = ProductRef(
-        canonical_title=title,
-        brand=brand,
-        category=keyword,  # Use keyword as category for now
-        created_at=datetime.now(timezone.utc)
+        product.last_ingested_at = datetime.now(timezone.utc)
+        db.commit()
+
+    return processed_count
+
+
+async def ingest_ebay_sold(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    """
+    Ingest sold items from eBay for a specific product.
+    
+    The eBay connector now returns parsed Listing objects directly,
+    so no additional parsing is needed.
+    """
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+
+    logger.info(
+        f"Starting eBay sold ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
-    db.add(product)
-    db.flush()  # Get the product_id
 
-    return product
+    try:
+        # fetch_ebay_sold now returns List[Listing] directly
+        listings = await fetch_ebay_sold(_compose_search_term(snapshot), limit)
+        
+        if not listings:
+            logger.info(f"No eBay sold items found for product {snapshot.product_id}")
+            return {"status": "success", "count": 0, "message": "No items found"}
 
-def get_or_create_product_vinted(db: Session, item: Listing, keyword: str) -> ProductRef:
-    """Get existing product or create new one based on Vinted item data"""
-    # Try to find existing product by listing_id
-    existing_obs = db.query(ListingObservation).filter(
-        ListingObservation.listing_id == item.listing_id
-    ).first()
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=True)
 
-    if existing_obs:
-        return existing_obs.product
+        if processed:
+            logger.info(f"Ingested {processed} eBay sold listings for product {snapshot.product_id}")
+            return {"status": "success", "count": processed}
 
-    # Extract brand from Vinted specific data
-    brand = item.brand or "Unknown"
-    if not brand and item.title:
-        brand = extract_brand_from_title_vinted(item.title)
+        logger.warning(f"No eBay sold listings matched filters for product {snapshot.product_id}")
+        return {"status": "no_data", "count": 0}
 
-    # Try to find product by title similarity or create new
-    product = ProductRef(
-        canonical_title=item.title,
-        brand=brand,
-        category=keyword,  # Use keyword as category for now
-        created_at=datetime.now(timezone.utc)
+    except Exception as exc:
+        logger.error(f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}")
+        return {"status": "error", "error": str(exc)}
+
+async def ingest_ebay_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    """
+    Ingest active listings from eBay for a specific product.
+    
+    The eBay connector now returns parsed Listing objects directly,
+    so no additional parsing is needed.
+    """
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+
+    logger.info(
+        f"Starting eBay listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
-    db.add(product)
-    db.flush()  # Get the product_id
 
-    return product
+    try:
+        # fetch_ebay_listings now returns List[Listing] directly
+        listings = await fetch_ebay_listings(_compose_search_term(snapshot), limit)
+        
+        if not listings:
+            logger.info(f"No eBay listings found for product {snapshot.product_id}")
+            return {"status": "success", "count": 0, "message": "No items found"}
 
-def extract_brand_from_title(title: str) -> str:
-    """Extract brand from product title (simple implementation)"""
-    # This is a very basic implementation - could be improved with NLP
-    title_lower = title.lower()
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
 
-    # Common brand indicators
-    brand_indicators = ["sony", "apple", "samsung", "lg", "panasonic", "canon", "nikon", "bose"]
+        if processed:
+            logger.info(
+                f"Ingested {processed} eBay active listings for product {snapshot.product_id}"
+            )
+            return {"status": "success", "count": processed}
 
-    for brand in brand_indicators:
-        if brand in title_lower:
-            return brand.title()
+        logger.warning(f"No eBay listings matched filters for product {snapshot.product_id}")
+        return {"status": "no_data", "count": 0}
 
-    return "Unknown"
+    except Exception as exc:
+        logger.error(f"Error in eBay listings ingestion for product {snapshot.product_id}: {exc}")
+        return {"status": "error", "error": str(exc)}
 
-def extract_brand_from_title_leboncoin(title: str) -> str:
-    """Extract brand from LeBonCoin product title (French market focus)"""
-    # This is a very basic implementation - could be improved with NLP
-    title_lower = title.lower()
+async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
 
-    # French/International brand indicators
-    french_brands = [
-        "sony", "apple", "samsung", "lg", "panasonic", "canon", "nikon", "bose",
-        "nintendo", "playstation", "xbox", "microsoft", "dell", "hp", "lenovo",
-        "asus", "acer", "toshiba", "sony", "jvc", "pioneer", "yamaha"
-    ]
+    logger.info(
+        f"Starting LeBonCoin listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
+    )
 
-    for brand in french_brands:
-        if brand in title_lower:
-            return brand.title()
+    try:
+        listings = await fetch_leboncoin_api_listings(_compose_search_term(snapshot), limit)
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
 
-    return "Unknown"
+        if processed:
+            logger.info(
+                f"Ingested {processed} LeBonCoin listings for product {snapshot.product_id}"
+            )
+            return {"status": "success", "count": processed}
 
-def extract_brand_from_title_vinted(title: str) -> str:
-    """Extract brand from Vinted product title (fashion focus)"""
-    # This is a very basic implementation - could be improved with NLP
-    title_lower = title.lower()
+        logger.warning(
+            f"No LeBonCoin listings matched filters for product {snapshot.product_id}"
+        )
+        return {"status": "no_data", "count": 0}
 
-    # Fashion brand indicators
-    fashion_brands = [
-        "nike", "adidas", "puma", "reebok", "converse", "vans", "new balance",
-        "h&m", "zara", "uniqlo", "gap", "levi's", "dickies", "carhartt",
-        "supreme", "stone island", "moncler", "canada goose", "patagonia",
-        "the north face", "columbia", "arcteryx", "marmot", "salomon",
-        "asics", "brooks", "saucony", "mizuno", "hoka", "on running"
-    ]
+    except Exception as exc:
+        logger.error(
+            f"Error in LeBonCoin listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
 
-    for brand in fashion_brands:
-        if brand in title_lower:
-            return brand.title()
+async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
 
-    return "Unknown"
+    logger.info(
+        f"Starting LeBonCoin 'sold' ingestion for product '{snapshot.name}' ({snapshot.product_id})"
+    )
+
+    try:
+        listings = await fetch_leboncoin_api_sold(_compose_search_term(snapshot), limit)
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=True)
+
+        if processed:
+            logger.info(
+                f"Ingested {processed} LeBonCoin 'sold' listings for product {snapshot.product_id}"
+            )
+            return {"status": "success", "count": processed}
+
+        logger.warning(
+            f"No LeBonCoin 'sold' listings matched filters for product {snapshot.product_id}"
+        )
+        return {"status": "no_data", "count": 0}
+
+    except Exception as exc:
+        logger.error(
+            f"Error in LeBonCoin 'sold' ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
+
+async def ingest_vinted_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+
+    logger.info(
+        f"Starting Vinted listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
+    )
+
+    try:
+        listings = await fetch_vinted_listings(_compose_search_term(snapshot), limit)
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
+
+        if processed:
+            logger.info(
+                f"Ingested {processed} Vinted listings for product {snapshot.product_id}"
+            )
+            return {"status": "success", "count": processed}
+
+        logger.warning(
+            f"No Vinted listings matched filters for product {snapshot.product_id}"
+        )
+        return {"status": "no_data", "count": 0}
+
+    except Exception as exc:
+        logger.error(
+            f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
+
+
 
 def calculate_daily_metrics(product_id: str) -> Dict[str, Any]:
     """Calculate daily metrics for a product"""
@@ -666,41 +543,68 @@ def update_product_metrics(product_id: str) -> None:
 
         db.commit()
 
-async def run_full_ingestion(keyword: str, limits: Dict[str, int] = None, sources: List[str] = None) -> Dict[str, Any]:
-    """Run full ingestion pipeline for a keyword"""
+async def run_full_ingestion(
+    product_id: str,
+    limits: Dict[str, int] | None = None,
+    sources: List[str] | None = None,
+) -> Dict[str, Any]:
+    """Run full ingestion pipeline for a product template across selected providers."""
+
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+
     if limits is None:
-        limits = {"ebay_sold": 50, "ebay_listings": 50, "leboncoin_listings": 50, "vinted_listings": 50}
-    if sources is None:
-        sources = ["ebay", "leboncoin", "vinted"]
+        limits = {
+            "ebay_sold": 50,
+            "ebay_listings": 50,
+            "leboncoin_listings": 50,
+            "leboncoin_sold": 50,
+            "vinted_listings": 50,
+        }
 
-    logger.info(f"Starting full ingestion for keyword: {keyword} from sources: {sources}")
+    candidate_sources = sources or snapshot.providers or SUPPORTED_PROVIDERS
+    logger.info(
+        f"Starting ingestion for product '{snapshot.name}' ({snapshot.product_id}) providers={candidate_sources}"
+    )
 
-    results = {"keyword": keyword}
+    results: Dict[str, Any] = {
+        "product_id": snapshot.product_id,
+        "product_name": snapshot.name,
+        "category": snapshot.category_name,
+    }
 
-    # eBay ingestion
-    if "ebay" in sources:
-        results["ebay_sold"] = await ingest_ebay_sold(keyword, limits.get("ebay_sold", 50))
-        results["ebay_listings"] = await ingest_ebay_listings(keyword, limits.get("ebay_listings", 50))
+    if "ebay" in candidate_sources:
+        results["ebay_sold"] = await ingest_ebay_sold(
+            snapshot.product_id, limits.get("ebay_sold", 50)
+        )
+        results["ebay_listings"] = await ingest_ebay_listings(
+            snapshot.product_id, limits.get("ebay_listings", 50)
+        )
 
-    # LeBonCoin ingestion
-    if "leboncoin" in sources:
-        results["leboncoin_listings"] = await ingest_leboncoin_listings(keyword, limits.get("leboncoin_listings", 50))
-        results["leboncoin_sold"] = await ingest_leboncoin_sold(keyword, limits.get("leboncoin_listings", 50))  # Use same limit as listings
+    if "leboncoin" in candidate_sources:
+        results["leboncoin_listings"] = await ingest_leboncoin_listings(
+            snapshot.product_id, limits.get("leboncoin_listings", 50)
+        )
+        results["leboncoin_sold"] = await ingest_leboncoin_sold(
+            snapshot.product_id, limits.get("leboncoin_sold", limits.get("leboncoin_listings", 50))
+        )
 
-    # Vinted ingestion
-    if "vinted" in sources:
-        results["vinted_listings"] = await ingest_vinted_listings(keyword, limits.get("vinted_listings", 50))
-        results["vinted_sold"] = await ingest_vinted_sold(keyword, limits.get("vinted_listings", 50))  # Use same limit as listings
+    if "vinted" in candidate_sources:
+        results["vinted_listings"] = await ingest_vinted_listings(
+            snapshot.product_id, limits.get("vinted_listings", 50)
+        )
 
-    # Update metrics for all products that were updated
-    with SessionLocal() as db:
-        # Get unique product_ids that were processed
-        product_ids = db.query(ListingObservation.product_id).distinct().all()
-        for (product_id,) in product_ids:
-            try:
-                update_product_metrics(product_id)
-            except Exception as e:
-                logger.error(f"Error updating metrics for product {product_id}: {e}")
+    try:
+        update_product_metrics(snapshot.product_id)
+    except Exception as exc:
+        logger.error(f"Error updating metrics for product {snapshot.product_id}: {exc}")
+        results.setdefault("warnings", []).append(
+            f"metrics_update_failed: {snapshot.product_id}"
+        )
 
-    logger.info(f"Full ingestion completed for keyword: {keyword}")
+    logger.info(
+        f"Full ingestion completed for product '{snapshot.name}' ({snapshot.product_id})"
+    )
+    results["status"] = "success"
     return results

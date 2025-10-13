@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, Boolean, Numeric, TIMESTAMP, UUID, BigInteger, Date, JSON, ARRAY, ForeignKey, text
+from sqlalchemy import Column, Integer, String, Text, Boolean, Numeric, TIMESTAMP, UUID, BigInteger, Date, JSON, ARRAY, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -8,21 +8,44 @@ from datetime import datetime
 
 Base = declarative_base()
 
-class ProductRef(Base):
-    __tablename__ = "product_ref"
+class Category(Base):
+    __tablename__ = "category"
+
+    category_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
+    name = Column(Text, unique=True, nullable=False)
+    description = Column(Text)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductTemplate(Base):
+    __tablename__ = "product_template"
 
     product_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
-    canonical_title = Column(Text)
+    name = Column(Text, nullable=False)
+    description = Column(Text)
+    search_query = Column(Text, nullable=False)
+    category_id = Column(UUID, ForeignKey("category.category_id"), nullable=False)
     brand = Column(Text)
-    gtin = Column(Text)
-    category = Column(Text)
+    price_min = Column(Numeric)
+    price_max = Column(Numeric)
+    providers = Column(ARRAY(Text), default=list)
+    is_active = Column(Boolean, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    last_ingested_at = Column(TIMESTAMP(timezone=True))
+
+    category = relationship("Category", back_populates="products")
 
 class ListingObservation(Base):
     __tablename__ = "listing_observation"
 
     obs_id = Column(BigInteger, primary_key=True, autoincrement=True)
-    product_id = Column(UUID, ForeignKey("product_ref.product_id"))
+    product_id = Column(UUID, ForeignKey("product_template.product_id"))
     source = Column(Text)
     listing_id = Column(Text)
     title = Column(Text)
@@ -34,14 +57,14 @@ class ListingObservation(Base):
     shipping_cost = Column(Numeric)
     location = Column(Text)
     observed_at = Column(TIMESTAMP(timezone=True))
+    url = Column(Text)  # Listing URL for direct access
 
-    # Relationship
-    product = relationship("ProductRef", back_populates="observations")
+    product = relationship("ProductTemplate", back_populates="observations")
 
 class ProductDailyMetrics(Base):
     __tablename__ = "product_daily_metrics"
 
-    product_id = Column(UUID, ForeignKey("product_ref.product_id"), primary_key=True)
+    product_id = Column(UUID, ForeignKey("product_template.product_id"), primary_key=True)
     date = Column(Date, primary_key=True)
     sold_count_7d = Column(Integer)
     sold_count_30d = Column(Integer)
@@ -52,13 +75,12 @@ class ProductDailyMetrics(Base):
     liquidity_score = Column(Numeric)
     trend_score = Column(Numeric)
 
-    # Relationship
-    product = relationship("ProductRef", back_populates="daily_metrics")
+    product = relationship("ProductTemplate", back_populates="daily_metrics")
 
 class MarketPriceNormal(Base):
     __tablename__ = "market_price_normal"
 
-    product_id = Column(UUID, ForeignKey("product_ref.product_id"), primary_key=True)
+    product_id = Column(UUID, ForeignKey("product_template.product_id"), primary_key=True)
     last_computed_at = Column(TIMESTAMP(timezone=True))
     pmn = Column(Numeric)
     pmn_low = Column(Numeric)
@@ -66,7 +88,7 @@ class MarketPriceNormal(Base):
     methodology = Column(JSON)
 
     # Relationship
-    product = relationship("ProductRef", back_populates="pmn")
+    product = relationship("ProductTemplate", back_populates="pmn")
 
 class AlertRule(Base):
     __tablename__ = "alert_rule"
@@ -85,7 +107,7 @@ class AlertEvent(Base):
 
     alert_id = Column(BigInteger, primary_key=True, autoincrement=True)
     rule_id = Column(UUID, ForeignKey("alert_rule.rule_id"))
-    product_id = Column(UUID, ForeignKey("product_ref.product_id"))
+    product_id = Column(UUID, ForeignKey("product_template.product_id"))
     obs_id = Column(BigInteger, ForeignKey("listing_observation.obs_id"))
     sent_at = Column(TIMESTAMP(timezone=True))
     delivery = Column(JSON)
@@ -93,13 +115,13 @@ class AlertEvent(Base):
 
     # Relationships
     rule = relationship("AlertRule")
-    product = relationship("ProductRef")
+    product = relationship("ProductTemplate")
     observation = relationship("ListingObservation")
 
-# Add relationships to ProductRef
-ProductRef.observations = relationship("ListingObservation", back_populates="product")
-ProductRef.daily_metrics = relationship("ProductDailyMetrics", back_populates="product")
-ProductRef.pmn = relationship("MarketPriceNormal", back_populates="product", uselist=False)
+Category.products = relationship("ProductTemplate", back_populates="category")
+ProductTemplate.observations = relationship("ListingObservation", back_populates="product")
+ProductTemplate.daily_metrics = relationship("ProductDailyMetrics", back_populates="product")
+ProductTemplate.pmn = relationship("MarketPriceNormal", back_populates="product", uselist=False)
 
 # Standardized Listing model for all connectors
 class Listing(BaseModel):
