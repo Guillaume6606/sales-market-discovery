@@ -29,7 +29,7 @@ class VintedConnector:
         condition_lower = condition_raw.lower()
 
         # Vinted condition mappings
-        if any(word in condition_lower for word in ["neuf", "new", "nouveau", "brand new"]):
+        if any(word in condition_lower for word in ["Neuf avec étiquette", "Neuf sans étiquette", "neuf", "new", "nouveau", "brand new"]):
             return "new"
         elif any(word in condition_lower for word in ["très bon état", "very good", "excellent", "comme neuf", "like new"]):
             return "like_new"
@@ -72,6 +72,7 @@ class VintedConnector:
             async with ScrapingSession(scraping_config) as session:
                 # Get search results page (with fallback to HTTP if Playwright fails)
                 html_content = await session.get_html_with_fallback(search_url)
+                logger.debug(f"HTML Content: {html_content}")
 
                 # Parse items from the page
                 page_items = self._parse_search_results(html_content)
@@ -156,85 +157,266 @@ class VintedConnector:
         items = []
 
         # Vinted uses different selectors, try multiple approaches
+        # Strategy: Find parent containers that hold item data, not just links
+        # Vinted wraps items in divs/articles with the link, title, price as children
         item_selectors = [
-            '[data-testid="item-card"]',  # Modern Vinted selector
-            '.item',  # Legacy selector
-            '[class*="item"]',  # Generic class-based selector
+            '[data-testid="item-card"]',  # Official item card
+            '[data-testid="grid-item"]',  # Grid item wrapper
+            'article',  # Article elements often contain items
+            'div.feed-grid__item',  # Grid item class
+            'div[class*="item"]',  # Any div with "item" in class
         ]
 
-        item_elements = None
+        item_elements = []
         for selector in item_selectors:
-            item_elements = soup.select(selector)
+            elements = soup.select(selector)
+            if elements:
+                # Filter: Must contain a link to /items/
+                item_elements = [e for e in elements if e.find('a', href=lambda h: h and '/items/' in h)]
+                if item_elements:
+                    logger.info(f"Found {len(item_elements)} item containers using selector: {selector}")
+                    break
+        
+        # Fallback: If no containers found, try finding links and using their parents
+        if not item_elements:
+            logger.debug("No item containers found, trying fallback strategy")
+            links = soup.select('a[href*="/items/"]')
+            # Get parent of each link (could be the item container)
+            seen_parents = set()
+            for link in links:
+                if '/member/' not in (link.get('href') or ''):
+                    parent = link.parent
+                    if parent and parent not in seen_parents:
+                        item_elements.append(parent)
+                        seen_parents.add(parent)
             if item_elements:
-                logger.debug(f"Found {len(item_elements)} items using selector: {selector}")
-                break
+                logger.info(f"Found {len(item_elements)} item containers using fallback (link parents)")
 
         if not item_elements:
             logger.warning("No item elements found in search results")
             return items
 
+        parsed_count = 0
+        filtered_count = 0
+        
         for element in item_elements:
             try:
                 item = self._parse_item_element(element)
                 if item:
                     items.append(item)
+                    parsed_count += 1
+                else:
+                    filtered_count += 1
             except Exception as e:
                 logger.warning(f"Error parsing item element: {e}")
+                filtered_count += 1
                 continue
 
+        logger.info(f"Vinted parsing: {parsed_count} items parsed, {filtered_count} filtered out")
         return items
 
+    def _validate_item_data(self, item_data: Dict[str, Any]) -> bool:
+        """Validate parsed item before returning"""
+        # Must have valid listing ID (numeric)
+        listing_id = item_data.get("listing_id", "")
+        if not listing_id or not listing_id.isdigit():
+            logger.debug(f"Invalid listing_id: {listing_id}")
+            return False
+        
+        # Must have reasonable price
+        price = item_data.get("price")
+        if not price or price < 0.5 or price > 10000:
+            logger.debug(f"Invalid price: {price} for item {listing_id}")
+            return False
+        
+        # Title should not be empty or just a price pattern
+        title = item_data.get("title", "")
+        if not title or re.match(r'^\d+[,\.]\d+\s*€?$', title) or len(title) < 3:
+            logger.debug(f"Invalid title: '{title}' for item {listing_id}")
+            return False
+        
+        return True
+
     def _parse_item_element(self, element) -> Optional[Dict[str, Any]]:
-        """Parse individual item element"""
+        """
+        Parse individual item element (parent container with link, title, price as children).
+        Element is now the parent container, not the link itself.
+        """
         try:
-            # Extract item URL
-            link_element = element.find('a', href=True)
+            # Find the link to the item within this container
+            link_element = element.find('a', href=lambda h: h and '/items/' in h)
             if not link_element:
+                logger.debug("No item link found in container")
+                return None
+            
+            item_url = link_element.get('href', '')
+            
+            if not item_url:
+                logger.debug("Empty href in link")
                 return None
 
-            item_url = link_element['href']
+            # FILTER: Skip member profiles
+            if '/member/' in item_url:
+                return None
+
             if not item_url.startswith('http'):
                 item_url = f"{self.BASE_URL}{item_url}"
 
-            # Extract title
-            title_element = element.find(['h3', '.title', '[data-testid="item-title"]'])
-            title = self.scraping_utils.clean_text(title_element.get_text()) if title_element else ""
+            # Extract item ID from URL for debugging
+            item_id = self._extract_listing_id(item_url)
+            
+            # Get all text from container (not just the link!)
+            element_text = element.get_text(separator=' ', strip=True)
+            logger.debug(f"Processing item {item_id}, text preview: {element_text[:200] if element_text else 'empty'}")
 
-            # Extract price
-            price_element = element.find(['span', '.price'], class_=lambda x: x and ('price' in x.lower()))
-            price_text = price_element.get_text() if price_element else ""
-            price = self.scraping_utils.extract_price(price_text)
+            # Extract title - try multiple selectors with validation
+            title = ""
+            title_candidates = [
+                element.select_one('[data-testid="item-title"]'),
+                element.select_one('h3'),
+                element.select_one('h2'),
+                element.select_one('p[class*="title"]'),
+                element.select_one('[class*="ItemBox_title"]'),
+                element.select_one('[class*="item-title"]'),
+                element.select_one('[class*="Text"]'),  # Vinted uses generic Text classes
+            ]
+            
+            for candidate in title_candidates:
+                if candidate:
+                    text = self.scraping_utils.clean_text(candidate.get_text())
+                    # Validate: Title shouldn't be just a price or too short
+                    if text and not re.match(r'^\d+[,\.]\d+\s*€?$', text) and len(text) >= 3:
+                        title = text
+                        logger.debug(f"Title extracted for {item_id}: {title}")
+                        break
+
+            # Extract price with MUCH more aggressive strategies
+            price = None
+            
+            # Strategy 1: Look for specific price elements with multiple selectors
+            price_candidates = [
+                element.select_one('[data-testid="item-price"]'),
+                element.select_one('[class*="ItemBox_price"]'),
+                element.select_one('[class*="item-price"]'),
+                element.select_one('[class*="price"]'),  # Generic price class
+                element.select_one('[class*="Price"]'),  # Capital P
+                # Vinted often uses div/span with specific patterns
+                element.find('div', string=re.compile(r'\d+[,\.]\d{2}\s*€')),
+                element.find('span', string=re.compile(r'\d+[,\.]\d{2}\s*€')),
+                element.find('p', string=re.compile(r'\d+[,\.]\d{2}\s*€')),
+            ]
+            
+            for candidate in price_candidates:
+                if candidate:
+                    price_text = candidate.get_text(strip=True)
+                    logger.debug(f"Price candidate text for {item_id}: {price_text}")
+                    # Try to extract price
+                    extracted_price = self.scraping_utils.extract_price(price_text)
+                    if extracted_price and 0.5 <= extracted_price <= 10000:
+                        price = extracted_price
+                        logger.debug(f"Price extracted for {item_id}: €{price}")
+                        break
+            
+            # Strategy 2: Scan ALL text content for price patterns
+            if not price and element_text:
+                logger.debug(f"Trying regex on full text for {item_id}")
+                # Pattern 1: Standard European format with € symbol
+                price_patterns = [
+                    r'(\d{1,5})[,\.](\d{2})\s*€',  # 123,45 € or 123.45€
+                    r'€\s*(\d{1,5})[,\.](\d{2})',  # € 123,45 or €123.45
+                    r'(\d{1,5})\s*€',               # 123 € (no decimals)
+                ]
+                
+                for pattern in price_patterns:
+                    match = re.search(pattern, element_text)
+                    if match:
+                        if len(match.groups()) >= 2:
+                            price_str = f"{match.group(1)}.{match.group(2)}"
+                        else:
+                            price_str = match.group(1)
+                        
+                        try:
+                            price = float(price_str)
+                            if 0.5 <= price <= 10000:
+                                logger.debug(f"Price extracted via regex for {item_id}: €{price}")
+                                break
+                            else:
+                                price = None
+                        except ValueError:
+                            continue
+            
+            # Strategy 3: Look in parent/sibling elements if still no price
+            if not price:
+                logger.debug(f"Searching parent/siblings for price for {item_id}")
+                parent = element.parent
+                if parent:
+                    parent_text = parent.get_text(strip=True)
+                    match = re.search(r'(\d{1,5})[,\.](\d{2})\s*€', parent_text)
+                    if match:
+                        try:
+                            price = float(f"{match.group(1)}.{match.group(2)}")
+                            if 0.5 <= price <= 10000:
+                                logger.debug(f"Price found in parent for {item_id}: €{price}")
+                        except ValueError:
+                            pass
 
             # Extract brand
-            brand_element = element.find(['span', '.brand'], class_=lambda x: x and ('brand' in x.lower()))
-            brand = self.scraping_utils.clean_text(brand_element.get_text()) if brand_element else ""
+            brand = ""
+            brand_element = element.find(['span', 'div'], class_=lambda x: x and 'brand' in str(x).lower())
+            if brand_element:
+                brand = self.scraping_utils.clean_text(brand_element.get_text())
 
             # Extract size
-            size_element = element.find(['span', '.size'], class_=lambda x: x and ('size' in x.lower()))
-            size = self.scraping_utils.clean_text(size_element.get_text()) if size_element else ""
+            size = ""
+            size_element = element.find(['span', 'div'], class_=lambda x: x and 'size' in str(x).lower())
+            if size_element:
+                size = self.scraping_utils.clean_text(size_element.get_text())
 
             # Extract color
-            color_element = element.find(['span', '.color'], class_=lambda x: x and ('color' in x.lower()))
-            color = self.scraping_utils.clean_text(color_element.get_text()) if color_element else ""
+            color = ""
+            color_element = element.find(['span', 'div'], class_=lambda x: x and 'color' in str(x).lower())
+            if color_element:
+                color = self.scraping_utils.clean_text(color_element.get_text())
 
-            # Extract condition
-            condition_element = element.find(['span', '.condition'], class_=lambda x: x and ('condition' in x.lower() or 'état' in x.lower()))
-            condition = self.scraping_utils.clean_text(condition_element.get_text()) if condition_element else ""
+            # Extract condition - look in element text or specific elements
+            condition = ""
+            element_text = element.get_text() if not price else ""  # Get text if we haven't already
+            
+            condition_keywords = ['neuf', 'new', 'très bon', 'very good', 'bon état', 'good', 'satisfaisant', 'fair', 'excellent']
+            if element_text:
+                element_lower = element_text.lower()
+                for keyword in condition_keywords:
+                    if keyword in element_lower:
+                        condition = keyword
+                        break
+            
+            # Also try specific condition elements
+            if not condition:
+                condition_element = element.find(['span', 'div'], class_=lambda x: x and ('condition' in str(x).lower() or 'état' in str(x).lower()))
+                if condition_element:
+                    condition = self.scraping_utils.clean_text(condition_element.get_text())
 
             # Extract location
-            location_element = element.find(['span', '.location'], class_=lambda x: x and ('location' in x.lower()))
-            location = self.scraping_utils.extract_location(location_element.get_text()) if location_element else ""
+            location = ""
+            location_element = element.find(['span', 'div'], class_=lambda x: x and 'location' in str(x).lower())
+            if location_element:
+                location = self.scraping_utils.extract_location(location_element.get_text())
 
-            # Extract shipping cost (Vinted often includes shipping)
-            shipping_element = element.find(['span'], class_=lambda x: x and ('shipping' in x.lower() or 'livraison' in x.lower()))
-            shipping_text = shipping_element.get_text() if shipping_element else ""
-            shipping_cost = self.scraping_utils.extract_price(shipping_text) if shipping_text else 0.0
+            # Extract shipping cost
+            shipping_cost = 0.0
+            shipping_element = element.find(['span', 'div'], class_=lambda x: x and ('shipping' in str(x).lower() or 'livraison' in str(x).lower()))
+            if shipping_element:
+                shipping_text = shipping_element.get_text()
+                extracted_shipping = self.scraping_utils.extract_price(shipping_text)
+                if extracted_shipping and 0 <= extracted_shipping <= 100:  # Reasonable shipping cost
+                    shipping_cost = extracted_shipping
 
-            return {
+            # Build item data
+            item_data = {
                 "listing_id": self._extract_listing_id(item_url),
                 "title": title,
                 "price": price,
-                "currency": "EUR",  # Vinted is primarily EUR
+                "currency": "EUR",
                 "condition": condition,
                 "location": location,
                 "item_url": item_url,
@@ -243,9 +425,15 @@ class VintedConnector:
                 "color": color,
                 "shipping_cost": shipping_cost
             }
+            
+            # Validate before returning
+            if not self._validate_item_data(item_data):
+                return None
+            
+            return item_data
 
         except Exception as e:
-            logger.error(f"Error parsing item element: {e}")
+            logger.error(f"Error parsing item element: {e}", exc_info=True)
             return None
 
     def _parse_item_details(self, html_content: str, item_url: str) -> Optional[Dict[str, Any]]:
@@ -378,26 +566,17 @@ class VintedConnector:
 
     def _extract_listing_id(self, url: str) -> str:
         """Extract listing ID from URL"""
-        # Vinted URLs typically follow pattern: /items/ID-title
+        # Vinted URLs typically follow pattern: /items/ID-title or /items/ID
         match = re.search(r'/items/(\d+)', url)
-        return match.group(1) if match else url
+        if match:
+            return match.group(1)
+        
+        # Fallback: return empty string if no valid ID found
+        logger.debug(f"Could not extract listing ID from URL: {url}")
+        return ""
 
 # Convenience functions for backward compatibility
 async def fetch_vinted_listings(keyword: str, limit: int = 50) -> List[Listing]:
     """Fetch current listings from Vinted"""
     connector = VintedConnector()
     return await connector.search_items(keyword, limit=limit)
-
-async def fetch_vinted_sold(keyword: str, limit: int = 50) -> List[Listing]:
-    """
-    Vinted doesn't have a direct "sold" API like eBay.
-    This is a placeholder that returns recent listings as proxy for sold items.
-    """
-    logger.warning("Vinted doesn't provide sold items data like eBay. Returning recent listings as proxy.")
-    connector = VintedConnector()
-    return await connector.search_items(keyword, limit=limit)
-
-def parse_vinted_response(response_data: Dict, is_sold: bool = False) -> List[Listing]:
-    """Parse Vinted response (placeholder for compatibility)"""
-    # Since we're using scraping, this function is mainly for compatibility
-    return response_data if isinstance(response_data, list) else []

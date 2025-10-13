@@ -647,3 +647,4 @@ def parse_leboncoin_response(response_data: Dict, is_sold: bool = False) -> List
     """Parse LeBonCoin response (placeholder for compatibility)"""
     # Since we're using scraping, this function is mainly for compatibility
     return response_data if isinstance(response_data, list) else []
+
