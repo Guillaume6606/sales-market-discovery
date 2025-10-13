@@ -5,7 +5,7 @@ Mono‑repo skeleton for a Flip/Resell Market Discovery app with **FastAPI**, **
 ## Components
 - `backend/` — FastAPI app exposing product discovery and alert rules APIs.
 - `ingestion/` — Advanced connectors (eBay API + LeBonCoin scraping), normalization, PMN engine, scheduled via Arq workers.
-- `ui/` — Streamlit MVP dashboard (Discovery board, Product page, Rules).
+- `ui/` — Streamlit dashboard with arbitrage discovery, product details, and price history charts.
 - `libs/common/` — Shared utilities including advanced web scraping with anti-bot detection bypass.
 - `infra/` — Docker & compose for local dev, Alembic migrations, pre-commit, Makefile.
 
@@ -25,11 +25,13 @@ Mono‑repo skeleton for a Flip/Resell Market Discovery app with **FastAPI**, **
 - **Proxy Support**: Optional proxy configuration for enhanced anonymity
 - **Stealth Testing**: Built-in CreepJS analysis for fingerprinting evaluation
 
-### 📊 Real-Time Analytics
+### 📊 Real-Time Analytics & Discovery
 - **PMN Calculations**: Predicted Market Net with confidence intervals
+- **Arbitrage Discovery**: Find products with listings below market price
 - **Liquidity Scoring**: Based on sales volume and frequency
 - **Trend Analysis**: Moving averages and price trend detection
-- **Multi-Source Aggregation**: Combined insights from eBay and LeBonCoin
+- **Multi-Source Aggregation**: Combined insights from eBay, LeBonCoin, and Vinted
+- **Interactive Dashboard**: Streamlit UI with filters, charts, and real-time updates
 
 ### Quick start (local)
 ```bash
@@ -42,12 +44,50 @@ docker compose up --build -d
 # 3) Initialize DB
 docker compose exec backend alembic upgrade head
 
-# 4) Open apps
+# 4) Add performance indexes (recommended for production use)
+docker compose exec postgres psql -U market_discovery -d market_discovery -c "
+CREATE INDEX IF NOT EXISTS idx_listing_product_sold ON listing_observation(product_id, is_sold);
+CREATE INDEX IF NOT EXISTS idx_listing_observed_at ON listing_observation(observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_listing_price ON listing_observation(price) WHERE price IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_listing_source ON listing_observation(source);
+CREATE INDEX IF NOT EXISTS idx_metrics_product_date ON product_daily_metrics(product_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_product_active ON product_template(is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_pmn_product ON market_price_normal(product_id);
+"
+
+# 5) Open apps
 # FastAPI docs: http://localhost:8000/docs
 # Streamlit:    http://localhost:8501
 ```
 
 ### API Usage
+
+#### Discovery & Analytics
+```bash
+# Get arbitrage opportunities
+curl "http://localhost:8000/products/discovery?sort_by=margin&limit=50"
+
+# Filter by margin
+curl "http://localhost:8000/products/discovery?min_margin=-50&max_margin=-20"
+
+# Get product details
+curl "http://localhost:8000/products/{product_id}"
+
+# Get price history
+curl "http://localhost:8000/products/{product_id}/price-history?days=30"
+
+# Get analytics overview
+curl "http://localhost:8000/analytics/overview"
+
+# Get top opportunities
+curl "http://localhost:8000/analytics/top-opportunities?limit=10"
+```
+
+#### Product Ingestion
+```bash
+# Trigger full ingestion for a product
+curl -X POST "http://localhost:8000/ingestion/trigger?product_id={id}&sold_limit=50&listings_limit=50&sources=ebay&sources=vinted"
+```
 
 #### eBay Integration
 ```bash
@@ -132,25 +172,6 @@ The ingestion container includes all necessary system dependencies for web scrap
 - Audio libraries for browser audio
 - X11 libraries for display simulation
 
-### Environment Variables
-
-Configure these in your `.env` file:
-
-```bash
-# Scraping behavior
-SCRAPING_MIN_DELAY=1.0      # Minimum delay between requests (seconds)
-SCRAPING_MAX_DELAY=3.0      # Maximum delay between requests (seconds)
-SCRAPING_TIMEOUT=30.0       # Request timeout (seconds)
-SCRAPING_MAX_RETRIES=3      # Maximum retry attempts
-
-# Playwright settings
-PLAYWRIGHT_HEADLESS=true    # Run browsers in headless mode
-PLAYWRIGHT_SLOW_MO=0        # Slow down actions (for debugging)
-
-# Optional: Proxy settings
-HTTP_PROXY=                 # HTTP proxy URL
-HTTPS_PROXY=               # HTTPS proxy URL
-```
 
 ### Common Issues
 

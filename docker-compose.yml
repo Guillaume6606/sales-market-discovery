@@ -37,6 +37,7 @@ services:
     user: "pwuser"
     environment:
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - LOG_LEVEL=DEBUG
     tmpfs:
       - /tmp
       - /home/pwuser/.cache

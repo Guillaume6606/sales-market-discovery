@@ -5,6 +5,9 @@ class Settings(BaseSettings):
     app_env: str = Field(default="local")
     secret_key: str = Field(default="dev")
     use_playwright: bool = Field(default=False)
+    
+    # Logging
+    log_level: str = Field(default="INFO")
 
     # DB
     postgres_user: str = "app"
