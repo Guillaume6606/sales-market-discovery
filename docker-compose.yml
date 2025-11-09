@@ -20,7 +20,7 @@ services:
       dockerfile: infra/docker/Dockerfile.backend
     env_file: .env
     depends_on: [db, redis]
-    ports: ["8000:8000"]
+    ports: ["9000:8000"]  # Changed to 9000 due to Windows Hyper-V port reservations
 
   ingestion:
     build:
@@ -41,6 +41,10 @@ services:
     tmpfs:
       - /tmp
       - /home/pwuser/.cache
+    ports:
+      - "8888:8888"  # Jupyter Lab port
+    volumes:
+      - ./notebooks:/app/notebooks  # Mount notebooks directory
 
   ui:
     build:
@@ -48,7 +52,7 @@ services:
       dockerfile: infra/docker/Dockerfile.ui
     env_file: .env
     depends_on: [backend]
-    ports: ["8501:8501"]
+    ports: ["18501:8501"]  # Changed to 18501 due to Windows Hyper-V port reservations
 
 volumes:
   dbdata:

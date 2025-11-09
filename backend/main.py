@@ -6,8 +6,7 @@ from sqlalchemy import func, and_, desc
 from libs.common.db import get_db, engine
 from libs.common.models import Base, Category, ProductTemplate, ListingObservation, MarketPriceNormal, ProductDailyMetrics
 from libs.common.log import logger
-from libs.common.settings import settings
-from ingestion.constants import SUPPORTED_PROVIDERS
+from libs.common.settings import settings, SUPPORTED_PROVIDERS
 from typing import Any, Dict, List
 
 # ARQ imports for proper job enqueuing
@@ -373,6 +372,7 @@ def product_detail(product_id: str, db: Session = Depends(get_db)):
         {
             "obs_id": obs.obs_id,
             "title": obs.title,
+            "description": obs.description,
             "price": _decimal_to_float(obs.price),
             "currency": obs.currency,
             "condition": obs.condition,
@@ -399,6 +399,7 @@ def product_detail(product_id: str, db: Session = Depends(get_db)):
         {
             "obs_id": obs.obs_id,
             "title": obs.title,
+            "description": obs.description,
             "price": _decimal_to_float(obs.price),
             "currency": obs.currency,
             "condition": obs.condition,
@@ -980,6 +981,7 @@ def get_listings(
             {
                 "listing_id": listing.listing_id,
                 "title": listing.title,
+                "description": listing.description,
                 "price": _decimal_to_float(listing.price),
                 "currency": listing.currency,
                 "condition_raw": listing.condition,
@@ -1492,6 +1494,7 @@ def explore_listings(
             "source": observation.source,
             "listing_id": observation.listing_id,
             "title": observation.title,
+            "description": observation.description,
             "price": _decimal_to_float(observation.price),
             "currency": observation.currency,
             "condition": observation.condition,
@@ -1618,6 +1621,7 @@ def get_listing_opportunity_score(obs_id: int, db: Session = Depends(get_db)):
     opportunity["listing"] = {
         "obs_id": listing.obs_id,
         "title": listing.title,
+        "description": listing.description,
         "price": _decimal_to_float(listing.price),
         "source": listing.source,
         "url": listing.url,

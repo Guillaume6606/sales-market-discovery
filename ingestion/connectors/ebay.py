@@ -271,6 +271,7 @@ def parse_ebay_response(response_data: dict, is_sold: bool = False) -> List[List
                 source="ebay",
                 listing_id=listing_id,
                 title=title,
+                description=None,  # Not available in Finding API - would need Browse API or scraping
                 price=price,
                 currency=currency,
                 condition_raw=condition,

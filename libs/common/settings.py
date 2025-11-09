@@ -28,3 +28,4 @@ class Settings(BaseSettings):
 
 settings = Settings()
 DATABASE_URL = f"postgresql+psycopg2://{settings.postgres_user}:{settings.postgres_password}@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
+SUPPORTED_PROVIDERS = ["ebay", "leboncoin", "vinted", "fnac", "cdiscount", "backmarket", "rakuten"]

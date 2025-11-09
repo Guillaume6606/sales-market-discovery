@@ -84,6 +84,7 @@ class LeBonCoinConnector:
                         source="leboncoin",
                         listing_id=item_dict["listing_id"],
                         title=item_dict["title"],
+                        description=item_dict.get("description"),
                         price=item_dict.get("price"),
                         currency=item_dict.get("currency", "EUR"),
                         condition_raw=item_dict.get("condition"),

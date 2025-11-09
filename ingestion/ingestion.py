@@ -15,13 +15,17 @@ from libs.common.models import (
     Listing,
 )
 from libs.common.db import SessionLocal
+from libs.common.settings import SUPPORTED_PROVIDERS
 from ingestion.connectors.ebay import fetch_ebay_sold, fetch_ebay_listings
 from ingestion.connectors.leboncoin_api import (
     fetch_leboncoin_api_listings,
     fetch_leboncoin_api_sold,
 )
-from ingestion.constants import SUPPORTED_PROVIDERS
 from ingestion.connectors.vinted import fetch_vinted_listings
+from ingestion.connectors.fnac_connector import FnacConnector
+from ingestion.connectors.cdiscount_connector import CdiscountConnector
+from ingestion.connectors.backmarket_connector import BackmarketConnector
+from ingestion.connectors.rakuten_connector import RakutenConnector
 from ingestion.pricing import pmn_from_prices
 
 
@@ -212,6 +216,7 @@ def _upsert_listing(
     if existing:
         existing.price = listing.price
         existing.title = listing.title
+        existing.description = listing.description
         existing.currency = listing.currency
         existing.condition = listing.condition_raw
         existing.is_sold = is_sold
@@ -226,6 +231,7 @@ def _upsert_listing(
             source=listing_source,
             listing_id=listing.listing_id,
             title=listing.title,
+            description=listing.description,
             price=listing.price,
             currency=listing.currency,
             condition=listing.condition_raw,
@@ -444,6 +450,142 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> Dict[str, 
         return {"status": "error", "error": str(exc)}
 
 
+async def ingest_fnac_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    """Ingest active listings from Fnac for a specific product."""
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+
+    logger.info(
+        f"Starting Fnac listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
+    )
+
+    try:
+        connector = FnacConnector()
+        listings = await connector.search_items(_compose_search_term(snapshot), limit=limit)
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
+
+        if processed:
+            logger.info(
+                f"Ingested {processed} Fnac listings for product {snapshot.product_id}"
+            )
+            return {"status": "success", "count": processed}
+
+        logger.warning(
+            f"No Fnac listings matched filters for product {snapshot.product_id}"
+        )
+        return {"status": "no_data", "count": 0}
+
+    except Exception as exc:
+        logger.error(
+            f"Error in Fnac listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
+
+
+async def ingest_cdiscount_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    """Ingest active listings from Cdiscount for a specific product."""
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+
+    logger.info(
+        f"Starting Cdiscount listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
+    )
+
+    try:
+        connector = CdiscountConnector()
+        listings = await connector.search_items(_compose_search_term(snapshot), limit=limit)
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
+
+        if processed:
+            logger.info(
+                f"Ingested {processed} Cdiscount listings for product {snapshot.product_id}"
+            )
+            return {"status": "success", "count": processed}
+
+        logger.warning(
+            f"No Cdiscount listings matched filters for product {snapshot.product_id}"
+        )
+        return {"status": "no_data", "count": 0}
+
+    except Exception as exc:
+        logger.error(
+            f"Error in Cdiscount listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
+
+
+async def ingest_backmarket_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    """Ingest active listings from BackMarket for a specific product."""
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+
+    logger.info(
+        f"Starting BackMarket listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
+    )
+
+    try:
+        connector = BackmarketConnector()
+        listings = await connector.search_items(_compose_search_term(snapshot), limit=limit)
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
+
+        if processed:
+            logger.info(
+                f"Ingested {processed} BackMarket listings for product {snapshot.product_id}"
+            )
+            return {"status": "success", "count": processed}
+
+        logger.warning(
+            f"No BackMarket listings matched filters for product {snapshot.product_id}"
+        )
+        return {"status": "no_data", "count": 0}
+
+    except Exception as exc:
+        logger.error(
+            f"Error in BackMarket listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
+
+
+async def ingest_rakuten_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+    """Ingest active listings from Rakuten for a specific product."""
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+
+    logger.info(
+        f"Starting Rakuten listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
+    )
+
+    try:
+        connector = RakutenConnector()
+        listings = await connector.search_items(_compose_search_term(snapshot), limit=limit)
+        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
+        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
+
+        if processed:
+            logger.info(
+                f"Ingested {processed} Rakuten listings for product {snapshot.product_id}"
+            )
+            return {"status": "success", "count": processed}
+
+        logger.warning(
+            f"No Rakuten listings matched filters for product {snapshot.product_id}"
+        )
+        return {"status": "no_data", "count": 0}
+
+    except Exception as exc:
+        logger.error(
+            f"Error in Rakuten listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
+
+
 
 def calculate_daily_metrics(product_id: str) -> Dict[str, Any]:
     """Calculate daily metrics for a product"""
@@ -561,6 +703,10 @@ async def run_full_ingestion(
             "leboncoin_listings": 50,
             "leboncoin_sold": 50,
             "vinted_listings": 50,
+            "fnac_listings": 50,
+            "cdiscount_listings": 50,
+            "backmarket_listings": 50,
+            "rakuten_listings": 50,
         }
 
     candidate_sources = sources or snapshot.providers or SUPPORTED_PROVIDERS
@@ -593,6 +739,26 @@ async def run_full_ingestion(
     if "vinted" in candidate_sources:
         results["vinted_listings"] = await ingest_vinted_listings(
             snapshot.product_id, limits.get("vinted_listings", 50)
+        )
+
+    if "fnac" in candidate_sources:
+        results["fnac_listings"] = await ingest_fnac_listings(
+            snapshot.product_id, limits.get("fnac_listings", 50)
+        )
+
+    if "cdiscount" in candidate_sources:
+        results["cdiscount_listings"] = await ingest_cdiscount_listings(
+            snapshot.product_id, limits.get("cdiscount_listings", 50)
+        )
+
+    if "backmarket" in candidate_sources:
+        results["backmarket_listings"] = await ingest_backmarket_listings(
+            snapshot.product_id, limits.get("backmarket_listings", 50)
+        )
+
+    if "rakuten" in candidate_sources:
+        results["rakuten_listings"] = await ingest_rakuten_listings(
+            snapshot.product_id, limits.get("rakuten_listings", 50)
         )
 
     try:

@@ -49,6 +49,7 @@ class ListingObservation(Base):
     source = Column(Text)
     listing_id = Column(Text)
     title = Column(Text)
+    description = Column(Text)  # Product description
     price = Column(Numeric)
     currency = Column(Text)
     condition = Column(Text)
@@ -125,9 +126,10 @@ ProductTemplate.pmn = relationship("MarketPriceNormal", back_populates="product"
 
 # Standardized Listing model for all connectors
 class Listing(BaseModel):
-    source: Literal["ebay", "leboncoin", "vinted"]
+    source: Literal["ebay", "leboncoin", "vinted", "fnac", "cdiscount", "backmarket", "rakuten"]
     listing_id: str
     title: str
+    description: str | None = None  # Product description
     price: float | None
     currency: str
     condition_raw: str | None

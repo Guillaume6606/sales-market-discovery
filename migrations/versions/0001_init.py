@@ -25,6 +25,7 @@ def upgrade():
         sa.Column("source", sa.Text),
         sa.Column("listing_id", sa.Text),
         sa.Column("title", sa.Text),
+        sa.Column("description", sa.Text),
         sa.Column("price", sa.Numeric),
         sa.Column("currency", sa.Text),
         sa.Column("condition", sa.Text),

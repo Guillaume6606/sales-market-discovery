@@ -612,3 +612,4 @@ def compute_all_product_metrics(
         if should_close and db:
             db.close()
 
+

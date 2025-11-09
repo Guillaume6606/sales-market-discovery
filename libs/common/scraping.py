@@ -213,50 +213,13 @@ class ScrapingSession:
         if self.config.use_playwright:
             await self._playwright_instance.stop()
 
-    def _get_random_user_agent(self) -> str:
-        """Get random user agent"""
-        if random.random() < 0.3:  # 30% chance to use fake_useragent
-            try:
-                return self.ua_generator.random
-            except:
-                pass
-        return random.choice(self.config.user_agents)
-
-    def _get_random_referer(self) -> str:
-        """Get random referer"""
-        return random.choice(self.config.referers)
-
     async def _apply_random_delay(self):
         """Apply random delay between requests"""
         delay = random.uniform(self.config.min_delay, self.config.max_delay)
         await asyncio.sleep(delay)
 
-    def _get_random_headers(self) -> Dict[str, str]:
-        """Generate random headers for request"""
-        headers = {
-            'User-Agent': self._get_random_user_agent(),
-            'Referer': self._get_random_referer(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        }
-
-        # Add some randomness to headers
-        if random.random() < 0.5:
-            headers['Cache-Control'] = 'max-age=0'
-
-        if random.random() < 0.3:
-            headers['Sec-Fetch-Dest'] = 'document'
-            headers['Sec-Fetch-Mode'] = 'navigate'
-            headers['Sec-Fetch-Site'] = 'none'
-
-        return headers
-
     async def get_with_retry(self, url: str, **kwargs) -> httpx.Response:
-        """Make HTTP request with retry logic"""
+        """Make HTTP request with retry logic (simple fallback for Playwright failures)"""
         last_exception = None
 
         for attempt in range(self.config.max_retries):
@@ -266,12 +229,10 @@ class ScrapingSession:
                     delay = min(2 ** attempt, 10)  # Exponential backoff
                     await asyncio.sleep(delay)
 
-                # Update headers
-                self.session.headers.update(self._get_random_headers())
-
                 # Apply delay between requests
                 await self._apply_random_delay()
 
+                # Use cloudscraper which handles headers automatically
                 response = self.session.get(url, timeout=self.config.timeout, **kwargs)
 
                 # Check for bot detection
@@ -319,8 +280,14 @@ class ScrapingSession:
 
         return False
 
-    async def get_html_with_playwright(self, url: str) -> str:
-        """Get HTML content using Playwright (handles JS + common consent banners)."""
+    async def get_html_with_playwright(self, url: str, wait_until: str = "networkidle", timeout: int = 60000) -> str:
+        """Get HTML content using Playwright (handles JS + common consent banners).
+        
+        Args:
+            url: URL to fetch
+            wait_until: When to consider navigation successful ('load', 'domcontentloaded', 'networkidle')
+            timeout: Maximum time to wait in milliseconds
+        """
         if not self._playwright_context:
             raise Exception("Playwright not available - falling back to HTTP request")
 
@@ -456,8 +423,9 @@ class ScrapingSession:
             # Add random delay before navigation
             await asyncio.sleep(random.uniform(0.5, 1.5))
 
-            # Navigate
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Navigate and wait for network to be idle (complete loading including AJAX)
+            # Increased timeout to 60s for heavy sites with anti-bot protection
+            response = await page.goto(url, wait_until=wait_until, timeout=timeout)
             if response and response.status in (403, 429):
                 raise Exception(f"Bot detection detected: {response.status}")
 
@@ -491,14 +459,38 @@ class ScrapingSession:
     async def get_html_with_fallback(self, url: str) -> str:
         """Get HTML content with fallback from Playwright to HTTP"""
         try:
-            # Try Playwright first
             return await self.get_html_with_playwright(url)
         except Exception as e:
             logger.warning(f"Playwright failed: {e}, falling back to HTTP request")
-            # Fallback to HTTP request
             response = await self.get_with_retry(url)
             response.raise_for_status()
-            return response.text
+            # Requests/cloudscraper should auto-decompress, but we'll handle it explicitly if needed
+            try:
+                # First check if the response is compressed
+                content_encoding = response.headers.get('Content-Encoding', '').lower()
+                
+                if 'gzip' in content_encoding or 'br' in content_encoding:
+                    # Response claims to be compressed but might not have been decompressed
+                    # Force decompression using gzip module
+                    import gzip
+                    try:
+                        decompressed = gzip.decompress(response.content)
+                        encoding = response.encoding or 'utf-8'
+                        html = decompressed.decode(encoding, errors='replace')
+                        logger.debug(f"Manually decompressed gzip response with encoding: {encoding}")
+                        return html
+                    except Exception as gzip_error:
+                        logger.debug(f"Gzip decompression failed: {gzip_error}, trying direct decode")
+                
+                # Try regular text access (requests should have auto-decompressed)
+                html = response.text
+                logger.debug(f"Got HTML via response.text, length: {len(html)}")
+                return html
+                
+            except Exception as decode_error:
+                logger.error(f"All decoding attempts failed: {decode_error}")
+                # Last resort - return raw response.text
+                return response.text
 
 class ScrapingUtils:
     """Utility functions for scraping operations"""
