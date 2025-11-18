@@ -17,7 +17,11 @@ from ingestion.computation import (
     compute_pmn_for_product,
     compute_liquidity_score,
     compute_all_product_metrics,
+    compute_opportunity_score,
 )
+from libs.common.models import ProductTemplate, ListingObservation, MarketPriceNormal, ProductDailyMetrics
+from libs.ai.gemini import analyze_listing
+from libs.notifications.telegram import send_alert
 
 async def ping(ctx):
     logger.info("Worker alive.")
@@ -261,6 +265,205 @@ async def trigger_batch_computation(ctx, product_ids: List[str] | None = None):
         return {"status": "error", "error": str(exc)}
 
 
+async def perform_llm_analysis(ctx, obs_id: int):
+    """
+    Perform LLM analysis on a listing and send Telegram alert if verified.
+    
+    Workflow:
+    1. Load listing and product data
+    2. Download image if available
+    3. Call Gemini LLM for analysis
+    4. Update listing with LLM results
+    5. Send Telegram alert if verified
+    
+    Args:
+        ctx: ARQ context
+        obs_id: Observation ID of the listing
+        
+    Returns:
+        Dict with analysis results
+    """
+    logger.info(f"Starting LLM analysis for listing {obs_id}")
+    
+    try:
+        with SessionLocal() as db:
+            # Load listing with product
+            listing = (
+                db.query(ListingObservation)
+                .join(ProductTemplate)
+                .filter(ListingObservation.obs_id == obs_id)
+                .first()
+            )
+            
+            if not listing:
+                logger.error(f"Listing {obs_id} not found")
+                return {"status": "error", "error": "listing_not_found"}
+            
+            product = listing.product
+            
+            # Check if LLM verification is enabled for this product
+            if not product.llm_verification_enabled:
+                logger.info(f"LLM verification disabled for product {product.product_id}")
+                return {"status": "skipped", "reason": "llm_disabled"}
+            
+            # Get PMN data for margin calculation
+            pmn_data = db.query(MarketPriceNormal).filter(
+                MarketPriceNormal.product_id == product.product_id
+            ).first()
+            
+            if not pmn_data or not pmn_data.pmn:
+                logger.warning(f"No PMN data for product {product.product_id}")
+                return {"status": "error", "error": "no_pmn_data"}
+            
+            # Calculate opportunity score first
+            product_metrics = db.query(ProductDailyMetrics).filter(
+                ProductDailyMetrics.product_id == product.product_id
+            ).order_by(ProductDailyMetrics.date.desc()).first()
+            
+            opportunity = compute_opportunity_score(
+                listing,
+                product_metrics,
+                pmn_data,
+                product
+            )
+            
+            # Only proceed with LLM if opportunity score is above threshold
+            opportunity_score = opportunity.get("opportunity_score", 0)
+            if opportunity_score < 40:  # Threshold for LLM analysis
+                logger.info(f"Listing {obs_id} opportunity score {opportunity_score} below threshold")
+                return {"status": "skipped", "reason": "low_opportunity_score", "score": opportunity_score}
+            
+            # Perform LLM analysis
+            analysis_result = analyze_listing(
+                image_url=listing.url,  # Use listing URL as image source (may need adjustment)
+                title=listing.title or "",
+                price=float(listing.price) if listing.price else 0.0,
+                description=None,  # Description not stored in ListingObservation
+                target_description=product.target_description or "",
+                negative_keywords=product.negative_keywords
+            )
+            
+            # Update listing with LLM results
+            listing.llm_score = analysis_result.get("score")
+            listing.llm_reasoning = analysis_result.get("reasoning")
+            listing.llm_verified = analysis_result.get("verified", False)
+            
+            db.commit()
+            
+            # Send Telegram alert if verified
+            if analysis_result.get("verified", False):
+                listing_dict = {
+                    "obs_id": listing.obs_id,
+                    "title": listing.title,
+                    "price": float(listing.price) if listing.price else 0.0,
+                    "source": listing.source,
+                    "condition": listing.condition,
+                    "url": listing.url
+                }
+                
+                product_dict = {
+                    "name": product.name,
+                    "target_description": product.target_description
+                }
+                
+                telegram_sent = send_alert(listing_dict, product_dict, analysis_result)
+                
+                logger.info(
+                    f"LLM analysis completed for listing {obs_id}: "
+                    f"score={analysis_result.get('score')}, verified={analysis_result.get('verified')}, "
+                    f"telegram_sent={telegram_sent}"
+                )
+                
+                return {
+                    "status": "success",
+                    "obs_id": obs_id,
+                    "score": analysis_result.get("score"),
+                    "verified": analysis_result.get("verified"),
+                    "telegram_sent": telegram_sent
+                }
+            else:
+                logger.info(f"Listing {obs_id} not verified by LLM (score: {analysis_result.get('score')})")
+                return {
+                    "status": "success",
+                    "obs_id": obs_id,
+                    "score": analysis_result.get("score"),
+                    "verified": False
+                }
+                
+    except Exception as exc:
+        logger.error(f"Error in LLM analysis for listing {obs_id}: {exc}", exc_info=True)
+        return {"status": "error", "error": str(exc)}
+
+
+async def process_listing_for_llm(ctx, product_id: str, obs_id: int):
+    """
+    Process a listing through the full pipeline:
+    1. Compute metrics and opportunity score
+    2. If score > threshold AND LLM enabled: enqueue LLM analysis
+    
+    This is called after a listing is ingested and metrics are computed.
+    """
+    logger.info(f"Processing listing {obs_id} for product {product_id} through LLM pipeline")
+    
+    try:
+        with SessionLocal() as db:
+            product = db.query(ProductTemplate).filter(
+                ProductTemplate.product_id == product_id
+            ).first()
+            
+            if not product or not product.llm_verification_enabled:
+                return {"status": "skipped", "reason": "llm_disabled"}
+            
+            listing = db.query(ListingObservation).filter(
+                ListingObservation.obs_id == obs_id
+            ).first()
+            
+            if not listing:
+                return {"status": "error", "error": "listing_not_found"}
+            
+            # Get PMN and metrics
+            pmn_data = db.query(MarketPriceNormal).filter(
+                MarketPriceNormal.product_id == product_id
+            ).first()
+            
+            product_metrics = db.query(ProductDailyMetrics).filter(
+                ProductDailyMetrics.product_id == product_id
+            ).order_by(ProductDailyMetrics.date.desc()).first()
+            
+            # Compute opportunity score
+            opportunity = compute_opportunity_score(
+                listing,
+                product_metrics,
+                pmn_data,
+                product
+            )
+            
+            opportunity_score = opportunity.get("opportunity_score", 0)
+            
+            # If score is high enough, enqueue LLM analysis
+            if opportunity_score >= 40:  # Threshold
+                # Call LLM analysis directly (it's async and we're in async context)
+                # For better job tracking, this could be enqueued as a separate job
+                llm_result = await perform_llm_analysis(ctx, obs_id)
+                logger.info(f"LLM analysis result for listing {obs_id}: {llm_result.get('status')}")
+                return {
+                    "status": "processed",
+                    "obs_id": obs_id,
+                    "opportunity_score": opportunity_score,
+                    "llm_result": llm_result
+                }
+            else:
+                return {
+                    "status": "skipped",
+                    "reason": "low_opportunity_score",
+                    "opportunity_score": opportunity_score
+                }
+                
+    except Exception as exc:
+        logger.error(f"Error processing listing {obs_id} for LLM: {exc}", exc_info=True)
+        return {"status": "error", "error": str(exc)}
+
+
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     functions = [
@@ -278,6 +481,9 @@ class WorkerSettings:
         scheduled_computation,
         trigger_product_computation,
         trigger_batch_computation,
+        # LLM tasks
+        perform_llm_analysis,
+        process_listing_for_llm,
     ]
     cron_jobs = [
         cron(ping, minute=0),  # Run ping every hour

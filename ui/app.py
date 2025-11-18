@@ -378,6 +378,16 @@ if tab == "Discovery":
                 if product.get("category"):
                     st.caption(f"📁 {product['category']}")
                 
+                # Show target description if available
+                if product.get("target_description"):
+                    st.info(f"🎯 **Target:** {product['target_description']}")
+                
+                # Show LLM verification status
+                if product.get("llm_verification_enabled"):
+                    st.success("🤖 LLM Verification: Enabled")
+                else:
+                    st.caption("🤖 LLM Verification: Disabled")
+                
                 st.divider()
                 
                 # Market Summary
@@ -458,7 +468,18 @@ if tab == "Discovery":
                 if live_listings:
                     live_df = pd.DataFrame(live_listings[:5])
                     live_df["price_display"] = live_df["price"].apply(lambda x: f"€{x:.2f}" if x else "N/A")
-                    st.dataframe(live_df[["price_display", "condition", "location", "source"]], hide_index=True, use_container_width=True)
+                    
+                    # Add LLM badge if available
+                    if "llm_verified" in live_df.columns:
+                        live_df["llm_badge"] = live_df.apply(
+                            lambda row: "🤖✅" if row.get("llm_verified") else ("🤖" if row.get("llm_score") else ""),
+                            axis=1
+                        )
+                        display_cols = ["llm_badge", "price_display", "condition", "location", "source"]
+                    else:
+                        display_cols = ["price_display", "condition", "location", "source"]
+                    
+                    st.dataframe(live_df[display_cols], hide_index=True, use_container_width=True)
                 else:
                     st.info("No active listings found")
 
@@ -791,6 +812,40 @@ elif tab == "Product Setup":
             )
             pf_active = st.checkbox("Active", value=default_active, key="pf_active")
             
+            st.divider()
+            st.subheader("LLM & Filtering Settings")
+            
+            pf_negative_keywords = st.text_input(
+                "Negative Keywords (comma-separated)",
+                value=selected_product.get('negative_keywords', '') if selected_product else "",
+                key="pf_negative_keywords",
+                help="Listings containing these keywords will be rejected. Example: 'broken, damaged, repair'"
+            )
+            
+            pf_target_description = st.text_area(
+                "Target Description",
+                value=selected_product.get('target_description', '') if selected_product else "",
+                key="pf_target_description",
+                help="Describe what you are looking for. This will be used by LLM to verify listings."
+            )
+            
+            pf_min_target_margin = st.number_input(
+                "Min Target Margin (%)",
+                value=float(selected_product.get('min_target_margin', 0)) if selected_product and selected_product.get('min_target_margin') else 0.0,
+                min_value=0.0,
+                max_value=100.0,
+                step=1.0,
+                key="pf_min_target_margin",
+                help="Minimum margin percentage required for this product"
+            )
+            
+            pf_llm_enabled = st.checkbox(
+                "Enable LLM Verification",
+                value=selected_product.get('llm_verification_enabled', False) if selected_product else False,
+                key="pf_llm_enabled",
+                help="Enable AI-powered listing verification using Google Gemini"
+            )
+            
             # Submit button
             button_label = "💾 Update Product" if selected_product else "➕ Create Product"
             if st.form_submit_button(button_label, type="primary"):
@@ -816,6 +871,10 @@ elif tab == "Product Setup":
                                 "price_max": float(pf_price_max) if pf_price_max else None,
                                 "providers": pf_providers,
                                 "is_active": pf_active,
+                                "negative_keywords": pf_negative_keywords.strip() if pf_negative_keywords.strip() else None,
+                                "target_description": pf_target_description.strip() if pf_target_description.strip() else None,
+                                "min_target_margin": float(pf_min_target_margin) if pf_min_target_margin > 0 else None,
+                                "llm_verification_enabled": pf_llm_enabled,
                             }
                             
                             # Create or Update

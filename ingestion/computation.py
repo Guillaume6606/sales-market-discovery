@@ -382,10 +382,44 @@ def estimate_margin(
 # OPPORTUNITY SCORING - Composite Listing Attractiveness
 # ============================================================================
 
+def filter_by_negative_keywords(
+    listing: ListingObservation,
+    negative_keywords: str | None
+) -> bool:
+    """
+    Check if listing contains any negative keywords.
+    
+    Args:
+        listing: ListingObservation to check
+        negative_keywords: Comma-separated string of negative keywords
+        
+    Returns:
+        True if listing should be kept (no negative keywords found), False otherwise
+    """
+    if not negative_keywords:
+        return True
+    
+    keywords_list = [k.strip().lower() for k in negative_keywords.split(",") if k.strip()]
+    if not keywords_list:
+        return True
+    
+    # Check title and condition
+    title_lower = (listing.title or "").lower()
+    condition_lower = (listing.condition or "").lower()
+    
+    for keyword in keywords_list:
+        if keyword in title_lower or keyword in condition_lower:
+            logger.debug(f"Listing {listing.obs_id} rejected: contains negative keyword '{keyword}'")
+            return False
+    
+    return True
+
+
 def compute_opportunity_score(
     listing: ListingObservation,
     product_metrics: ProductDailyMetrics | None,
-    pmn_data: MarketPriceNormal | None
+    pmn_data: MarketPriceNormal | None,
+    product_template: ProductTemplate | None = None
 ) -> Dict[str, Any]:
     """
     Calculate composite opportunity score (0-100) for a listing.
@@ -399,6 +433,7 @@ def compute_opportunity_score(
         listing: ListingObservation record
         product_metrics: Optional ProductDailyMetrics record
         pmn_data: Optional MarketPriceNormal record
+        product_template: Optional ProductTemplate record (for custom margin threshold)
         
     Returns:
         Dict with opportunity score and detailed breakdown
@@ -413,6 +448,15 @@ def compute_opportunity_score(
     listing_price = float(listing.price)
     pmn = float(pmn_data.pmn)
     
+    # Check negative keywords filter
+    if product_template and product_template.negative_keywords:
+        if not filter_by_negative_keywords(listing, product_template.negative_keywords):
+            return {
+                "opportunity_score": 0.0,
+                "recommendation": "rejected",
+                "reason": "Contains negative keywords"
+            }
+    
     # 1. MARGIN SCORE (40 points max)
     # Calculate net margin percentage
     margin_data = estimate_margin(
@@ -423,6 +467,17 @@ def compute_opportunity_score(
     )
     
     net_margin_pct = margin_data.get("net_margin_pct", 0)
+    
+    # Check against custom min_target_margin if set
+    if product_template and product_template.min_target_margin is not None:
+        min_margin = float(product_template.min_target_margin)
+        if net_margin_pct < min_margin:
+            return {
+                "opportunity_score": 0.0,
+                "recommendation": "below_threshold",
+                "reason": f"Margin {net_margin_pct:.2f}% below required {min_margin:.2f}%",
+                "margin_analysis": margin_data
+            }
     
     # Score: 30% margin = 40 points, scaled linearly
     if net_margin_pct >= 30:
