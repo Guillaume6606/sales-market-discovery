@@ -8,20 +8,40 @@ depends_on = None
 
 def upgrade():
     op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+    
+    # Create category table first (referenced by product_template)
     op.create_table(
-        "product_ref",
-        sa.Column("product_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("canonical_title", sa.Text),
-        sa.Column("brand", sa.Text),
-        sa.Column("gtin", sa.Text),
-        sa.Column("category", sa.Text),
+        "category",
+        sa.Column("category_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column("name", sa.Text, unique=True, nullable=False),
+        sa.Column("description", sa.Text),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now()),
+        sa.Column("updated_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+    )
+    
+    op.create_table(
+        "product_template",
+        sa.Column("product_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column("name", sa.Text, nullable=False),
+        sa.Column("description", sa.Text),
+        sa.Column("search_query", sa.Text, nullable=False),
+        sa.Column("category_id", sa.UUID, sa.ForeignKey("category.category_id"), nullable=False),
+        sa.Column("brand", sa.Text),
+        sa.Column("price_min", sa.Numeric),
+        sa.Column("price_max", sa.Numeric),
+        sa.Column("providers", sa.ARRAY(sa.Text), server_default=sa.text("'{}'")),
+        sa.Column("words_to_avoid", sa.ARRAY(sa.Text), server_default=sa.text("'{}'")),
+        sa.Column("enable_llm_validation", sa.Boolean, server_default=sa.text("false")),
+        sa.Column("is_active", sa.Boolean, server_default=sa.text("true")),
+        sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now()),
+        sa.Column("updated_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+        sa.Column("last_ingested_at", sa.TIMESTAMP(timezone=True)),
     )
 
     op.create_table(
         "listing_observation",
         sa.Column("obs_id", sa.BigInteger, primary_key=True, autoincrement=True),
-        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_ref.product_id")),
+        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_template.product_id")),
         sa.Column("source", sa.Text),
         sa.Column("listing_id", sa.Text),
         sa.Column("title", sa.Text),
@@ -33,11 +53,16 @@ def upgrade():
         sa.Column("shipping_cost", sa.Numeric),
         sa.Column("location", sa.Text),
         sa.Column("observed_at", sa.TIMESTAMP(timezone=True)),
+        sa.Column("url", sa.Text),
+        sa.Column("llm_validated", sa.Boolean, server_default=sa.text("false")),
+        sa.Column("llm_validation_result", sa.JSON),
+        sa.Column("llm_validated_at", sa.TIMESTAMP(timezone=True)),
+        sa.Column("screenshot_path", sa.Text),
     )
 
     op.create_table(
         "product_daily_metrics",
-        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_ref.product_id"), primary_key=True),
+        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_template.product_id"), primary_key=True),
         sa.Column("date", sa.Date, primary_key=True),
         sa.Column("sold_count_7d", sa.Integer),
         sa.Column("sold_count_30d", sa.Integer),
@@ -51,7 +76,7 @@ def upgrade():
 
     op.create_table(
         "market_price_normal",
-        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_ref.product_id"), primary_key=True),
+        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_template.product_id"), primary_key=True),
         sa.Column("last_computed_at", sa.TIMESTAMP(timezone=True)),
         sa.Column("pmn", sa.Numeric),
         sa.Column("pmn_low", sa.Numeric),
@@ -75,17 +100,28 @@ def upgrade():
         "alert_event",
         sa.Column("alert_id", sa.BigInteger, primary_key=True, autoincrement=True),
         sa.Column("rule_id", sa.UUID, sa.ForeignKey("alert_rule.rule_id")),
-        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_ref.product_id")),
+        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_template.product_id")),
         sa.Column("obs_id", sa.BigInteger, sa.ForeignKey("listing_observation.obs_id")),
         sa.Column("sent_at", sa.TIMESTAMP(timezone=True)),
         sa.Column("delivery", sa.JSON),
         sa.Column("suppressed", sa.Boolean, server_default=sa.text("false")),
     )
+    
+    op.create_table(
+        "listing_screenshot",
+        sa.Column("screenshot_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column("obs_id", sa.BigInteger, sa.ForeignKey("listing_observation.obs_id"), nullable=False),
+        sa.Column("file_path", sa.Text, nullable=False),
+        sa.Column("file_size", sa.Integer),
+        sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now()),
+    )
 
 def downgrade():
+    op.drop_table("listing_screenshot")
     op.drop_table("alert_event")
     op.drop_table("alert_rule")
     op.drop_table("market_price_normal")
     op.drop_table("product_daily_metrics")
     op.drop_table("listing_observation")
-    op.drop_table("product_ref")
+    op.drop_table("product_template")
+    op.drop_table("category")

@@ -23,6 +23,10 @@ from ingestion.connectors.leboncoin_api import (
 from ingestion.constants import SUPPORTED_PROVIDERS
 from ingestion.connectors.vinted import fetch_vinted_listings
 from ingestion.pricing import pmn_from_prices
+from ingestion.filtering import filter_listings_multi_stage
+from libs.common.llm_service import assess_listing_relevance
+from libs.common.screenshot_service import capture_listing_screenshot
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -37,6 +41,8 @@ class ProductTemplateSnapshot:
     price_min: float | None
     price_max: float | None
     providers: List[str]
+    words_to_avoid: List[str]
+    enable_llm_validation: bool
     is_active: bool
 
 
@@ -51,6 +57,7 @@ def _decimal_to_float(value: Decimal | float | None) -> float | None:
 def _snapshot_product(product: ProductTemplate) -> ProductTemplateSnapshot:
     category_name = product.category.name if product.category else None
     providers = product.providers or []
+    words_to_avoid = product.words_to_avoid or []
     return ProductTemplateSnapshot(
         product_id=str(product.product_id),
         name=product.name,
@@ -62,6 +69,8 @@ def _snapshot_product(product: ProductTemplate) -> ProductTemplateSnapshot:
         price_min=_decimal_to_float(product.price_min),
         price_max=_decimal_to_float(product.price_max),
         providers=list(providers),
+        words_to_avoid=list(words_to_avoid),
+        enable_llm_validation=product.enable_llm_validation,
         is_active=product.is_active,
     )
 
@@ -140,35 +149,32 @@ def _matches_brand(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
     return False
 
 
-def _filter_listings(snapshot: ProductTemplateSnapshot, listings: Iterable[Listing]) -> List[Listing]:
+def _filter_listings(snapshot: ProductTemplateSnapshot, listings: Iterable[Listing], product_template: ProductTemplate | None = None) -> tuple[List[Listing], dict, dict]:
     """
-    Filter listings based on product template criteria.
-    Logs filtering stats for debugging.
+    Filter listings using multi-stage filtering pipeline.
+    
+    This function now delegates to the new filtering module which includes:
+    - Price filtering
+    - Brand filtering
+    - Words-to-avoid filtering
+    - LLM validation (if enabled)
+    
+    Returns:
+        Tuple of (filtered_listings, llm_results, screenshot_paths)
     """
-    filtered: List[Listing] = []
-    rejected_price = 0
-    rejected_brand = 0
+    listings_list = list(listings)
+    if not listings_list:
+        return [], {}, {}
     
-    for listing in listings:
-        if not _matches_price(snapshot, listing):
-            rejected_price += 1
-            continue
-        if not _matches_brand(snapshot, listing):
-            rejected_brand += 1
-            logger.debug(
-                f"Listing '{listing.title[:50]}...' rejected: brand '{snapshot.brand}' "
-                f"not found in title or brand field"
-            )
-            continue
-        filtered.append(listing)
+    # Use multi-stage filtering
+    filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+        snapshot,
+        listings_list,
+        product_template=product_template,
+        enable_llm=True,  # Enable LLM if product template has it enabled
+    )
     
-    if rejected_price > 0 or rejected_brand > 0:
-        logger.info(
-            f"Filtered {len(listings)} listings: {len(filtered)} kept, "
-            f"{rejected_price} rejected (price), {rejected_brand} rejected (brand)"
-        )
-    
-    return filtered
+    return filtered, llm_results, screenshot_paths
 
 
 def _dedupe_listings(listings: Iterable[Listing]) -> List[Listing]:
@@ -189,6 +195,8 @@ def _upsert_listing(
     listing: Listing,
     *,
     force_is_sold: bool | None = None,
+    llm_validation_result: dict | None = None,
+    screenshot_path: str | None = None,
 ) -> None:
     listing_source = listing.source
     existing = (
@@ -220,6 +228,14 @@ def _upsert_listing(
         existing.location = listing.location
         existing.observed_at = observed_at
         existing.url = listing.url
+        
+        # Update LLM validation fields if provided
+        if llm_validation_result is not None:
+            existing.llm_validated = True
+            existing.llm_validation_result = llm_validation_result
+            existing.llm_validated_at = datetime.now(timezone.utc)
+        if screenshot_path:
+            existing.screenshot_path = screenshot_path
     else:
         observation = ListingObservation(
             product_id=product.product_id,
@@ -235,6 +251,10 @@ def _upsert_listing(
             location=listing.location,
             observed_at=observed_at,
             url=listing.url,
+            llm_validated=llm_validation_result is not None,
+            llm_validation_result=llm_validation_result,
+            llm_validated_at=datetime.now(timezone.utc) if llm_validation_result else None,
+            screenshot_path=screenshot_path,
         )
         db.add(observation)
 
@@ -244,7 +264,19 @@ def _persist_listings(
     listings: List[Listing],
     *,
     force_is_sold: bool | None = None,
+    llm_validation_results: dict[str, dict] | None = None,
+    screenshot_paths: dict[str, str] | None = None,
 ) -> int:
+    """
+    Persist listings with optional LLM validation results and screenshot paths.
+    
+    Args:
+        product_id: Product template ID
+        listings: List of listings to persist
+        force_is_sold: Force sold status
+        llm_validation_results: Dict mapping listing_id -> validation result
+        screenshot_paths: Dict mapping listing_id -> screenshot path
+    """
     if not listings:
         return 0
 
@@ -261,7 +293,23 @@ def _persist_listings(
 
         for listing in listings:
             try:
-                _upsert_listing(db, product, listing, force_is_sold=force_is_sold)
+                llm_result = None
+                screenshot_path = None
+                
+                if llm_validation_results and listing.listing_id in llm_validation_results:
+                    llm_result = llm_validation_results[listing.listing_id]
+                
+                if screenshot_paths and listing.listing_id in screenshot_paths:
+                    screenshot_path = screenshot_paths[listing.listing_id]
+                
+                _upsert_listing(
+                    db,
+                    product,
+                    listing,
+                    force_is_sold=force_is_sold,
+                    llm_validation_result=llm_result,
+                    screenshot_path=screenshot_path,
+                )
                 processed_count += 1
             except Exception as exc:
                 logger.error(
@@ -297,8 +345,27 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> Dict[str, Any]:
             logger.info(f"No eBay sold items found for product {snapshot.product_id}")
             return {"status": "success", "count": 0, "message": "No items found"}
 
-        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
-        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=True)
+        # Load full product template for LLM validation
+        with SessionLocal() as db:
+            product_template = db.query(ProductTemplate).filter(
+                ProductTemplate.product_id == snapshot.product_id
+            ).first()
+        
+        deduped = _dedupe_listings(listings)
+        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+            snapshot,
+            deduped,
+            product_template=product_template,
+            enable_llm=True,
+        )
+        
+        processed = _persist_listings(
+            snapshot.product_id,
+            filtered,
+            force_is_sold=True,
+            llm_validation_results=llm_results if llm_results else None,
+            screenshot_paths=screenshot_paths if screenshot_paths else None,
+        )
 
         if processed:
             logger.info(f"Ingested {processed} eBay sold listings for product {snapshot.product_id}")
@@ -334,8 +401,27 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> Dict[str, An
             logger.info(f"No eBay listings found for product {snapshot.product_id}")
             return {"status": "success", "count": 0, "message": "No items found"}
 
-        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
-        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
+        # Load full product template for LLM validation
+        with SessionLocal() as db:
+            product_template = db.query(ProductTemplate).filter(
+                ProductTemplate.product_id == snapshot.product_id
+            ).first()
+        
+        deduped = _dedupe_listings(listings)
+        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+            snapshot,
+            deduped,
+            product_template=product_template,
+            enable_llm=True,
+        )
+        
+        processed = _persist_listings(
+            snapshot.product_id,
+            filtered,
+            force_is_sold=False,
+            llm_validation_results=llm_results if llm_results else None,
+            screenshot_paths=screenshot_paths if screenshot_paths else None,
+        )
 
         if processed:
             logger.info(
@@ -361,8 +447,27 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> Dict[st
 
     try:
         listings = await fetch_leboncoin_api_listings(_compose_search_term(snapshot), limit)
-        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
-        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
+        # Load full product template for LLM validation
+        with SessionLocal() as db:
+            product_template = db.query(ProductTemplate).filter(
+                ProductTemplate.product_id == snapshot.product_id
+            ).first()
+        
+        deduped = _dedupe_listings(listings)
+        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+            snapshot,
+            deduped,
+            product_template=product_template,
+            enable_llm=True,
+        )
+        
+        processed = _persist_listings(
+            snapshot.product_id,
+            filtered,
+            force_is_sold=False,
+            llm_validation_results=llm_results if llm_results else None,
+            screenshot_paths=screenshot_paths if screenshot_paths else None,
+        )
 
         if processed:
             logger.info(
@@ -392,8 +497,27 @@ async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> Dict[str, A
 
     try:
         listings = await fetch_leboncoin_api_sold(_compose_search_term(snapshot), limit)
-        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
-        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=True)
+        # Load full product template for LLM validation
+        with SessionLocal() as db:
+            product_template = db.query(ProductTemplate).filter(
+                ProductTemplate.product_id == snapshot.product_id
+            ).first()
+        
+        deduped = _dedupe_listings(listings)
+        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+            snapshot,
+            deduped,
+            product_template=product_template,
+            enable_llm=True,
+        )
+        
+        processed = _persist_listings(
+            snapshot.product_id,
+            filtered,
+            force_is_sold=True,
+            llm_validation_results=llm_results if llm_results else None,
+            screenshot_paths=screenshot_paths if screenshot_paths else None,
+        )
 
         if processed:
             logger.info(
@@ -423,8 +547,27 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> Dict[str, 
 
     try:
         listings = await fetch_vinted_listings(_compose_search_term(snapshot), limit)
-        filtered = _filter_listings(snapshot, _dedupe_listings(listings))
-        processed = _persist_listings(snapshot.product_id, filtered, force_is_sold=False)
+        # Load full product template for LLM validation
+        with SessionLocal() as db:
+            product_template = db.query(ProductTemplate).filter(
+                ProductTemplate.product_id == snapshot.product_id
+            ).first()
+        
+        deduped = _dedupe_listings(listings)
+        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+            snapshot,
+            deduped,
+            product_template=product_template,
+            enable_llm=True,
+        )
+        
+        processed = _persist_listings(
+            snapshot.product_id,
+            filtered,
+            force_is_sold=False,
+            llm_validation_results=llm_results if llm_results else None,
+            screenshot_paths=screenshot_paths if screenshot_paths else None,
+        )
 
         if processed:
             logger.info(
@@ -606,5 +749,54 @@ async def run_full_ingestion(
     logger.info(
         f"Full ingestion completed for product '{snapshot.name}' ({snapshot.product_id})"
     )
+    
+    # Trigger alerts for opportunities after ingestion
+    try:
+        from ingestion.alert_engine import trigger_alerts
+        from libs.common.models import MarketPriceNormal, ProductDailyMetrics
+        
+        with SessionLocal() as db:
+            # Get opportunities (listings below PMN)
+            pmn_data = db.query(MarketPriceNormal).filter(
+                MarketPriceNormal.product_id == snapshot.product_id
+            ).first()
+            
+            metrics = db.query(ProductDailyMetrics).filter(
+                ProductDailyMetrics.product_id == snapshot.product_id
+            ).order_by(ProductDailyMetrics.date.desc()).first()
+            
+            if pmn_data and pmn_data.pmn:
+                # Get active listings below PMN
+                opportunities_list = db.query(ListingObservation).filter(
+                    ListingObservation.product_id == snapshot.product_id,
+                    ListingObservation.is_sold == False,
+                    ListingObservation.price.isnot(None),
+                    ListingObservation.price < pmn_data.pmn,
+                ).all()
+                
+                if opportunities_list:
+                    product_template = db.query(ProductTemplate).filter(
+                        ProductTemplate.product_id == snapshot.product_id
+                    ).first()
+                    
+                    opportunities = [
+                        {
+                            "listing": listing,
+                            "product_template": product_template,
+                            "pmn_data": pmn_data,
+                            "metrics": metrics,
+                        }
+                        for listing in opportunities_list
+                    ]
+                    
+                    alert_events = trigger_alerts(opportunities, db)
+                    if alert_events:
+                        logger.info(f"Triggered {len(alert_events)} alerts for product {snapshot.product_id}")
+                        results["alerts_triggered"] = len(alert_events)
+    except Exception as exc:
+        logger.error(f"Error triggering alerts after ingestion: {exc}")
+        # Don't fail ingestion if alerts fail
+        results.setdefault("warnings", []).append(f"alert_trigger_failed: {exc}")
+    
     results["status"] = "success"
     return results

@@ -1,4 +1,5 @@
 from typing import Any, Dict, List
+from datetime import datetime, timezone
 from arq import cron
 from arq.connections import RedisSettings
 from libs.common.settings import settings
@@ -18,6 +19,10 @@ from ingestion.computation import (
     compute_liquidity_score,
     compute_all_product_metrics,
 )
+from ingestion.alert_engine import trigger_alerts
+from libs.common.llm_service import assess_listing_relevance
+from libs.common.screenshot_service import capture_listing_screenshot
+from libs.common.models import ListingObservation, ProductTemplate, MarketPriceNormal, ProductDailyMetrics
 
 async def ping(ctx):
     logger.info("Worker alive.")
@@ -261,6 +266,210 @@ async def trigger_batch_computation(ctx, product_ids: List[str] | None = None):
         return {"status": "error", "error": str(exc)}
 
 
+# ============================================================================
+# LLM VALIDATION & SCREENSHOT WORKER TASKS
+# ============================================================================
+
+async def validate_listing_with_llm(ctx, obs_id: int):
+    """
+    Validate a listing using LLM service.
+    
+    Args:
+        ctx: ARQ context
+        obs_id: Observation ID of the listing
+        
+    Returns:
+        Dict with validation result
+    """
+    logger.info(f"Triggering LLM validation for listing {obs_id}")
+    
+    try:
+        with SessionLocal() as db:
+            listing = db.query(ListingObservation).filter(
+                ListingObservation.obs_id == obs_id
+            ).first()
+            
+            if not listing:
+                return {"status": "error", "error": "Listing not found"}
+            
+            product_template = db.query(ProductTemplate).filter(
+                ProductTemplate.product_id == listing.product_id
+            ).first()
+            
+            if not product_template:
+                return {"status": "error", "error": "Product template not found"}
+            
+            if not product_template.enable_llm_validation:
+                return {"status": "skipped", "reason": "LLM validation not enabled for this product"}
+            
+            # Capture screenshot if URL available
+            screenshot_path = None
+            if listing.url:
+                try:
+                    screenshot_path = capture_listing_screenshot(
+                        listing.url, listing.listing_id, listing.source
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to capture screenshot: {e}")
+            
+            # Run LLM validation
+            words_to_avoid = product_template.words_to_avoid or []
+            from libs.common.models import Listing as ListingModel
+            listing_obj = ListingModel(
+                source=listing.source,
+                listing_id=listing.listing_id,
+                title=listing.title or "",
+                price=float(listing.price) if listing.price else None,
+                currency=listing.currency or "EUR",
+                condition_raw=listing.condition,
+                condition_norm=None,
+                location=listing.location,
+                seller_rating=float(listing.seller_rating) if listing.seller_rating else None,
+                shipping_cost=float(listing.shipping_cost) if listing.shipping_cost else None,
+                observed_at=listing.observed_at or datetime.now(timezone.utc),
+                is_sold=listing.is_sold or False,
+                url=listing.url,
+            )
+            
+            validation_result = assess_listing_relevance(
+                listing_obj, screenshot_path, product_template, words_to_avoid
+            )
+            
+            # Update listing with validation result
+            listing.llm_validated = True
+            listing.llm_validation_result = validation_result
+            listing.llm_validated_at = datetime.now(timezone.utc)
+            if screenshot_path:
+                listing.screenshot_path = screenshot_path
+            
+            db.commit()
+            
+            logger.info(f"LLM validation completed for listing {obs_id}: {validation_result.get('is_relevant')}")
+            return {
+                "status": "success",
+                "obs_id": obs_id,
+                "validation_result": validation_result,
+            }
+            
+    except Exception as exc:
+        logger.error(f"Error in LLM validation for listing {obs_id}: {exc}", exc_info=True)
+        return {"status": "error", "error": str(exc)}
+
+
+async def capture_listing_screenshot_task(ctx, obs_id: int):
+    """
+    Capture screenshot for a listing.
+    
+    Args:
+        ctx: ARQ context
+        obs_id: Observation ID of the listing
+        
+    Returns:
+        Dict with screenshot path
+    """
+    logger.info(f"Triggering screenshot capture for listing {obs_id}")
+    
+    try:
+        with SessionLocal() as db:
+            listing = db.query(ListingObservation).filter(
+                ListingObservation.obs_id == obs_id
+            ).first()
+            
+            if not listing:
+                return {"status": "error", "error": "Listing not found"}
+            
+            if not listing.url:
+                return {"status": "error", "error": "Listing URL not available"}
+            
+            screenshot_path = capture_listing_screenshot(
+                listing.url, listing.listing_id, listing.source
+            )
+            
+            if screenshot_path:
+                listing.screenshot_path = screenshot_path
+                db.commit()
+                logger.info(f"Screenshot captured for listing {obs_id}: {screenshot_path}")
+                return {
+                    "status": "success",
+                    "obs_id": obs_id,
+                    "screenshot_path": screenshot_path,
+                }
+            else:
+                return {"status": "error", "error": "Failed to capture screenshot"}
+                
+    except Exception as exc:
+        logger.error(f"Error capturing screenshot for listing {obs_id}: {exc}", exc_info=True)
+        return {"status": "error", "error": str(exc)}
+
+
+async def process_opportunity_alerts(ctx, product_id: str):
+    """
+    Process and trigger alerts for opportunities in a product.
+    
+    Args:
+        ctx: ARQ context
+        product_id: Product template ID
+        
+    Returns:
+        Dict with alert statistics
+    """
+    logger.info(f"Processing opportunity alerts for product {product_id}")
+    
+    try:
+        with SessionLocal() as db:
+            product_template = db.query(ProductTemplate).filter(
+                ProductTemplate.product_id == product_id
+            ).first()
+            
+            if not product_template:
+                return {"status": "error", "error": "Product template not found"}
+            
+            pmn_data = db.query(MarketPriceNormal).filter(
+                MarketPriceNormal.product_id == product_id
+            ).first()
+            
+            if not pmn_data or not pmn_data.pmn:
+                return {"status": "skipped", "reason": "PMN not computed for this product"}
+            
+            metrics = db.query(ProductDailyMetrics).filter(
+                ProductDailyMetrics.product_id == product_id
+            ).order_by(ProductDailyMetrics.date.desc()).first()
+            
+            # Get opportunities (listings below PMN)
+            opportunities_list = db.query(ListingObservation).filter(
+                ListingObservation.product_id == product_id,
+                ListingObservation.is_sold == False,
+                ListingObservation.price.isnot(None),
+                ListingObservation.price < pmn_data.pmn,
+            ).all()
+            
+            if not opportunities_list:
+                return {"status": "success", "alerts_triggered": 0, "opportunities_found": 0}
+            
+            opportunities = [
+                {
+                    "listing": listing,
+                    "product_template": product_template,
+                    "pmn_data": pmn_data,
+                    "metrics": metrics,
+                }
+                for listing in opportunities_list
+            ]
+            
+            alert_events = trigger_alerts(opportunities, db)
+            
+            logger.info(f"Triggered {len(alert_events)} alerts for product {product_id}")
+            return {
+                "status": "success",
+                "alerts_triggered": len(alert_events),
+                "opportunities_found": len(opportunities_list),
+            }
+            
+    except Exception as exc:
+        logger.error(f"Error processing opportunity alerts for product {product_id}: {exc}", exc_info=True)
+        return {"status": "error", "error": str(exc)}
+
+
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     functions = [
@@ -278,6 +487,10 @@ class WorkerSettings:
         scheduled_computation,
         trigger_product_computation,
         trigger_batch_computation,
+        # LLM & Screenshot tasks
+        validate_listing_with_llm,
+        capture_listing_screenshot_task,
+        process_opportunity_alerts,
     ]
     cron_jobs = [
         cron(ping, minute=0),  # Run ping every hour

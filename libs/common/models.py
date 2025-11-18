@@ -32,6 +32,8 @@ class ProductTemplate(Base):
     price_min = Column(Numeric)
     price_max = Column(Numeric)
     providers = Column(ARRAY(Text), default=list)
+    words_to_avoid = Column(ARRAY(Text), default=list)
+    enable_llm_validation = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(
@@ -58,6 +60,10 @@ class ListingObservation(Base):
     location = Column(Text)
     observed_at = Column(TIMESTAMP(timezone=True))
     url = Column(Text)  # Listing URL for direct access
+    llm_validated = Column(Boolean, default=False)
+    llm_validation_result = Column(JSON)
+    llm_validated_at = Column(TIMESTAMP(timezone=True))
+    screenshot_path = Column(Text)
 
     product = relationship("ProductTemplate", back_populates="observations")
 
@@ -116,6 +122,17 @@ class AlertEvent(Base):
     # Relationships
     rule = relationship("AlertRule")
     product = relationship("ProductTemplate")
+    observation = relationship("ListingObservation")
+
+class ListingScreenshot(Base):
+    __tablename__ = "listing_screenshot"
+
+    screenshot_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
+    obs_id = Column(BigInteger, ForeignKey("listing_observation.obs_id"), nullable=False)
+    file_path = Column(Text, nullable=False)
+    file_size = Column(Integer)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
     observation = relationship("ListingObservation")
 
 Category.products = relationship("ProductTemplate", back_populates="category")

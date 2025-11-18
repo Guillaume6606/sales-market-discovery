@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, desc
 from libs.common.db import get_db, engine
-from libs.common.models import Base, Category, ProductTemplate, ListingObservation, MarketPriceNormal, ProductDailyMetrics
+from libs.common.models import Base, Category, ProductTemplate, ListingObservation, MarketPriceNormal, ProductDailyMetrics, AlertRule, AlertEvent
 from libs.common.log import logger
 from libs.common.settings import settings
 from ingestion.constants import SUPPORTED_PROVIDERS
@@ -250,6 +250,8 @@ class ProductTemplateCreate(BaseModel):
     price_min: float | None = None
     price_max: float | None = None
     providers: List[str] | None = None
+    words_to_avoid: List[str] | None = None
+    enable_llm_validation: bool = False
     is_active: bool = True
 
 
@@ -262,6 +264,8 @@ class ProductTemplateUpdate(BaseModel):
     price_min: float | None = None
     price_max: float | None = None
     providers: List[str] | None = None
+    words_to_avoid: List[str] | None = None
+    enable_llm_validation: bool | None = None
     is_active: bool | None = None
 
 
@@ -296,6 +300,8 @@ def _serialize_product_template(product: ProductTemplate) -> Dict[str, Any]:
         "price_min": _decimal_to_float(product.price_min),
         "price_max": _decimal_to_float(product.price_max),
         "providers": list(product.providers or []),
+        "words_to_avoid": list(product.words_to_avoid or []),
+        "enable_llm_validation": product.enable_llm_validation,
         "is_active": product.is_active,
         "category": _serialize_category(product.category),
         "created_at": product.created_at.isoformat() if product.created_at else None,
@@ -672,6 +678,8 @@ def create_product(payload: ProductTemplateCreate, db: Session = Depends(get_db)
         price_min=payload.price_min,
         price_max=payload.price_max,
         providers=providers,
+        words_to_avoid=payload.words_to_avoid or [],
+        enable_llm_validation=payload.enable_llm_validation,
         is_active=payload.is_active,
     )
 
@@ -744,6 +752,12 @@ def update_product(
                 detail=f"Unsupported providers: {', '.join(invalid_providers)}",
             )
         product.providers = payload.providers
+
+    if payload.words_to_avoid is not None:
+        product.words_to_avoid = payload.words_to_avoid
+
+    if payload.enable_llm_validation is not None:
+        product.enable_llm_validation = payload.enable_llm_validation
 
     if payload.is_active is not None:
         product.is_active = payload.is_active
@@ -1412,103 +1426,6 @@ def top_opportunities(
 # LISTING EXPLORATION
 # ============================================================================
 
-@app.get("/listings/explore")
-def explore_listings(
-    source: str | None = Query(None, description="Filter by source: ebay, leboncoin, vinted"),
-    is_sold: bool | None = Query(None, description="Filter by sold status"),
-    product_id: str | None = Query(None, description="Filter by product ID"),
-    min_price: float | None = Query(None, description="Minimum price"),
-    max_price: float | None = Query(None, description="Maximum price"),
-    search: str | None = Query(None, description="Search in title"),
-    sort_by: str = Query("observed_at", description="Sort by: price, observed_at"),
-    sort_order: str = Query("desc", description="Sort order: asc, desc"),
-    limit: int = Query(100, le=500),
-    offset: int = 0,
-    db: Session = Depends(get_db),
-):
-    """
-    Explore all ingested listings with flexible filtering.
-    Great for debugging ingestion and understanding market data.
-    """
-    # Base query with product join for context
-    query = db.query(
-        ListingObservation,
-        ProductTemplate.name.label("product_name"),
-        ProductTemplate.brand.label("product_brand"),
-    ).join(
-        ProductTemplate,
-        ListingObservation.product_id == ProductTemplate.product_id
-    )
-    
-    # Apply filters
-    if source:
-        query = query.filter(ListingObservation.source == source)
-    
-    if is_sold is not None:
-        query = query.filter(ListingObservation.is_sold == is_sold)
-    
-    if product_id:
-        query = query.filter(ListingObservation.product_id == product_id)
-    
-    if min_price is not None:
-        query = query.filter(ListingObservation.price >= min_price)
-    
-    if max_price is not None:
-        query = query.filter(ListingObservation.price <= max_price)
-    
-    if search:
-        query = query.filter(ListingObservation.title.ilike(f"%{search}%"))
-    
-    # Get total count before pagination
-    total = query.count()
-    
-    # Apply sorting
-    if sort_by == "price":
-        sort_col = ListingObservation.price
-    elif sort_by == "observed_at":
-        sort_col = ListingObservation.observed_at
-    else:
-        sort_col = ListingObservation.observed_at
-    
-    if sort_order == "desc":
-        query = query.order_by(desc(sort_col))
-    else:
-        query = query.order_by(sort_col)
-    
-    # Apply pagination
-    query = query.offset(offset).limit(limit)
-    
-    # Execute query
-    results = query.all()
-    
-    # Format response
-    listings = []
-    for observation, product_name, product_brand in results:
-        listings.append({
-            "obs_id": observation.obs_id,
-            "product_id": str(observation.product_id),
-            "product_name": product_name,
-            "product_brand": product_brand,
-            "source": observation.source,
-            "listing_id": observation.listing_id,
-            "title": observation.title,
-            "price": _decimal_to_float(observation.price),
-            "currency": observation.currency,
-            "condition": observation.condition,
-            "is_sold": observation.is_sold,
-            "seller_rating": _decimal_to_float(observation.seller_rating),
-            "shipping_cost": _decimal_to_float(observation.shipping_cost),
-            "location": observation.location,
-            "observed_at": observation.observed_at.isoformat() if observation.observed_at else None,
-            "url": observation.url,
-        })
-    
-    return {
-        "listings": listings,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    }
 
 
 # ============================================================================
@@ -1688,3 +1605,406 @@ def get_computation_status(db: Session = Depends(get_db)):
         "average_liquidity_score": round(float(avg_liquidity), 2) if avg_liquidity else None,
         "last_updated": datetime.now(timezone.utc).isoformat()
     }
+
+
+# ============================================================================
+# PRODUCT FILTERING STATS ENDPOINT
+# ============================================================================
+
+@app.get("/products/{product_id}/filtering-stats")
+def get_filtering_stats(product_id: str, db: Session = Depends(get_db)):
+    """Get filtering effectiveness metrics for a product."""
+    product = _get_product_or_404(db, product_id)
+    
+    # Get total listings
+    total_listings = db.query(ListingObservation).filter(
+        ListingObservation.product_id == product_id
+    ).count()
+    
+    # Get LLM validated listings
+    llm_validated = db.query(ListingObservation).filter(
+        ListingObservation.product_id == product_id,
+        ListingObservation.llm_validated == True
+    ).count()
+    
+    # Get listings with screenshots
+    with_screenshots = db.query(ListingObservation).filter(
+        ListingObservation.product_id == product_id,
+        ListingObservation.screenshot_path.isnot(None)
+    ).count()
+    
+    return {
+        "product_id": str(product_id),
+        "total_listings": total_listings,
+        "llm_validated": llm_validated,
+        "with_screenshots": with_screenshots,
+        "llm_validation_rate": round((llm_validated / total_listings * 100), 2) if total_listings > 0 else 0,
+    }
+
+
+# ============================================================================
+# LISTING VALIDATION & SCREENSHOT ENDPOINTS
+# ============================================================================
+
+@app.get("/listings/{obs_id}/validation")
+def get_listing_validation(obs_id: int, db: Session = Depends(get_db)):
+    """Get LLM validation result for a listing."""
+    listing = db.query(ListingObservation).filter(
+        ListingObservation.obs_id == obs_id
+    ).first()
+    
+    if not listing:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Listing not found")
+    
+    return {
+        "obs_id": listing.obs_id,
+        "llm_validated": listing.llm_validated,
+        "llm_validation_result": listing.llm_validation_result,
+        "llm_validated_at": listing.llm_validated_at.isoformat() if listing.llm_validated_at else None,
+    }
+
+
+@app.get("/listings/{obs_id}/screenshot")
+def get_listing_screenshot(obs_id: int, db: Session = Depends(get_db)):
+    """Serve screenshot image for a listing."""
+    from fastapi.responses import FileResponse
+    
+    listing = db.query(ListingObservation).filter(
+        ListingObservation.obs_id == obs_id
+    ).first()
+    
+    if not listing:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Listing not found")
+    
+    if not listing.screenshot_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Screenshot not available")
+    
+    import os
+    if not os.path.exists(listing.screenshot_path):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Screenshot file not found")
+    
+    return FileResponse(listing.screenshot_path, media_type="image/png")
+
+
+@app.get("/listings/explore")
+def explore_listings(
+    source: str | None = Query(None, description="Filter by source: ebay, leboncoin, vinted"),
+    is_sold: bool | None = Query(None, description="Filter by sold status"),
+    product_id: str | None = Query(None, description="Filter by product ID"),
+    min_price: float | None = Query(None, description="Minimum price"),
+    max_price: float | None = Query(None, description="Maximum price"),
+    search: str | None = Query(None, description="Search in title"),
+    llm_validated: bool | None = Query(None, description="Filter by LLM validation status"),
+    sort_by: str = Query("observed_at", description="Sort by: price, observed_at"),
+    sort_order: str = Query("desc", description="Sort order: asc, desc"),
+    limit: int = Query(100, le=500),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """
+    Explore all ingested listings with flexible filtering.
+    Great for debugging ingestion and understanding market data.
+    """
+    # Base query with product join for context
+    query = db.query(
+        ListingObservation,
+        ProductTemplate.name.label("product_name"),
+        ProductTemplate.brand.label("product_brand"),
+    ).join(
+        ProductTemplate,
+        ListingObservation.product_id == ProductTemplate.product_id
+    )
+    
+    # Apply filters
+    if source:
+        query = query.filter(ListingObservation.source == source)
+    
+    if is_sold is not None:
+        query = query.filter(ListingObservation.is_sold == is_sold)
+    
+    if product_id:
+        query = query.filter(ListingObservation.product_id == product_id)
+    
+    if min_price is not None:
+        query = query.filter(ListingObservation.price >= min_price)
+    
+    if max_price is not None:
+        query = query.filter(ListingObservation.price <= max_price)
+    
+    if search:
+        query = query.filter(ListingObservation.title.ilike(f"%{search}%"))
+    
+    if llm_validated is not None:
+        query = query.filter(ListingObservation.llm_validated == llm_validated)
+    
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply sorting
+    if sort_by == "price":
+        sort_col = ListingObservation.price
+    elif sort_by == "observed_at":
+        sort_col = ListingObservation.observed_at
+    else:
+        sort_col = ListingObservation.observed_at
+    
+    if sort_order == "desc":
+        query = query.order_by(desc(sort_col))
+    else:
+        query = query.order_by(sort_col)
+    
+    # Apply pagination
+    query = query.offset(offset).limit(limit)
+    
+    # Execute query
+    results = query.all()
+    
+    # Format response
+    listings = []
+    for observation, product_name, product_brand in results:
+        listings.append({
+            "obs_id": observation.obs_id,
+            "product_id": str(observation.product_id),
+            "product_name": product_name,
+            "product_brand": product_brand,
+            "source": observation.source,
+            "listing_id": observation.listing_id,
+            "title": observation.title,
+            "price": _decimal_to_float(observation.price),
+            "currency": observation.currency,
+            "condition": observation.condition,
+            "is_sold": observation.is_sold,
+            "seller_rating": _decimal_to_float(observation.seller_rating),
+            "shipping_cost": _decimal_to_float(observation.shipping_cost),
+            "location": observation.location,
+            "observed_at": observation.observed_at.isoformat() if observation.observed_at else None,
+            "url": observation.url,
+            "llm_validated": observation.llm_validated,
+            "llm_validation_result": observation.llm_validation_result,
+            "screenshot_path": observation.screenshot_path,
+        })
+    
+    return {
+        "listings": listings,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+# ============================================================================
+# ALERT RULES ENDPOINTS
+# ============================================================================
+
+class AlertRuleCreate(BaseModel):
+    name: str
+    product_filter: Dict[str, Any] | None = None
+    threshold_pct: float | None = None
+    min_margin_abs: float | None = None
+    min_liquidity_score: float | None = None
+    min_seller_rating: float | None = None
+    channels: List[str] | None = None
+
+
+class AlertRuleUpdate(BaseModel):
+    name: str | None = None
+    product_filter: Dict[str, Any] | None = None
+    threshold_pct: float | None = None
+    min_margin_abs: float | None = None
+    min_liquidity_score: float | None = None
+    min_seller_rating: float | None = None
+    channels: List[str] | None = None
+
+
+@app.post("/alerts/rules", status_code=status.HTTP_201_CREATED)
+def create_alert_rule(payload: AlertRuleCreate, db: Session = Depends(get_db)):
+    """Create a new alert rule."""
+    rule = AlertRule(
+        name=payload.name,
+        product_filter=payload.product_filter,
+        threshold_pct=payload.threshold_pct,
+        min_margin_abs=payload.min_margin_abs,
+        min_liquidity_score=payload.min_liquidity_score,
+        min_seller_rating=payload.min_seller_rating,
+        channels=payload.channels or [],
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    
+    return {
+        "rule_id": str(rule.rule_id),
+        "name": rule.name,
+        "product_filter": rule.product_filter,
+        "threshold_pct": _decimal_to_float(rule.threshold_pct),
+        "min_margin_abs": _decimal_to_float(rule.min_margin_abs),
+        "min_liquidity_score": _decimal_to_float(rule.min_liquidity_score),
+        "min_seller_rating": _decimal_to_float(rule.min_seller_rating),
+        "channels": list(rule.channels or []),
+    }
+
+
+@app.get("/alerts/rules")
+def list_alert_rules(db: Session = Depends(get_db)):
+    """List all alert rules."""
+    rules = db.query(AlertRule).all()
+    return {
+        "rules": [
+            {
+                "rule_id": str(rule.rule_id),
+                "name": rule.name,
+                "product_filter": rule.product_filter,
+                "threshold_pct": _decimal_to_float(rule.threshold_pct),
+                "min_margin_abs": _decimal_to_float(rule.min_margin_abs),
+                "min_liquidity_score": _decimal_to_float(rule.min_liquidity_score),
+                "min_seller_rating": _decimal_to_float(rule.min_seller_rating),
+                "channels": list(rule.channels or []),
+            }
+            for rule in rules
+        ]
+    }
+
+
+@app.put("/alerts/rules/{rule_id}")
+def update_alert_rule(rule_id: str, payload: AlertRuleUpdate, db: Session = Depends(get_db)):
+    """Update an alert rule."""
+    rule = db.query(AlertRule).filter(AlertRule.rule_id == rule_id).first()
+    if not rule:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert rule not found")
+    
+    if payload.name is not None:
+        rule.name = payload.name
+    if payload.product_filter is not None:
+        rule.product_filter = payload.product_filter
+    if payload.threshold_pct is not None:
+        rule.threshold_pct = payload.threshold_pct
+    if payload.min_margin_abs is not None:
+        rule.min_margin_abs = payload.min_margin_abs
+    if payload.min_liquidity_score is not None:
+        rule.min_liquidity_score = payload.min_liquidity_score
+    if payload.min_seller_rating is not None:
+        rule.min_seller_rating = payload.min_seller_rating
+    if payload.channels is not None:
+        rule.channels = payload.channels
+    
+    db.commit()
+    db.refresh(rule)
+    
+    return {
+        "rule_id": str(rule.rule_id),
+        "name": rule.name,
+        "product_filter": rule.product_filter,
+        "threshold_pct": _decimal_to_float(rule.threshold_pct),
+        "min_margin_abs": _decimal_to_float(rule.min_margin_abs),
+        "min_liquidity_score": _decimal_to_float(rule.min_liquidity_score),
+        "min_seller_rating": _decimal_to_float(rule.min_seller_rating),
+        "channels": list(rule.channels or []),
+    }
+
+
+@app.delete("/alerts/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_alert_rule(rule_id: str, db: Session = Depends(get_db)):
+    """Delete an alert rule."""
+    rule = db.query(AlertRule).filter(AlertRule.rule_id == rule_id).first()
+    if not rule:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert rule not found")
+    
+    db.delete(rule)
+    db.commit()
+    return None
+
+
+@app.post("/alerts/test/{rule_id}")
+async def test_alert_rule(rule_id: str, db: Session = Depends(get_db)):
+    """Test an alert rule against existing opportunities."""
+    from ingestion.alert_engine import evaluate_alert_rules
+    
+    rule = db.query(AlertRule).filter(AlertRule.rule_id == rule_id).first()
+    if not rule:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert rule not found")
+    
+    # Get opportunities (listings below PMN)
+    opportunities_query = (
+        db.query(ListingObservation, ProductTemplate, MarketPriceNormal, ProductDailyMetrics)
+        .join(ProductTemplate, ListingObservation.product_id == ProductTemplate.product_id)
+        .outerjoin(MarketPriceNormal, ProductTemplate.product_id == MarketPriceNormal.product_id)
+        .outerjoin(
+            ProductDailyMetrics,
+            and_(
+                ProductTemplate.product_id == ProductDailyMetrics.product_id,
+                ProductDailyMetrics.date == func.current_date(),
+            ),
+        )
+        .filter(
+            ListingObservation.is_sold == False,
+            ListingObservation.price.isnot(None),
+            MarketPriceNormal.pmn.isnot(None),
+        )
+        .having(ListingObservation.price < MarketPriceNormal.pmn)
+        .limit(10)
+    )
+    
+    matches = []
+    for listing, product, pmn, metrics in opportunities_query.all():
+        matching_rules = evaluate_alert_rules(listing, product, pmn, metrics, db)
+        if rule in matching_rules:
+            matches.append({
+                "obs_id": listing.obs_id,
+                "title": listing.title,
+                "price": _decimal_to_float(listing.price),
+                "pmn": _decimal_to_float(pmn.pmn) if pmn else None,
+            })
+    
+    return {
+        "rule_id": str(rule_id),
+        "matches": matches,
+        "match_count": len(matches),
+    }
+
+
+@app.get("/alerts/events")
+def list_alert_events(
+    rule_id: str | None = Query(None, description="Filter by rule ID"),
+    product_id: str | None = Query(None, description="Filter by product ID"),
+    limit: int = Query(100, le=500),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """List alert history with filtering and pagination."""
+    query = db.query(AlertEvent)
+    
+    if rule_id:
+        query = query.filter(AlertEvent.rule_id == rule_id)
+    if product_id:
+        query = query.filter(AlertEvent.product_id == product_id)
+    
+    total = query.count()
+    
+    events = query.order_by(desc(AlertEvent.sent_at)).offset(offset).limit(limit).all()
+    
+    return {
+        "events": [
+            {
+                "alert_id": event.alert_id,
+                "rule_id": str(event.rule_id),
+                "product_id": str(event.product_id),
+                "obs_id": event.obs_id,
+                "sent_at": event.sent_at.isoformat() if event.sent_at else None,
+                "delivery": event.delivery,
+                "suppressed": event.suppressed,
+            }
+            for event in events
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/alerts/send-test")
+async def send_test_alert(db: Session = Depends(get_db)):
+    """Send a test Telegram message."""
+    from libs.common.telegram_service import send_test_message
+    
+    result = send_test_message("Test alert from Market Discovery API")
+    return result
