@@ -49,3 +49,5 @@ def downgrade():
         op.drop_column("listing_observation", "url")
 
 
+
+
