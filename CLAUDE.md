@@ -20,12 +20,13 @@ make test        # pytest -q
 
 Direct dev commands (outside Docker):
 ```bash
-poetry install                              # install dependencies
-uvicorn backend.main:app --reload           # run backend on :8000
-streamlit run ui/app.py                     # run UI on :8501
-arq ingestion.worker.WorkerSettings         # run ingestion worker
-alembic upgrade head                        # apply migrations
-alembic revision --autogenerate -m "msg"    # create migration
+uv pip install -e ".[dev]"                  # install dependencies
+uv run uvicorn backend.main:app --reload    # run backend on :8000
+uv run streamlit run ui/app.py              # run UI on :8501
+uv run arq ingestion.worker.WorkerSettings  # run ingestion worker
+uv run alembic upgrade head                 # apply migrations
+uv run alembic revision --autogenerate -m "msg"  # create migration
+uv run pytest tests/unit/ -v                # run unit tests
 ```
 
 ## Architecture
@@ -58,7 +59,7 @@ Copy `.env.example` to `.env`. Required: Postgres credentials, Redis URL. Option
 
 ## Database
 
-PostgreSQL with SQLAlchemy 2.0 ORM. Models in `libs/common/models.py`. Migrations via Alembic (`migrations/` directory, config in `alembic.ini`). Key tables: `category`, `product_template`, `listing_observation`, `product_daily_metrics`, `market_price_normal`, `alert_rule`, `alert_event`.
+PostgreSQL with SQLAlchemy 2.0 ORM. Models in `libs/common/models.py`. Migrations via Alembic (`migrations/` directory, config in `alembic.ini`). Key tables: `category`, `product_template`, `listing_observation`, `product_daily_metrics`, `market_price_normal`, `alert_rule`, `alert_event`, `ingestion_run`, `alert_feedback`.
 
 ## Roadmap & Objectives
 
