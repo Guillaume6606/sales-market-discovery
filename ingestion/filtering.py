@@ -2,15 +2,19 @@
 Multi-stage filtering pipeline for listings.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from ingestion.ingestion import ProductTemplateSnapshot
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.models import Listing, ProductTemplate
 from libs.common.screenshot_service import capture_listing_screenshot
+
+if TYPE_CHECKING:
+    from ingestion.ingestion import ProductTemplateSnapshot
 
 
 @dataclass

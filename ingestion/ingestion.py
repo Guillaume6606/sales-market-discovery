@@ -6,6 +6,7 @@ from typing import Any
 
 from loguru import logger
 from sqlalchemy import and_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from ingestion.connectors.ebay import fetch_ebay_listings, fetch_ebay_sold
@@ -17,6 +18,8 @@ from ingestion.connectors.vinted import fetch_vinted_listings
 from ingestion.constants import SUPPORTED_PROVIDERS
 from ingestion.filtering import filter_listings_multi_stage
 from ingestion.pricing import pmn_from_prices
+from ingestion.run_tracker import filtering_stats_to_dict, track_ingestion_run
+from ingestion.validation import validate_listings
 from libs.common.db import SessionLocal
 from libs.common.models import (
     Listing,
@@ -112,66 +115,80 @@ def _upsert_listing(
     force_is_sold: bool | None = None,
     llm_validation_result: dict | None = None,
     screenshot_path: str | None = None,
-) -> None:
+) -> bool:
     listing_source = listing.source
-    existing = (
-        db.query(ListingObservation)
-        .filter(
-            and_(
-                ListingObservation.listing_id == listing.listing_id,
-                ListingObservation.source == listing_source,
-                ListingObservation.product_id == product.product_id,
+    now_utc = datetime.now(timezone.utc)
+
+    try:
+        existing = (
+            db.query(ListingObservation)
+            .filter(
+                and_(
+                    ListingObservation.listing_id == listing.listing_id,
+                    ListingObservation.source == listing_source,
+                    ListingObservation.product_id == product.product_id,
+                )
             )
+            .first()
         )
-        .first()
-    )
 
-    observed_at = listing.observed_at
-    if observed_at and observed_at.tzinfo is None:
-        observed_at = observed_at.replace(tzinfo=timezone.utc)
+        observed_at = listing.observed_at
+        if observed_at and observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
 
-    is_sold = force_is_sold if force_is_sold is not None else listing.is_sold
+        is_sold = force_is_sold if force_is_sold is not None else listing.is_sold
 
-    if existing:
-        existing.price = listing.price
-        existing.title = listing.title
-        existing.currency = listing.currency
-        existing.condition = listing.condition_raw
-        existing.is_sold = is_sold
-        existing.seller_rating = listing.seller_rating
-        existing.shipping_cost = listing.shipping_cost
-        existing.location = listing.location
-        existing.observed_at = observed_at
-        existing.url = listing.url
+        if existing:
+            existing.price = listing.price
+            existing.title = listing.title
+            existing.currency = listing.currency
+            existing.condition = listing.condition_raw
+            existing.is_sold = is_sold
+            existing.seller_rating = listing.seller_rating
+            existing.shipping_cost = listing.shipping_cost
+            existing.location = listing.location
+            existing.observed_at = observed_at
+            existing.url = listing.url
+            existing.last_seen_at = now_utc
 
-        # Update LLM validation fields if provided
-        if llm_validation_result is not None:
-            existing.llm_validated = True
-            existing.llm_validation_result = llm_validation_result
-            existing.llm_validated_at = datetime.now(timezone.utc)
-        if screenshot_path:
-            existing.screenshot_path = screenshot_path
-    else:
-        observation = ListingObservation(
-            product_id=product.product_id,
-            source=listing_source,
-            listing_id=listing.listing_id,
-            title=listing.title,
-            price=listing.price,
-            currency=listing.currency,
-            condition=listing.condition_raw,
-            is_sold=is_sold,
-            seller_rating=listing.seller_rating,
-            shipping_cost=listing.shipping_cost,
-            location=listing.location,
-            observed_at=observed_at,
-            url=listing.url,
-            llm_validated=llm_validation_result is not None,
-            llm_validation_result=llm_validation_result,
-            llm_validated_at=datetime.now(timezone.utc) if llm_validation_result else None,
-            screenshot_path=screenshot_path,
+            # Update LLM validation fields if provided
+            if llm_validation_result is not None:
+                existing.llm_validated = True
+                existing.llm_validation_result = llm_validation_result
+                existing.llm_validated_at = now_utc
+            if screenshot_path:
+                existing.screenshot_path = screenshot_path
+        else:
+            observation = ListingObservation(
+                product_id=product.product_id,
+                source=listing_source,
+                listing_id=listing.listing_id,
+                title=listing.title,
+                price=listing.price,
+                currency=listing.currency,
+                condition=listing.condition_raw,
+                is_sold=is_sold,
+                seller_rating=listing.seller_rating,
+                shipping_cost=listing.shipping_cost,
+                location=listing.location,
+                observed_at=observed_at,
+                url=listing.url,
+                last_seen_at=now_utc,
+                llm_validated=llm_validation_result is not None,
+                llm_validation_result=llm_validation_result,
+                llm_validated_at=now_utc if llm_validation_result else None,
+                screenshot_path=screenshot_path,
+            )
+            db.add(observation)
+
+        return True
+    except IntegrityError:
+        db.rollback()
+        logger.warning(
+            f"IntegrityError upserting listing {listing.listing_id} "
+            f"(source={listing_source}, product={product.product_id})"
         )
-        db.add(observation)
+        return False
 
 
 def _persist_listings(
@@ -195,6 +212,13 @@ def _persist_listings(
     if not listings:
         return 0
 
+    valid_listings, validation_stats = validate_listings(listings)
+    if validation_stats.rejected_price or validation_stats.rejected_title:
+        logger.info(
+            f"Validation: {validation_stats.passed}/{validation_stats.total} passed "
+            f"({validation_stats.rejected_price} price, {validation_stats.rejected_title} title)"
+        )
+
     processed_count = 0
     with SessionLocal() as db:
         product = db.query(ProductTemplate).filter(ProductTemplate.product_id == product_id).first()
@@ -202,7 +226,7 @@ def _persist_listings(
             logger.warning(f"Product template {product_id} no longer exists; skipping persistence")
             return 0
 
-        for listing in listings:
+        for listing in valid_listings:
             try:
                 llm_result = None
                 screenshot_path = None
@@ -248,50 +272,61 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
         f"Starting eBay sold ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    try:
-        # fetch_ebay_sold now returns List[Listing] directly
-        listings = await fetch_ebay_sold(_compose_search_term(snapshot), limit)
+    with track_ingestion_run(product_id, "ebay", "ingest_ebay_sold") as run:
+        try:
+            listings = await fetch_ebay_sold(_compose_search_term(snapshot), limit)
+            run.listings_fetched = len(listings) if listings else 0
 
-        if not listings:
-            logger.info(f"No eBay sold items found for product {snapshot.product_id}")
-            return {"status": "success", "count": 0, "message": "No items found"}
+            if not listings:
+                run.status = "no_data"
+                logger.info(f"No eBay sold items found for product {snapshot.product_id}")
+                return {"status": "success", "count": 0, "message": "No items found"}
 
-        # Load full product template for LLM validation
-        with SessionLocal() as db:
-            product_template = (
-                db.query(ProductTemplate)
-                .filter(ProductTemplate.product_id == snapshot.product_id)
-                .first()
+            with SessionLocal() as db:
+                product_template = (
+                    db.query(ProductTemplate)
+                    .filter(ProductTemplate.product_id == snapshot.product_id)
+                    .first()
+                )
+
+            deduped = _dedupe_listings(listings)
+            run.listings_deduped = len(deduped)
+            filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
+                snapshot,
+                deduped,
+                product_template=product_template,
+                enable_llm=True,
             )
+            run.filtering_stats = filtering_stats_to_dict(stats)
 
-        deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
-            snapshot,
-            deduped,
-            product_template=product_template,
-            enable_llm=True,
-        )
-
-        processed = _persist_listings(
-            snapshot.product_id,
-            filtered,
-            force_is_sold=True,
-            llm_validation_results=llm_results if llm_results else None,
-            screenshot_paths=screenshot_paths if screenshot_paths else None,
-        )
-
-        if processed:
-            logger.info(
-                f"Ingested {processed} eBay sold listings for product {snapshot.product_id}"
+            processed = _persist_listings(
+                snapshot.product_id,
+                filtered,
+                force_is_sold=True,
+                llm_validation_results=llm_results if llm_results else None,
+                screenshot_paths=screenshot_paths if screenshot_paths else None,
             )
-            return {"status": "success", "count": processed}
+            run.listings_persisted = processed
 
-        logger.warning(f"No eBay sold listings matched filters for product {snapshot.product_id}")
-        return {"status": "no_data", "count": 0}
+            if processed:
+                logger.info(
+                    f"Ingested {processed} eBay sold listings for product {snapshot.product_id}"
+                )
+                return {"status": "success", "count": processed}
 
-    except Exception as exc:
-        logger.error(f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}")
-        return {"status": "error", "error": str(exc)}
+            run.status = "no_data"
+            logger.warning(
+                f"No eBay sold listings matched filters for product {snapshot.product_id}"
+            )
+            return {"status": "no_data", "count": 0}
+
+        except Exception as exc:
+            run.status = "error"
+            run.error_message = str(exc)[:2000]
+            logger.error(
+                f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}"
+            )
+            return {"status": "error", "error": str(exc)}
 
 
 async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -309,50 +344,61 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, An
         f"Starting eBay listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    try:
-        # fetch_ebay_listings now returns List[Listing] directly
-        listings = await fetch_ebay_listings(_compose_search_term(snapshot), limit)
+    with track_ingestion_run(product_id, "ebay", "ingest_ebay_listings") as run:
+        try:
+            listings = await fetch_ebay_listings(_compose_search_term(snapshot), limit)
+            run.listings_fetched = len(listings) if listings else 0
 
-        if not listings:
-            logger.info(f"No eBay listings found for product {snapshot.product_id}")
-            return {"status": "success", "count": 0, "message": "No items found"}
+            if not listings:
+                run.status = "no_data"
+                logger.info(f"No eBay listings found for product {snapshot.product_id}")
+                return {"status": "success", "count": 0, "message": "No items found"}
 
-        # Load full product template for LLM validation
-        with SessionLocal() as db:
-            product_template = (
-                db.query(ProductTemplate)
-                .filter(ProductTemplate.product_id == snapshot.product_id)
-                .first()
+            with SessionLocal() as db:
+                product_template = (
+                    db.query(ProductTemplate)
+                    .filter(ProductTemplate.product_id == snapshot.product_id)
+                    .first()
+                )
+
+            deduped = _dedupe_listings(listings)
+            run.listings_deduped = len(deduped)
+            filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
+                snapshot,
+                deduped,
+                product_template=product_template,
+                enable_llm=True,
             )
+            run.filtering_stats = filtering_stats_to_dict(stats)
 
-        deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
-            snapshot,
-            deduped,
-            product_template=product_template,
-            enable_llm=True,
-        )
-
-        processed = _persist_listings(
-            snapshot.product_id,
-            filtered,
-            force_is_sold=False,
-            llm_validation_results=llm_results if llm_results else None,
-            screenshot_paths=screenshot_paths if screenshot_paths else None,
-        )
-
-        if processed:
-            logger.info(
-                f"Ingested {processed} eBay active listings for product {snapshot.product_id}"
+            processed = _persist_listings(
+                snapshot.product_id,
+                filtered,
+                force_is_sold=False,
+                llm_validation_results=llm_results if llm_results else None,
+                screenshot_paths=screenshot_paths if screenshot_paths else None,
             )
-            return {"status": "success", "count": processed}
+            run.listings_persisted = processed
 
-        logger.warning(f"No eBay listings matched filters for product {snapshot.product_id}")
-        return {"status": "no_data", "count": 0}
+            if processed:
+                logger.info(
+                    f"Ingested {processed} eBay active listings for product {snapshot.product_id}"
+                )
+                return {"status": "success", "count": processed}
 
-    except Exception as exc:
-        logger.error(f"Error in eBay listings ingestion for product {snapshot.product_id}: {exc}")
-        return {"status": "error", "error": str(exc)}
+            run.status = "no_data"
+            logger.warning(
+                f"No eBay listings matched filters for product {snapshot.product_id}"
+            )
+            return {"status": "no_data", "count": 0}
+
+        except Exception as exc:
+            run.status = "error"
+            run.error_message = str(exc)[:2000]
+            logger.error(
+                f"Error in eBay listings ingestion for product {snapshot.product_id}: {exc}"
+            )
+            return {"status": "error", "error": str(exc)}
 
 
 async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -364,46 +410,60 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[st
         f"Starting LeBonCoin listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    try:
-        listings = await fetch_leboncoin_api_listings(_compose_search_term(snapshot), limit)
-        # Load full product template for LLM validation
-        with SessionLocal() as db:
-            product_template = (
-                db.query(ProductTemplate)
-                .filter(ProductTemplate.product_id == snapshot.product_id)
-                .first()
+    with track_ingestion_run(product_id, "leboncoin", "ingest_leboncoin_listings") as run:
+        try:
+            listings = await fetch_leboncoin_api_listings(_compose_search_term(snapshot), limit)
+            run.listings_fetched = len(listings) if listings else 0
+
+            if not listings:
+                run.status = "no_data"
+                return {"status": "success", "count": 0, "message": "No items found"}
+
+            with SessionLocal() as db:
+                product_template = (
+                    db.query(ProductTemplate)
+                    .filter(ProductTemplate.product_id == snapshot.product_id)
+                    .first()
+                )
+
+            deduped = _dedupe_listings(listings)
+            run.listings_deduped = len(deduped)
+            filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
+                snapshot,
+                deduped,
+                product_template=product_template,
+                enable_llm=True,
             )
+            run.filtering_stats = filtering_stats_to_dict(stats)
 
-        deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
-            snapshot,
-            deduped,
-            product_template=product_template,
-            enable_llm=True,
-        )
-
-        processed = _persist_listings(
-            snapshot.product_id,
-            filtered,
-            force_is_sold=False,
-            llm_validation_results=llm_results if llm_results else None,
-            screenshot_paths=screenshot_paths if screenshot_paths else None,
-        )
-
-        if processed:
-            logger.info(
-                f"Ingested {processed} LeBonCoin listings for product {snapshot.product_id}"
+            processed = _persist_listings(
+                snapshot.product_id,
+                filtered,
+                force_is_sold=False,
+                llm_validation_results=llm_results if llm_results else None,
+                screenshot_paths=screenshot_paths if screenshot_paths else None,
             )
-            return {"status": "success", "count": processed}
+            run.listings_persisted = processed
 
-        logger.warning(f"No LeBonCoin listings matched filters for product {snapshot.product_id}")
-        return {"status": "no_data", "count": 0}
+            if processed:
+                logger.info(
+                    f"Ingested {processed} LeBonCoin listings for product {snapshot.product_id}"
+                )
+                return {"status": "success", "count": processed}
 
-    except Exception as exc:
-        logger.error(
-            f"Error in LeBonCoin listings ingestion for product {snapshot.product_id}: {exc}"
-        )
-        return {"status": "error", "error": str(exc)}
+            run.status = "no_data"
+            logger.warning(
+                f"No LeBonCoin listings matched filters for product {snapshot.product_id}"
+            )
+            return {"status": "no_data", "count": 0}
+
+        except Exception as exc:
+            run.status = "error"
+            run.error_message = str(exc)[:2000]
+            logger.error(
+                f"Error in LeBonCoin listings ingestion for product {snapshot.product_id}: {exc}"
+            )
+            return {"status": "error", "error": str(exc)}
 
 
 async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -415,48 +475,60 @@ async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, A
         f"Starting LeBonCoin 'sold' ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    try:
-        listings = await fetch_leboncoin_api_sold(_compose_search_term(snapshot), limit)
-        # Load full product template for LLM validation
-        with SessionLocal() as db:
-            product_template = (
-                db.query(ProductTemplate)
-                .filter(ProductTemplate.product_id == snapshot.product_id)
-                .first()
+    with track_ingestion_run(product_id, "leboncoin", "ingest_leboncoin_sold") as run:
+        try:
+            listings = await fetch_leboncoin_api_sold(_compose_search_term(snapshot), limit)
+            run.listings_fetched = len(listings) if listings else 0
+
+            if not listings:
+                run.status = "no_data"
+                return {"status": "success", "count": 0, "message": "No items found"}
+
+            with SessionLocal() as db:
+                product_template = (
+                    db.query(ProductTemplate)
+                    .filter(ProductTemplate.product_id == snapshot.product_id)
+                    .first()
+                )
+
+            deduped = _dedupe_listings(listings)
+            run.listings_deduped = len(deduped)
+            filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
+                snapshot,
+                deduped,
+                product_template=product_template,
+                enable_llm=True,
             )
+            run.filtering_stats = filtering_stats_to_dict(stats)
 
-        deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
-            snapshot,
-            deduped,
-            product_template=product_template,
-            enable_llm=True,
-        )
-
-        processed = _persist_listings(
-            snapshot.product_id,
-            filtered,
-            force_is_sold=True,
-            llm_validation_results=llm_results if llm_results else None,
-            screenshot_paths=screenshot_paths if screenshot_paths else None,
-        )
-
-        if processed:
-            logger.info(
-                f"Ingested {processed} LeBonCoin 'sold' listings for product {snapshot.product_id}"
+            processed = _persist_listings(
+                snapshot.product_id,
+                filtered,
+                force_is_sold=True,
+                llm_validation_results=llm_results if llm_results else None,
+                screenshot_paths=screenshot_paths if screenshot_paths else None,
             )
-            return {"status": "success", "count": processed}
+            run.listings_persisted = processed
 
-        logger.warning(
-            f"No LeBonCoin 'sold' listings matched filters for product {snapshot.product_id}"
-        )
-        return {"status": "no_data", "count": 0}
+            if processed:
+                logger.info(
+                    f"Ingested {processed} LeBonCoin 'sold' listings for product {snapshot.product_id}"
+                )
+                return {"status": "success", "count": processed}
 
-    except Exception as exc:
-        logger.error(
-            f"Error in LeBonCoin 'sold' ingestion for product {snapshot.product_id}: {exc}"
-        )
-        return {"status": "error", "error": str(exc)}
+            run.status = "no_data"
+            logger.warning(
+                f"No LeBonCoin 'sold' listings matched filters for product {snapshot.product_id}"
+            )
+            return {"status": "no_data", "count": 0}
+
+        except Exception as exc:
+            run.status = "error"
+            run.error_message = str(exc)[:2000]
+            logger.error(
+                f"Error in LeBonCoin 'sold' ingestion for product {snapshot.product_id}: {exc}"
+            )
+            return {"status": "error", "error": str(exc)}
 
 
 async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -468,42 +540,60 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
         f"Starting Vinted listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    try:
-        listings = await fetch_vinted_listings(_compose_search_term(snapshot), limit)
-        # Load full product template for LLM validation
-        with SessionLocal() as db:
-            product_template = (
-                db.query(ProductTemplate)
-                .filter(ProductTemplate.product_id == snapshot.product_id)
-                .first()
+    with track_ingestion_run(product_id, "vinted", "ingest_vinted_listings") as run:
+        try:
+            listings = await fetch_vinted_listings(_compose_search_term(snapshot), limit)
+            run.listings_fetched = len(listings) if listings else 0
+
+            if not listings:
+                run.status = "no_data"
+                return {"status": "success", "count": 0, "message": "No items found"}
+
+            with SessionLocal() as db:
+                product_template = (
+                    db.query(ProductTemplate)
+                    .filter(ProductTemplate.product_id == snapshot.product_id)
+                    .first()
+                )
+
+            deduped = _dedupe_listings(listings)
+            run.listings_deduped = len(deduped)
+            filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
+                snapshot,
+                deduped,
+                product_template=product_template,
+                enable_llm=True,
             )
+            run.filtering_stats = filtering_stats_to_dict(stats)
 
-        deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
-            snapshot,
-            deduped,
-            product_template=product_template,
-            enable_llm=True,
-        )
+            processed = _persist_listings(
+                snapshot.product_id,
+                filtered,
+                force_is_sold=False,
+                llm_validation_results=llm_results if llm_results else None,
+                screenshot_paths=screenshot_paths if screenshot_paths else None,
+            )
+            run.listings_persisted = processed
 
-        processed = _persist_listings(
-            snapshot.product_id,
-            filtered,
-            force_is_sold=False,
-            llm_validation_results=llm_results if llm_results else None,
-            screenshot_paths=screenshot_paths if screenshot_paths else None,
-        )
+            if processed:
+                logger.info(
+                    f"Ingested {processed} Vinted listings for product {snapshot.product_id}"
+                )
+                return {"status": "success", "count": processed}
 
-        if processed:
-            logger.info(f"Ingested {processed} Vinted listings for product {snapshot.product_id}")
-            return {"status": "success", "count": processed}
+            run.status = "no_data"
+            logger.warning(
+                f"No Vinted listings matched filters for product {snapshot.product_id}"
+            )
+            return {"status": "no_data", "count": 0}
 
-        logger.warning(f"No Vinted listings matched filters for product {snapshot.product_id}")
-        return {"status": "no_data", "count": 0}
-
-    except Exception as exc:
-        logger.error(f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}")
-        return {"status": "error", "error": str(exc)}
+        except Exception as exc:
+            run.status = "error"
+            run.error_message = str(exc)[:2000]
+            logger.error(
+                f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}"
+            )
+            return {"status": "error", "error": str(exc)}
 
 
 def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
