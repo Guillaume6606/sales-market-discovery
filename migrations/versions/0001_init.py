@@ -1,27 +1,37 @@
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0001_init"
 down_revision = None
 branch_labels = None
 depends_on = None
 
+
 def upgrade():
     op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    
+
     # Create category table first (referenced by product_template)
     op.create_table(
         "category",
-        sa.Column("category_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "category_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
         sa.Column("name", sa.Text, unique=True, nullable=False),
         sa.Column("description", sa.Text),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+        sa.Column(
+            "updated_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.func.now(),
+            onupdate=sa.func.now(),
+        ),
     )
-    
+
     op.create_table(
         "product_template",
-        sa.Column("product_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "product_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
         sa.Column("name", sa.Text, nullable=False),
         sa.Column("description", sa.Text),
         sa.Column("search_query", sa.Text, nullable=False),
@@ -34,7 +44,12 @@ def upgrade():
         sa.Column("enable_llm_validation", sa.Boolean, server_default=sa.text("false")),
         sa.Column("is_active", sa.Boolean, server_default=sa.text("true")),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+        sa.Column(
+            "updated_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.func.now(),
+            onupdate=sa.func.now(),
+        ),
         sa.Column("last_ingested_at", sa.TIMESTAMP(timezone=True)),
     )
 
@@ -62,7 +77,9 @@ def upgrade():
 
     op.create_table(
         "product_daily_metrics",
-        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_template.product_id"), primary_key=True),
+        sa.Column(
+            "product_id", sa.UUID, sa.ForeignKey("product_template.product_id"), primary_key=True
+        ),
         sa.Column("date", sa.Date, primary_key=True),
         sa.Column("sold_count_7d", sa.Integer),
         sa.Column("sold_count_30d", sa.Integer),
@@ -76,7 +93,9 @@ def upgrade():
 
     op.create_table(
         "market_price_normal",
-        sa.Column("product_id", sa.UUID, sa.ForeignKey("product_template.product_id"), primary_key=True),
+        sa.Column(
+            "product_id", sa.UUID, sa.ForeignKey("product_template.product_id"), primary_key=True
+        ),
         sa.Column("last_computed_at", sa.TIMESTAMP(timezone=True)),
         sa.Column("pmn", sa.Numeric),
         sa.Column("pmn_low", sa.Numeric),
@@ -86,7 +105,9 @@ def upgrade():
 
     op.create_table(
         "alert_rule",
-        sa.Column("rule_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "rule_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
         sa.Column("name", sa.Text),
         sa.Column("product_filter", sa.JSON),
         sa.Column("threshold_pct", sa.Numeric),
@@ -94,6 +115,7 @@ def upgrade():
         sa.Column("min_liquidity_score", sa.Numeric),
         sa.Column("min_seller_rating", sa.Numeric),
         sa.Column("channels", sa.ARRAY(sa.Text)),
+        sa.Column("is_active", sa.Boolean, server_default=sa.text("true")),
     )
 
     op.create_table(
@@ -106,18 +128,9 @@ def upgrade():
         sa.Column("delivery", sa.JSON),
         sa.Column("suppressed", sa.Boolean, server_default=sa.text("false")),
     )
-    
-    op.create_table(
-        "listing_screenshot",
-        sa.Column("screenshot_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("obs_id", sa.BigInteger, sa.ForeignKey("listing_observation.obs_id"), nullable=False),
-        sa.Column("file_path", sa.Text, nullable=False),
-        sa.Column("file_size", sa.Integer),
-        sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now()),
-    )
+
 
 def downgrade():
-    op.drop_table("listing_screenshot")
     op.drop_table("alert_event")
     op.drop_table("alert_rule")
     op.drop_table("market_price_normal")

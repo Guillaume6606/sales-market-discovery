@@ -1,32 +1,29 @@
-from typing import List, Dict, Any, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from datetime import datetime, timezone, date, timedelta
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import and_, func
-from loguru import logger
+from typing import Any
 
-from libs.common.models import (
-    Category,
-    ProductTemplate,
-    ListingObservation,
-    ProductDailyMetrics,
-    MarketPriceNormal,
-    Listing,
-)
-from libs.common.db import SessionLocal
-from ingestion.connectors.ebay import fetch_ebay_sold, fetch_ebay_listings
+from loguru import logger
+from sqlalchemy import and_
+from sqlalchemy.orm import Session, joinedload
+
+from ingestion.connectors.ebay import fetch_ebay_listings, fetch_ebay_sold
 from ingestion.connectors.leboncoin_api import (
     fetch_leboncoin_api_listings,
     fetch_leboncoin_api_sold,
 )
-from ingestion.constants import SUPPORTED_PROVIDERS
 from ingestion.connectors.vinted import fetch_vinted_listings
-from ingestion.pricing import pmn_from_prices
+from ingestion.constants import SUPPORTED_PROVIDERS
 from ingestion.filtering import filter_listings_multi_stage
-from libs.common.llm_service import assess_listing_relevance
-from libs.common.screenshot_service import capture_listing_screenshot
-from datetime import datetime, timezone
+from ingestion.pricing import pmn_from_prices
+from libs.common.db import SessionLocal
+from libs.common.models import (
+    Listing,
+    ListingObservation,
+    ProductDailyMetrics,
+    ProductTemplate,
+)
 
 
 @dataclass
@@ -40,8 +37,8 @@ class ProductTemplateSnapshot:
     brand: str | None
     price_min: float | None
     price_max: float | None
-    providers: List[str]
-    words_to_avoid: List[str]
+    providers: list[str]
+    words_to_avoid: list[str]
     enable_llm_validation: bool
     is_active: bool
 
@@ -95,91 +92,9 @@ def _compose_search_term(snapshot: ProductTemplateSnapshot) -> str:
     return snapshot.search_query
 
 
-def _matches_price(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
-    if listing.price is None:
-        if snapshot.price_min is not None or snapshot.price_max is not None:
-            return False
-        return True
-    if snapshot.price_min is not None and listing.price < snapshot.price_min:
-        return False
-    if snapshot.price_max is not None and listing.price > snapshot.price_max:
-        return False
-    return True
-
-
-def _matches_brand(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
-    """
-    Check if listing matches the product's brand.
-    
-    RELAXED MATCHING: Brand filtering is intentionally permissive because:
-    1. _compose_search_term() already includes brand in the search query
-    2. Search APIs (LeBonCoin, eBay, Vinted) already filter by that search term
-    3. Over-filtering here causes false negatives (e.g., "PS4" listings when brand="Sony")
-    
-    We only apply strict brand matching if:
-    - Brand is set AND
-    - Brand is NOT in the search query (rare case: manual brand filter without search context)
-    
-    Example: search_query="PS4" + brand="Sony"
-    - _compose_search_term() → "PS4 Sony" (brand added to search)
-    - LeBonCoin returns PS4 listings (already brand-filtered by search)
-    - We should NOT filter again, as "PS4 500GB" is a valid Sony PS4
-    """
-    if not snapshot.brand:
-        return True
-    
-    brand_lower = snapshot.brand.lower()
-    
-    # CRITICAL FIX: If brand exists, _compose_search_term() adds it to the search.
-    # The search API already filtered by brand, so trust those results.
-    # This prevents over-filtering cases like "PS4" where titles don't say "Sony"
-    composed_term = _compose_search_term(snapshot)
-    if brand_lower in composed_term.lower():
-        # Brand is in the search term, so search API already handled filtering
-        logger.debug(f"Skipping brand filter - brand '{snapshot.brand}' already in search term")
-        return True
-    
-    # Only apply strict brand matching if brand is NOT in search term (rare edge case)
-    if listing.brand and listing.brand.lower() == brand_lower:
-        return True
-
-    if listing.title and brand_lower in listing.title.lower():
-        return True
-
-    return False
-
-
-def _filter_listings(snapshot: ProductTemplateSnapshot, listings: Iterable[Listing], product_template: ProductTemplate | None = None) -> tuple[List[Listing], dict, dict]:
-    """
-    Filter listings using multi-stage filtering pipeline.
-    
-    This function now delegates to the new filtering module which includes:
-    - Price filtering
-    - Brand filtering
-    - Words-to-avoid filtering
-    - LLM validation (if enabled)
-    
-    Returns:
-        Tuple of (filtered_listings, llm_results, screenshot_paths)
-    """
-    listings_list = list(listings)
-    if not listings_list:
-        return [], {}, {}
-    
-    # Use multi-stage filtering
-    filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
-        snapshot,
-        listings_list,
-        product_template=product_template,
-        enable_llm=True,  # Enable LLM if product template has it enabled
-    )
-    
-    return filtered, llm_results, screenshot_paths
-
-
-def _dedupe_listings(listings: Iterable[Listing]) -> List[Listing]:
+def _dedupe_listings(listings: Iterable[Listing]) -> list[Listing]:
     seen: set[tuple[str, str]] = set()
-    deduped: List[Listing] = []
+    deduped: list[Listing] = []
     for listing in listings:
         key = (listing.source, listing.listing_id)
         if key in seen:
@@ -228,7 +143,7 @@ def _upsert_listing(
         existing.location = listing.location
         existing.observed_at = observed_at
         existing.url = listing.url
-        
+
         # Update LLM validation fields if provided
         if llm_validation_result is not None:
             existing.llm_validated = True
@@ -261,7 +176,7 @@ def _upsert_listing(
 
 def _persist_listings(
     product_id: str,
-    listings: List[Listing],
+    listings: list[Listing],
     *,
     force_is_sold: bool | None = None,
     llm_validation_results: dict[str, dict] | None = None,
@@ -269,7 +184,7 @@ def _persist_listings(
 ) -> int:
     """
     Persist listings with optional LLM validation results and screenshot paths.
-    
+
     Args:
         product_id: Product template ID
         listings: List of listings to persist
@@ -282,11 +197,7 @@ def _persist_listings(
 
     processed_count = 0
     with SessionLocal() as db:
-        product = (
-            db.query(ProductTemplate)
-            .filter(ProductTemplate.product_id == product_id)
-            .first()
-        )
+        product = db.query(ProductTemplate).filter(ProductTemplate.product_id == product_id).first()
         if not product:
             logger.warning(f"Product template {product_id} no longer exists; skipping persistence")
             return 0
@@ -295,13 +206,13 @@ def _persist_listings(
             try:
                 llm_result = None
                 screenshot_path = None
-                
+
                 if llm_validation_results and listing.listing_id in llm_validation_results:
                     llm_result = llm_validation_results[listing.listing_id]
-                
+
                 if screenshot_paths and listing.listing_id in screenshot_paths:
                     screenshot_path = screenshot_paths[listing.listing_id]
-                
+
                 _upsert_listing(
                     db,
                     product,
@@ -322,10 +233,10 @@ def _persist_listings(
     return processed_count
 
 
-async def ingest_ebay_sold(product_id: str, limit: int = 50) -> Dict[str, Any]:
+async def ingest_ebay_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
     """
     Ingest sold items from eBay for a specific product.
-    
+
     The eBay connector now returns parsed Listing objects directly,
     so no additional parsing is needed.
     """
@@ -340,25 +251,27 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> Dict[str, Any]:
     try:
         # fetch_ebay_sold now returns List[Listing] directly
         listings = await fetch_ebay_sold(_compose_search_term(snapshot), limit)
-        
+
         if not listings:
             logger.info(f"No eBay sold items found for product {snapshot.product_id}")
             return {"status": "success", "count": 0, "message": "No items found"}
 
         # Load full product template for LLM validation
         with SessionLocal() as db:
-            product_template = db.query(ProductTemplate).filter(
-                ProductTemplate.product_id == snapshot.product_id
-            ).first()
-        
+            product_template = (
+                db.query(ProductTemplate)
+                .filter(ProductTemplate.product_id == snapshot.product_id)
+                .first()
+            )
+
         deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
             snapshot,
             deduped,
             product_template=product_template,
             enable_llm=True,
         )
-        
+
         processed = _persist_listings(
             snapshot.product_id,
             filtered,
@@ -368,7 +281,9 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> Dict[str, Any]:
         )
 
         if processed:
-            logger.info(f"Ingested {processed} eBay sold listings for product {snapshot.product_id}")
+            logger.info(
+                f"Ingested {processed} eBay sold listings for product {snapshot.product_id}"
+            )
             return {"status": "success", "count": processed}
 
         logger.warning(f"No eBay sold listings matched filters for product {snapshot.product_id}")
@@ -378,10 +293,11 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> Dict[str, Any]:
         logger.error(f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}")
         return {"status": "error", "error": str(exc)}
 
-async def ingest_ebay_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+
+async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
     """
     Ingest active listings from eBay for a specific product.
-    
+
     The eBay connector now returns parsed Listing objects directly,
     so no additional parsing is needed.
     """
@@ -396,25 +312,27 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> Dict[str, An
     try:
         # fetch_ebay_listings now returns List[Listing] directly
         listings = await fetch_ebay_listings(_compose_search_term(snapshot), limit)
-        
+
         if not listings:
             logger.info(f"No eBay listings found for product {snapshot.product_id}")
             return {"status": "success", "count": 0, "message": "No items found"}
 
         # Load full product template for LLM validation
         with SessionLocal() as db:
-            product_template = db.query(ProductTemplate).filter(
-                ProductTemplate.product_id == snapshot.product_id
-            ).first()
-        
+            product_template = (
+                db.query(ProductTemplate)
+                .filter(ProductTemplate.product_id == snapshot.product_id)
+                .first()
+            )
+
         deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
             snapshot,
             deduped,
             product_template=product_template,
             enable_llm=True,
         )
-        
+
         processed = _persist_listings(
             snapshot.product_id,
             filtered,
@@ -436,7 +354,8 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> Dict[str, An
         logger.error(f"Error in eBay listings ingestion for product {snapshot.product_id}: {exc}")
         return {"status": "error", "error": str(exc)}
 
-async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+
+async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
     snapshot = _load_product_snapshot(product_id)
     if not snapshot:
         return {"status": "error", "error": "Product template not found or inactive"}
@@ -449,18 +368,20 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> Dict[st
         listings = await fetch_leboncoin_api_listings(_compose_search_term(snapshot), limit)
         # Load full product template for LLM validation
         with SessionLocal() as db:
-            product_template = db.query(ProductTemplate).filter(
-                ProductTemplate.product_id == snapshot.product_id
-            ).first()
-        
+            product_template = (
+                db.query(ProductTemplate)
+                .filter(ProductTemplate.product_id == snapshot.product_id)
+                .first()
+            )
+
         deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
             snapshot,
             deduped,
             product_template=product_template,
             enable_llm=True,
         )
-        
+
         processed = _persist_listings(
             snapshot.product_id,
             filtered,
@@ -475,9 +396,7 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> Dict[st
             )
             return {"status": "success", "count": processed}
 
-        logger.warning(
-            f"No LeBonCoin listings matched filters for product {snapshot.product_id}"
-        )
+        logger.warning(f"No LeBonCoin listings matched filters for product {snapshot.product_id}")
         return {"status": "no_data", "count": 0}
 
     except Exception as exc:
@@ -486,7 +405,8 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> Dict[st
         )
         return {"status": "error", "error": str(exc)}
 
-async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> Dict[str, Any]:
+
+async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
     snapshot = _load_product_snapshot(product_id)
     if not snapshot:
         return {"status": "error", "error": "Product template not found or inactive"}
@@ -499,18 +419,20 @@ async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> Dict[str, A
         listings = await fetch_leboncoin_api_sold(_compose_search_term(snapshot), limit)
         # Load full product template for LLM validation
         with SessionLocal() as db:
-            product_template = db.query(ProductTemplate).filter(
-                ProductTemplate.product_id == snapshot.product_id
-            ).first()
-        
+            product_template = (
+                db.query(ProductTemplate)
+                .filter(ProductTemplate.product_id == snapshot.product_id)
+                .first()
+            )
+
         deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
             snapshot,
             deduped,
             product_template=product_template,
             enable_llm=True,
         )
-        
+
         processed = _persist_listings(
             snapshot.product_id,
             filtered,
@@ -536,7 +458,8 @@ async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> Dict[str, A
         )
         return {"status": "error", "error": str(exc)}
 
-async def ingest_vinted_listings(product_id: str, limit: int = 50) -> Dict[str, Any]:
+
+async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
     snapshot = _load_product_snapshot(product_id)
     if not snapshot:
         return {"status": "error", "error": "Product template not found or inactive"}
@@ -549,18 +472,20 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> Dict[str, 
         listings = await fetch_vinted_listings(_compose_search_term(snapshot), limit)
         # Load full product template for LLM validation
         with SessionLocal() as db:
-            product_template = db.query(ProductTemplate).filter(
-                ProductTemplate.product_id == snapshot.product_id
-            ).first()
-        
+            product_template = (
+                db.query(ProductTemplate)
+                .filter(ProductTemplate.product_id == snapshot.product_id)
+                .first()
+            )
+
         deduped = _dedupe_listings(listings)
-        filtered, stats, llm_results, screenshot_paths = filter_listings_multi_stage(
+        filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
             snapshot,
             deduped,
             product_template=product_template,
             enable_llm=True,
         )
-        
+
         processed = _persist_listings(
             snapshot.product_id,
             filtered,
@@ -570,25 +495,18 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> Dict[str, 
         )
 
         if processed:
-            logger.info(
-                f"Ingested {processed} Vinted listings for product {snapshot.product_id}"
-            )
+            logger.info(f"Ingested {processed} Vinted listings for product {snapshot.product_id}")
             return {"status": "success", "count": processed}
 
-        logger.warning(
-            f"No Vinted listings matched filters for product {snapshot.product_id}"
-        )
+        logger.warning(f"No Vinted listings matched filters for product {snapshot.product_id}")
         return {"status": "no_data", "count": 0}
 
     except Exception as exc:
-        logger.error(
-            f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}"
-        )
+        logger.error(f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}")
         return {"status": "error", "error": str(exc)}
 
 
-
-def calculate_daily_metrics(product_id: str) -> Dict[str, Any]:
+def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
     """Calculate daily metrics for a product"""
     with SessionLocal() as db:
         today = date.today()
@@ -597,13 +515,17 @@ def calculate_daily_metrics(product_id: str) -> Dict[str, Any]:
         # Get sold items from last 30 days
         thirty_days_ago = now_utc - timedelta(days=30)
 
-        sold_items = db.query(ListingObservation).filter(
-            and_(
-                ListingObservation.product_id == product_id,
-                ListingObservation.is_sold == True,
-                ListingObservation.observed_at >= thirty_days_ago
+        sold_items = (
+            db.query(ListingObservation)
+            .filter(
+                and_(
+                    ListingObservation.product_id == product_id,
+                    ListingObservation.is_sold == True,
+                    ListingObservation.observed_at >= thirty_days_ago,
+                )
             )
-        ).all()
+            .all()
+        )
 
         if not sold_items:
             return {
@@ -614,7 +536,7 @@ def calculate_daily_metrics(product_id: str) -> Dict[str, Any]:
                 "price_p25": None,
                 "price_p75": None,
                 "liquidity_score": 0.0,
-                "trend_score": 0.0
+                "trend_score": 0.0,
             }
 
         prices = [float(item.price) for item in sold_items if item.price]
@@ -651,12 +573,15 @@ def calculate_daily_metrics(product_id: str) -> Dict[str, Any]:
             "sold_count_7d": len(recent_7d),
             "sold_count_30d": len(sold_items),
             "price_median": pmn_data["pmn"],
-            "price_std": pmn_data.get("pmn_high", 0) - pmn_data.get("pmn_low", 0) if pmn_data["pmn"] else 0,
+            "price_std": pmn_data.get("pmn_high", 0) - pmn_data.get("pmn_low", 0)
+            if pmn_data["pmn"]
+            else 0,
             "price_p25": min(prices) if prices else None,
             "price_p75": max(prices) if prices else None,
             "liquidity_score": liquidity_score,
-            "trend_score": trend_score
+            "trend_score": trend_score,
         }
+
 
 def update_product_metrics(product_id: str) -> None:
     """Update or create daily metrics for a product"""
@@ -664,12 +589,16 @@ def update_product_metrics(product_id: str) -> None:
 
     with SessionLocal() as db:
         # Check if metrics already exist for today
-        existing = db.query(ProductDailyMetrics).filter(
-            and_(
-                ProductDailyMetrics.product_id == product_id,
-                ProductDailyMetrics.date == date.today()
+        existing = (
+            db.query(ProductDailyMetrics)
+            .filter(
+                and_(
+                    ProductDailyMetrics.product_id == product_id,
+                    ProductDailyMetrics.date == date.today(),
+                )
             )
-        ).first()
+            .first()
+        )
 
         if existing:
             # Update existing metrics
@@ -678,19 +607,18 @@ def update_product_metrics(product_id: str) -> None:
         else:
             # Create new metrics
             new_metrics = ProductDailyMetrics(
-                product_id=product_id,
-                date=date.today(),
-                **metrics_data
+                product_id=product_id, date=date.today(), **metrics_data
             )
             db.add(new_metrics)
 
         db.commit()
 
+
 async def run_full_ingestion(
     product_id: str,
-    limits: Dict[str, int] | None = None,
-    sources: List[str] | None = None,
-) -> Dict[str, Any]:
+    limits: dict[str, int] | None = None,
+    sources: list[str] | None = None,
+) -> dict[str, Any]:
     """Run full ingestion pipeline for a product template across selected providers."""
 
     snapshot = _load_product_snapshot(product_id)
@@ -711,7 +639,7 @@ async def run_full_ingestion(
         f"Starting ingestion for product '{snapshot.name}' ({snapshot.product_id}) providers={candidate_sources}"
     )
 
-    results: Dict[str, Any] = {
+    results: dict[str, Any] = {
         "product_id": snapshot.product_id,
         "product_name": snapshot.name,
         "category": snapshot.category_name,
@@ -742,43 +670,51 @@ async def run_full_ingestion(
         update_product_metrics(snapshot.product_id)
     except Exception as exc:
         logger.error(f"Error updating metrics for product {snapshot.product_id}: {exc}")
-        results.setdefault("warnings", []).append(
-            f"metrics_update_failed: {snapshot.product_id}"
-        )
+        results.setdefault("warnings", []).append(f"metrics_update_failed: {snapshot.product_id}")
 
-    logger.info(
-        f"Full ingestion completed for product '{snapshot.name}' ({snapshot.product_id})"
-    )
-    
+    logger.info(f"Full ingestion completed for product '{snapshot.name}' ({snapshot.product_id})")
+
     # Trigger alerts for opportunities after ingestion
     try:
         from ingestion.alert_engine import trigger_alerts
         from libs.common.models import MarketPriceNormal, ProductDailyMetrics
-        
+
         with SessionLocal() as db:
             # Get opportunities (listings below PMN)
-            pmn_data = db.query(MarketPriceNormal).filter(
-                MarketPriceNormal.product_id == snapshot.product_id
-            ).first()
-            
-            metrics = db.query(ProductDailyMetrics).filter(
-                ProductDailyMetrics.product_id == snapshot.product_id
-            ).order_by(ProductDailyMetrics.date.desc()).first()
-            
+            pmn_data = (
+                db.query(MarketPriceNormal)
+                .filter(MarketPriceNormal.product_id == snapshot.product_id)
+                .first()
+            )
+
+            metrics = (
+                db.query(ProductDailyMetrics)
+                .filter(ProductDailyMetrics.product_id == snapshot.product_id)
+                .order_by(ProductDailyMetrics.date.desc())
+                .first()
+            )
+
             if pmn_data and pmn_data.pmn:
                 # Get active listings below PMN
-                opportunities_list = db.query(ListingObservation).filter(
-                    ListingObservation.product_id == snapshot.product_id,
-                    ListingObservation.is_sold == False,
-                    ListingObservation.price.isnot(None),
-                    ListingObservation.price < pmn_data.pmn,
-                ).all()
-                
+                opportunities_list = (
+                    db.query(ListingObservation)
+                    .filter(
+                        ListingObservation.product_id == snapshot.product_id,
+                        ListingObservation.is_sold == False,
+                        ListingObservation.price.isnot(None),
+                        ListingObservation.price < pmn_data.pmn,
+                    )
+                    .limit(200)
+                    .all()
+                )
+
                 if opportunities_list:
-                    product_template = db.query(ProductTemplate).filter(
-                        ProductTemplate.product_id == snapshot.product_id
-                    ).first()
-                    
+                    product_template = (
+                        db.query(ProductTemplate)
+                        .filter(ProductTemplate.product_id == snapshot.product_id)
+                        .first()
+                    )
+
                     opportunities = [
                         {
                             "listing": listing,
@@ -788,15 +724,17 @@ async def run_full_ingestion(
                         }
                         for listing in opportunities_list
                     ]
-                    
-                    alert_events = trigger_alerts(opportunities, db)
+
+                    alert_events = await trigger_alerts(opportunities, db)
                     if alert_events:
-                        logger.info(f"Triggered {len(alert_events)} alerts for product {snapshot.product_id}")
+                        logger.info(
+                            f"Triggered {len(alert_events)} alerts for product {snapshot.product_id}"
+                        )
                         results["alerts_triggered"] = len(alert_events)
     except Exception as exc:
         logger.error(f"Error triggering alerts after ingestion: {exc}")
         # Don't fail ingestion if alerts fail
         results.setdefault("warnings", []).append(f"alert_trigger_failed: {exc}")
-    
+
     results["status"] = "success"
     return results
