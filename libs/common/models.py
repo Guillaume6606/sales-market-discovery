@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -57,6 +58,9 @@ class ProductTemplate(Base):
 
 class ListingObservation(Base):
     __tablename__ = "listing_observation"
+    __table_args__ = (
+        UniqueConstraint("source", "listing_id", "product_id", name="uq_listing_source_product"),
+    )
 
     obs_id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(UUID, ForeignKey("product_template.product_id"))
@@ -72,6 +76,8 @@ class ListingObservation(Base):
     location = Column(Text)
     observed_at = Column(TIMESTAMP(timezone=True))
     url = Column(Text)  # Listing URL for direct access
+    last_seen_at = Column(TIMESTAMP(timezone=True))
+    is_stale = Column(Boolean, server_default="false", default=False)
     llm_validated = Column(Boolean, default=False)
     llm_validation_result = Column(JSON)
     llm_validated_at = Column(TIMESTAMP(timezone=True))
@@ -141,6 +147,41 @@ class AlertEvent(Base):
     product = relationship("ProductTemplate")
     observation = relationship("ListingObservation")
 
+
+class IngestionRun(Base):
+    __tablename__ = "ingestion_run"
+
+    run_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
+    product_id = Column(UUID, ForeignKey("product_template.product_id"))
+    source = Column(Text)
+    function_name = Column(Text)
+    status = Column(Text)  # running/success/error/no_data
+    started_at = Column(TIMESTAMP(timezone=True))
+    finished_at = Column(TIMESTAMP(timezone=True))
+    duration_s = Column(Numeric)
+    listings_fetched = Column(Integer)
+    listings_deduped = Column(Integer)
+    listings_persisted = Column(Integer)
+    filtering_stats = Column(JSON)
+    error_message = Column(Text)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    product = relationship("ProductTemplate")
+
+
+class AlertFeedback(Base):
+    __tablename__ = "alert_feedback"
+
+    feedback_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
+    alert_id = Column(BigInteger, ForeignKey("alert_event.alert_id"))
+    feedback = Column(Text)  # interested/not_interested/purchased
+    notes = Column(Text)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    alert = relationship("AlertEvent", back_populates="feedbacks")
+
+
+AlertEvent.feedbacks = relationship("AlertFeedback", back_populates="alert")
 
 Category.products = relationship("ProductTemplate", back_populates="category")
 ProductTemplate.observations = relationship("ListingObservation", back_populates="product")
