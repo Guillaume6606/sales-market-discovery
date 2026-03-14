@@ -217,6 +217,10 @@ class ProductDetail(BaseModel):
     brand: str | None = None
     category: str | None = None
     description: str | None = None
+    target_description: str | None = None
+    negative_keywords: str | None = None
+    min_target_margin: float | None = None
+    llm_verification_enabled: bool = False
     pmn: float | None = None
     pmn_low: float | None = None
     pmn_high: float | None = None
@@ -251,6 +255,10 @@ class ProductTemplateCreate(BaseModel):
     price_max: float | None = None
     providers: List[str] | None = None
     is_active: bool = True
+    negative_keywords: str | None = None
+    target_description: str | None = None
+    min_target_margin: float | None = None
+    llm_verification_enabled: bool = False
 
 
 class ProductTemplateUpdate(BaseModel):
@@ -263,6 +271,10 @@ class ProductTemplateUpdate(BaseModel):
     price_max: float | None = None
     providers: List[str] | None = None
     is_active: bool | None = None
+    negative_keywords: str | None = None
+    target_description: str | None = None
+    min_target_margin: float | None = None
+    llm_verification_enabled: bool | None = None
 
 
 def _decimal_to_float(value: Any) -> float | None:
@@ -297,6 +309,10 @@ def _serialize_product_template(product: ProductTemplate) -> Dict[str, Any]:
         "price_max": _decimal_to_float(product.price_max),
         "providers": list(product.providers or []),
         "is_active": product.is_active,
+        "negative_keywords": product.negative_keywords,
+        "target_description": product.target_description,
+        "min_target_margin": _decimal_to_float(product.min_target_margin),
+        "llm_verification_enabled": product.llm_verification_enabled,
         "category": _serialize_category(product.category),
         "created_at": product.created_at.isoformat() if product.created_at else None,
         "updated_at": product.updated_at.isoformat() if product.updated_at else None,
@@ -407,6 +423,9 @@ def product_detail(product_id: str, db: Session = Depends(get_db)):
             "shipping_cost": _decimal_to_float(obs.shipping_cost),
             "source": obs.source,
             "observed_at": obs.observed_at.isoformat() if obs.observed_at else None,
+            "llm_score": _decimal_to_float(obs.llm_score),
+            "llm_reasoning": obs.llm_reasoning,
+            "llm_verified": obs.llm_verified,
         }
         for obs in live_listings_query.all()
     ]
@@ -418,6 +437,10 @@ def product_detail(product_id: str, db: Session = Depends(get_db)):
         brand=product.brand,
         category=product.category.name if product.category else None,
         description=product.description,
+        target_description=product.target_description,
+        negative_keywords=product.negative_keywords,
+        min_target_margin=_decimal_to_float(product.min_target_margin),
+        llm_verification_enabled=product.llm_verification_enabled,
         pmn=_decimal_to_float(pmn_data.pmn) if pmn_data else None,
         pmn_low=_decimal_to_float(pmn_data.pmn_low) if pmn_data else None,
         pmn_high=_decimal_to_float(pmn_data.pmn_high) if pmn_data else None,
@@ -673,6 +696,10 @@ def create_product(payload: ProductTemplateCreate, db: Session = Depends(get_db)
         price_max=payload.price_max,
         providers=providers,
         is_active=payload.is_active,
+        negative_keywords=payload.negative_keywords,
+        target_description=payload.target_description,
+        min_target_margin=payload.min_target_margin,
+        llm_verification_enabled=payload.llm_verification_enabled,
     )
 
     db.add(product)
@@ -747,6 +774,18 @@ def update_product(
 
     if payload.is_active is not None:
         product.is_active = payload.is_active
+
+    if payload.negative_keywords is not None:
+        product.negative_keywords = payload.negative_keywords
+
+    if payload.target_description is not None:
+        product.target_description = payload.target_description
+
+    if payload.min_target_margin is not None:
+        product.min_target_margin = payload.min_target_margin
+
+    if payload.llm_verification_enabled is not None:
+        product.llm_verification_enabled = payload.llm_verification_enabled
 
     db.commit()
     db.refresh(product)
@@ -1611,8 +1650,13 @@ def get_listing_opportunity_score(obs_id: int, db: Session = Depends(get_db)):
         MarketPriceNormal.product_id == listing.product_id
     ).first()
     
+    # Get product template for opportunity score calculation
+    product_template = db.query(ProductTemplate).filter(
+        ProductTemplate.product_id == listing.product_id
+    ).first()
+    
     # Compute opportunity score
-    opportunity = compute_opportunity_score(listing, product_metrics, pmn_data)
+    opportunity = compute_opportunity_score(listing, product_metrics, pmn_data, product_template)
     
     # Add listing context
     opportunity["listing"] = {

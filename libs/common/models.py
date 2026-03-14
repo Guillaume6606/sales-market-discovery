@@ -33,6 +33,10 @@ class ProductTemplate(Base):
     price_max = Column(Numeric)
     providers = Column(ARRAY(Text), default=list)
     is_active = Column(Boolean, default=True)
+    negative_keywords = Column(Text)  # Comma-separated string
+    target_description = Column(Text)  # "What I am looking for"
+    min_target_margin = Column(Numeric)  # Custom margin % threshold for this product
+    llm_verification_enabled = Column(Boolean, default=False)  # Toggle for LLM analysis
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -58,6 +62,9 @@ class ListingObservation(Base):
     location = Column(Text)
     observed_at = Column(TIMESTAMP(timezone=True))
     url = Column(Text)  # Listing URL for direct access
+    llm_score = Column(Numeric)  # 0-100 score from Gemini
+    llm_reasoning = Column(Text)  # Explanation from Gemini
+    llm_verified = Column(Boolean)  # True if passed LLM check
 
     product = relationship("ProductTemplate", back_populates="observations")
 
