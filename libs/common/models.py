@@ -1,12 +1,27 @@
-from sqlalchemy import Column, Integer, String, Text, Boolean, Numeric, TIMESTAMP, UUID, BigInteger, Date, JSON, ARRAY, ForeignKey
-from sqlalchemy.sql import func
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel
+from sqlalchemy import (
+    ARRAY,
+    JSON,
+    TIMESTAMP,
+    UUID,
+    BigInteger,
+    Boolean,
+    Column,
+    Date,
+    ForeignKey,
+    Integer,
+    Numeric,
+    Text,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from pydantic import BaseModel
-from typing import Literal
-from datetime import datetime
+from sqlalchemy.sql import func
 
 Base = declarative_base()
+
 
 class Category(Base):
     __tablename__ = "category"
@@ -15,9 +30,7 @@ class Category(Base):
     name = Column(Text, unique=True, nullable=False)
     description = Column(Text)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    updated_at = Column(
-        TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class ProductTemplate(Base):
@@ -32,14 +45,15 @@ class ProductTemplate(Base):
     price_min = Column(Numeric)
     price_max = Column(Numeric)
     providers = Column(ARRAY(Text), default=list)
+    words_to_avoid = Column(ARRAY(Text), default=list)
+    enable_llm_validation = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-    updated_at = Column(
-        TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
     last_ingested_at = Column(TIMESTAMP(timezone=True))
 
     category = relationship("Category", back_populates="products")
+
 
 class ListingObservation(Base):
     __tablename__ = "listing_observation"
@@ -58,8 +72,13 @@ class ListingObservation(Base):
     location = Column(Text)
     observed_at = Column(TIMESTAMP(timezone=True))
     url = Column(Text)  # Listing URL for direct access
+    llm_validated = Column(Boolean, default=False)
+    llm_validation_result = Column(JSON)
+    llm_validated_at = Column(TIMESTAMP(timezone=True))
+    screenshot_path = Column(Text)
 
     product = relationship("ProductTemplate", back_populates="observations")
+
 
 class ProductDailyMetrics(Base):
     __tablename__ = "product_daily_metrics"
@@ -77,6 +96,7 @@ class ProductDailyMetrics(Base):
 
     product = relationship("ProductTemplate", back_populates="daily_metrics")
 
+
 class MarketPriceNormal(Base):
     __tablename__ = "market_price_normal"
 
@@ -90,6 +110,7 @@ class MarketPriceNormal(Base):
     # Relationship
     product = relationship("ProductTemplate", back_populates="pmn")
 
+
 class AlertRule(Base):
     __tablename__ = "alert_rule"
 
@@ -101,6 +122,8 @@ class AlertRule(Base):
     min_liquidity_score = Column(Numeric)
     min_seller_rating = Column(Numeric)
     channels = Column(ARRAY(Text))
+    is_active = Column(Boolean, default=True, server_default="true")
+
 
 class AlertEvent(Base):
     __tablename__ = "alert_event"
@@ -118,10 +141,12 @@ class AlertEvent(Base):
     product = relationship("ProductTemplate")
     observation = relationship("ListingObservation")
 
+
 Category.products = relationship("ProductTemplate", back_populates="category")
 ProductTemplate.observations = relationship("ListingObservation", back_populates="product")
 ProductTemplate.daily_metrics = relationship("ProductDailyMetrics", back_populates="product")
 ProductTemplate.pmn = relationship("MarketPriceNormal", back_populates="product", uselist=False)
+
 
 # Standardized Listing model for all connectors
 class Listing(BaseModel):

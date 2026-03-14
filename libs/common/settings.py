@@ -1,11 +1,12 @@
-from pydantic_settings import BaseSettings
 from pydantic import Field
+from pydantic_settings import BaseSettings
+
 
 class Settings(BaseSettings):
     app_env: str = Field(default="local")
     secret_key: str = Field(default="dev")
     use_playwright: bool = Field(default=False)
-    
+
     # Logging
     log_level: str = Field(default="INFO")
 
@@ -22,9 +23,23 @@ class Settings(BaseSettings):
     # APIs
     ebay_app_id: str | None = None
 
+    # LLM Configuration (Gemini)
+    gemini_api_key: str | None = None
+    gemini_model: str = Field(default="gemini-2.0-flash")
+    llm_enabled: bool = Field(default=False)
+
+    # Telegram Configuration
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+
+    # Screenshot Configuration
+    screenshot_storage_path: str = Field(default="/data/screenshots")
+    screenshot_enabled: bool = Field(default=False)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
 
 settings = Settings()
 DATABASE_URL = f"postgresql+psycopg2://{settings.postgres_user}:{settings.postgres_password}@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
