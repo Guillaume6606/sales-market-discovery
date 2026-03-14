@@ -67,7 +67,9 @@ Full roadmap, KPIs, and milestone definitions in `docs/superpowers/specs/2026-03
 **Vision:** Self-maintaining arbitrage detection system surfacing 1-2 high-confidence opportunities/day across liquid, high-value products (electronics, watches, etc.). Target: €1-2K/month within 6 months at <30 min/day operator time.
 
 **Milestones:**
-1. **Trust the System** (W1-4) — Observability, PMN validation, test coverage, feedback loop
+1. **Trust the System** (W1-4) — Observability, PMN validation, test coverage, feedback loop → **[Detailed tasks](docs/milestone-1-todo.md)**
 2. **Fast & Precise** (W5-8) — Higher ingestion frequency, composite opportunity scoring, tiered alerting, LLM activation
 3. **Get Smarter** (W9-14) — Product discovery engine, trend detection, advanced LLM, seller intelligence
 4. **Scale Up** (W15-20) — Portfolio management, new marketplaces, auto-pricing, performance analytics
+
+**Current focus:** Milestone 1. See `docs/milestone-1-todo.md` for the full task breakdown with dependencies and suggested weekly execution order.
