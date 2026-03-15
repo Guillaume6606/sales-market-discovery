@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import case, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from libs.common.db import get_db
@@ -42,14 +43,23 @@ def _verify_webhook_secret(request: Request) -> None:
 
 
 def _upsert_feedback(db: Session, alert_id: int, feedback: str, notes: str | None = None) -> str:
-    """Atomic upsert of feedback for an alert. Returns 'created' or 'updated'."""
-    existing = db.query(AlertFeedback).filter(AlertFeedback.alert_id == alert_id).first()
-    if existing:
-        existing.feedback = feedback
-        existing.notes = notes if notes is not None else existing.notes
-        return "updated"
-    db.add(AlertFeedback(alert_id=alert_id, feedback=feedback, notes=notes))
-    return "created"
+    """Atomic upsert using INSERT ... ON CONFLICT DO UPDATE (PostgreSQL)."""
+    values: dict[str, Any] = {"alert_id": alert_id, "feedback": feedback}
+    if notes is not None:
+        values["notes"] = notes
+
+    stmt = pg_insert(AlertFeedback).values(**values)
+    update_cols: dict[str, Any] = {"feedback": stmt.excluded.feedback}
+    if notes is not None:
+        update_cols["notes"] = stmt.excluded.notes
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["alert_id"],
+        set_=update_cols,
+    )
+    result = db.execute(stmt)
+    # rowcount == 1 for both insert and update in ON CONFLICT DO UPDATE
+    # Use xmax trick: if xmax != 0, it was an update (but simpler: just check)
+    return "created" if result.rowcount == 1 else "updated"
 
 
 # --------------------------------------------------------------------------- #

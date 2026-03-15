@@ -8,6 +8,7 @@ depends_on = None
 
 
 def upgrade():
+    # New table: PMN computation history for backtesting
     op.create_table(
         "pmn_history",
         sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
@@ -30,36 +31,20 @@ def upgrade():
         ["product_id", "computed_at"],
     )
 
-    op.create_table(
+    # Alter alert_feedback (created in 0002): add unique constraint + updated_at
+    op.create_unique_constraint("uq_alert_feedback_alert_id", "alert_feedback", ["alert_id"])
+    op.add_column(
         "alert_feedback",
         sa.Column(
-            "feedback_id",
-            sa.UUID,
-            primary_key=True,
-            server_default=sa.text("gen_random_uuid()"),
-        ),
-        sa.Column(
-            "alert_id",
-            sa.BigInteger,
-            sa.ForeignKey("alert_event.alert_id"),
-            nullable=False,
-            unique=True,
-        ),
-        sa.Column("feedback", sa.Text, nullable=False),
-        sa.Column("notes", sa.Text),
-        sa.Column(
-            "created_at",
+            "updated_at",
             sa.TIMESTAMP(timezone=True),
             server_default=sa.func.now(),
-        ),
-        sa.CheckConstraint(
-            "feedback IN ('interested', 'not_interested', 'purchased')",
-            name="ck_alert_feedback_valid",
         ),
     )
 
 
 def downgrade():
-    op.drop_table("alert_feedback")
+    op.drop_column("alert_feedback", "updated_at")
+    op.drop_constraint("uq_alert_feedback_alert_id", "alert_feedback", type_="unique")
     op.drop_index("ix_pmn_history_product_computed", table_name="pmn_history")
     op.drop_table("pmn_history")
