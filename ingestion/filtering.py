@@ -7,10 +7,11 @@ from typing import Any
 
 from loguru import logger
 
-from ingestion.ingestion import ProductTemplateSnapshot
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.models import Listing, ProductTemplate
 from libs.common.screenshot_service import capture_listing_screenshot
+
+from ingestion.schemas import ProductTemplateSnapshot
 
 
 @dataclass
