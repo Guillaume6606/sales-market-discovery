@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 # ARQ imports for proper job enqueuing
@@ -24,6 +24,7 @@ from libs.common.models import (
     ProductTemplate,
 )
 from libs.common.settings import settings
+from backend.routers.health import router as health_router
 
 # ARQ-based ingestion - no need to import heavy ingestion modules in backend
 
@@ -39,6 +40,7 @@ except Exception as e:
 arq_pool = None
 
 app = FastAPI(title="Market Discovery API", version="0.1.0")
+app.include_router(health_router)
 
 
 @app.on_event("startup")
@@ -144,6 +146,7 @@ def products_discovery(
             and_(
                 ProductTemplate.product_id == ListingObservation.product_id,
                 ListingObservation.is_sold == False,
+                ListingObservation.is_stale == False,
                 ListingObservation.price.isnot(None),
             ),
         )
@@ -376,7 +379,7 @@ def product_detail(product_id: str, db: Session = Depends(get_db)):
     )
 
     # Get recent sold listings (last 30 days)
-    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    thirty_days_ago = datetime.now(UTC) - timedelta(days=30)
     recent_solds_query = (
         db.query(ListingObservation)
         .filter(
@@ -469,7 +472,7 @@ def product_price_history(
 
     # Get date range
     days = min(days, 90)  # Cap at 90 days
-    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+    start_date = datetime.now(UTC) - timedelta(days=days)
 
     # Get sold items grouped by day
     sold_history = (
@@ -1339,7 +1342,7 @@ def analytics_overview(db: Session = Depends(get_db)):
     )
 
     # Recent activity (last 24 hours)
-    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    yesterday = datetime.now(UTC) - timedelta(days=1)
     recent_observations = (
         db.query(ListingObservation).filter(ListingObservation.observed_at >= yesterday).count()
     )
@@ -1357,7 +1360,7 @@ def analytics_overview(db: Session = Depends(get_db)):
             "leboncoin": leboncoin_count,
             "vinted": vinted_count,
         },
-        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "last_updated": datetime.now(UTC).isoformat(),
     }
 
 
@@ -1600,7 +1603,7 @@ def get_computation_status(db: Session = Depends(get_db)):
     )
 
     # Recent PMN computations (last 24 hours)
-    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    yesterday = datetime.now(UTC) - timedelta(days=1)
     recent_pmn_updates = (
         db.query(MarketPriceNormal).filter(MarketPriceNormal.last_computed_at >= yesterday).count()
     )
@@ -1629,7 +1632,7 @@ def get_computation_status(db: Session = Depends(get_db)):
         if latest_pmn and latest_pmn.last_computed_at
         else None,
         "average_liquidity_score": round(float(avg_liquidity), 2) if avg_liquidity else None,
-        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "last_updated": datetime.now(UTC).isoformat(),
     }
 
 
