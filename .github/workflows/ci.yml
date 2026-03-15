@@ -64,8 +64,9 @@ jobs:
       POSTGRES_PASSWORD: app
       POSTGRES_DB: app
       POSTGRES_HOST: localhost
-      POSTGRES_PORT: 5432
+      POSTGRES_PORT: "5432"
       REDIS_URL: redis://localhost:6379/0
+      DATABASE_URL: postgresql+psycopg2://app:app@localhost:5432/app
 
     steps:
       - uses: actions/checkout@v4
