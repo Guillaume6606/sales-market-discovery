@@ -31,6 +31,9 @@ def upgrade():
         ["product_id", "computed_at"],
     )
 
+    # Align alert_feedback.alert_id with ORM (nullable=False)
+    op.alter_column("alert_feedback", "alert_id", nullable=False)
+
     # Alter alert_feedback (created in 0002): add unique constraint + updated_at
     op.create_unique_constraint("uq_alert_feedback_alert_id", "alert_feedback", ["alert_id"])
     op.add_column(
@@ -46,5 +49,6 @@ def upgrade():
 def downgrade():
     op.drop_column("alert_feedback", "updated_at")
     op.drop_constraint("uq_alert_feedback_alert_id", "alert_feedback", type_="unique")
+    op.alter_column("alert_feedback", "alert_id", nullable=True)
     op.drop_index("ix_pmn_history_product_computed", table_name="pmn_history")
     op.drop_table("pmn_history")

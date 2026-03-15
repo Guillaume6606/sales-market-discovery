@@ -8,6 +8,7 @@ from typing import Any
 
 from loguru import logger
 
+from libs.common.models import VALID_FEEDBACK_VALUES
 from libs.common.settings import settings
 
 try:
@@ -112,22 +113,20 @@ async def send_opportunity_alert(
         # Build inline keyboard if alert_id is provided
         reply_markup = None
         if alert_id is not None and TELEGRAM_AVAILABLE:
-            reply_markup = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "Interested", callback_data=f"fb:{alert_id}:interested"
-                        ),
-                        InlineKeyboardButton(
-                            "Not Interested",
-                            callback_data=f"fb:{alert_id}:not_interested",
-                        ),
-                    ],
-                    [
-                        InlineKeyboardButton("Purchased", callback_data=f"fb:{alert_id}:purchased"),
-                    ],
-                ]
-            )
+            # Button labels keyed by feedback value from the canonical constant
+            _labels = {
+                "interested": "Interested",
+                "not_interested": "Not Interested",
+                "purchased": "Purchased",
+            }
+            buttons = [
+                InlineKeyboardButton(
+                    _labels.get(val, val),
+                    callback_data=f"fb:{alert_id}:{val}",
+                )
+                for val in VALID_FEEDBACK_VALUES
+            ]
+            reply_markup = InlineKeyboardMarkup([buttons[:2], buttons[2:]])
 
         # Send message
         try:

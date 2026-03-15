@@ -186,6 +186,9 @@ class IngestionRun(Base):
     product = relationship("ProductTemplate")
 
 
+VALID_FEEDBACK_VALUES = ("interested", "not_interested", "purchased")
+
+
 class AlertFeedback(Base):
     __tablename__ = "alert_feedback"
     __table_args__ = (

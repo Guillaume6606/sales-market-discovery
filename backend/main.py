@@ -27,6 +27,7 @@ from libs.common.models import (
     ProductTemplate,
 )
 from libs.common.settings import settings
+from libs.common.utils import decimal_to_float as _decimal_to_float
 
 # ARQ-based ingestion - no need to import heavy ingestion modules in backend
 
@@ -303,15 +304,6 @@ class ProductTemplateUpdate(BaseModel):
     words_to_avoid: list[str] | None = None
     enable_llm_validation: bool | None = None
     is_active: bool | None = None
-
-
-def _decimal_to_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _serialize_category(category: Category | None) -> dict[str, Any] | None:

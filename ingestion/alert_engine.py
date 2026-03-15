@@ -3,7 +3,6 @@ Alert rule evaluation engine for triggering Telegram notifications.
 """
 
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
 from loguru import logger
@@ -20,15 +19,7 @@ from libs.common.models import (
 )
 from libs.common.settings import settings
 from libs.common.telegram_service import send_opportunity_alert
-
-
-def _decimal_to_float(value: Decimal | float | None) -> float | None:
-    """Convert Decimal to float."""
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
+from libs.common.utils import decimal_to_float as _decimal_to_float
 
 
 def evaluate_alert_rules(

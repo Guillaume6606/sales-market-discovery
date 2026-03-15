@@ -13,19 +13,21 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from libs.common.db import get_db
-from libs.common.models import AlertEvent, AlertFeedback
+from libs.common.models import VALID_FEEDBACK_VALUES, AlertEvent, AlertFeedback
 from libs.common.settings import settings
 
 try:
-    from telegram import Bot
+    from telegram import Bot  # noqa: F401 (used for type reference)
 
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
 
+from libs.common.telegram_service import _get_bot
+
 router = APIRouter(tags=["feedback"])
 
-VALID_FEEDBACK = {"interested", "not_interested", "purchased"}
+VALID_FEEDBACK = set(VALID_FEEDBACK_VALUES)
 
 
 class FeedbackCreate(BaseModel):
@@ -56,10 +58,10 @@ def _upsert_feedback(db: Session, alert_id: int, feedback: str, notes: str | Non
         index_elements=["alert_id"],
         set_=update_cols,
     )
-    result = db.execute(stmt)
-    # rowcount == 1 for both insert and update in ON CONFLICT DO UPDATE
-    # Use xmax trick: if xmax != 0, it was an update (but simpler: just check)
-    return "created" if result.rowcount == 1 else "updated"
+    db.execute(stmt)
+    # ON CONFLICT DO UPDATE always yields rowcount==1 regardless of insert vs update,
+    # so we cannot distinguish between the two. Return "upserted" instead.
+    return "upserted"
 
 
 # --------------------------------------------------------------------------- #
@@ -108,9 +110,9 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)) -> d
 
     # Answer callback query and remove keyboard
     callback_query_id = callback_query.get("id")
-    if TELEGRAM_AVAILABLE and settings.telegram_bot_token and callback_query_id:
+    bot = _get_bot() if callback_query_id else None
+    if bot and callback_query_id:
         try:
-            bot = Bot(token=settings.telegram_bot_token)
             await bot.answer_callback_query(callback_query_id, text=f"Feedback recorded: {action}")
             # Remove inline keyboard from original message
             message = callback_query.get("message", {})
@@ -222,8 +224,20 @@ def alert_precision(
             AlertEvent.sent_at >= since,
             AlertEvent.suppressed.is_(False),
         )
-        .one()
+        .one_or_none()
     )
+
+    if row is None:
+        return {
+            "days": days,
+            "total_alerts": total_alerts,
+            "total_with_feedback": 0,
+            "feedback_rate": round(0 / total_alerts, 4) if total_alerts > 0 else None,
+            "interested_count": 0,
+            "not_interested_count": 0,
+            "purchased_count": 0,
+            "precision": None,
+        }
 
     total_with_feedback = row.total or 0
     interested_count = row.interested or 0
