@@ -148,6 +148,69 @@ async def send_opportunity_alert(
         }
 
 
+async def send_system_alert(
+    title: str,
+    stale_products: list[dict[str, Any]],
+    failing_connectors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Send system health alert via Telegram.
+
+    Args:
+        title: Alert title
+        stale_products: List of dicts with 'name' and 'hours_since_ingestion'
+        failing_connectors: List of dicts with 'name', 'consecutive_failures', 'last_error'
+
+    Returns:
+        Dict with send status
+    """
+    bot = _get_bot()
+    if not bot:
+        return {"status": "error", "error": "Telegram bot not available"}
+
+    if not settings.telegram_chat_id:
+        return {"status": "error", "error": "Telegram chat ID not configured"}
+
+    try:
+        sections = []
+
+        if stale_products:
+            lines = ["<b>Stale Products:</b>"]
+            for p in stale_products:
+                name = html.escape(p.get("name", "Unknown"))
+                hours = p.get("hours_since_ingestion")
+                lines.append(
+                    f"  - {name} ({hours:.0f}h since last ingestion)"
+                    if hours
+                    else f"  - {name} (never ingested)"
+                )
+            sections.append("\n".join(lines))
+
+        if failing_connectors:
+            lines = ["<b>Failing Connectors:</b>"]
+            for c in failing_connectors:
+                name = html.escape(c.get("name", "Unknown"))
+                failures = c.get("consecutive_failures", 0)
+                last_error = html.escape(c.get("last_error", "unknown")[:100])
+                lines.append(f"  - {name}: {failures} consecutive failures (last: {last_error})")
+            sections.append("\n".join(lines))
+
+        message_text = f"\u26a0\ufe0f <b>{html.escape(title)}</b>\n\n" + "\n\n".join(sections)
+
+        message = await bot.send_message(
+            chat_id=settings.telegram_chat_id,
+            text=message_text,
+            parse_mode="HTML",
+        )
+
+        logger.info(f"Sent system alert: {title}")
+        return {"status": "success", "message_id": message.message_id}
+
+    except Exception as e:
+        logger.error(f"Error sending system alert: {e}", exc_info=True)
+        return {"status": "error", "error": str(e)}
+
+
 async def send_test_message(message: str = "Test message from Market Discovery") -> dict[str, Any]:
     """
     Send a test message to verify Telegram configuration.
