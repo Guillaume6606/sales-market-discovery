@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
+from backend.routers.feedback import router as feedback_router
 from backend.routers.health import router as health_router
 from ingestion.constants import SUPPORTED_PROVIDERS
 from libs.common.db import engine, get_db
@@ -21,6 +22,7 @@ from libs.common.models import (
     Category,
     ListingObservation,
     MarketPriceNormal,
+    PMNHistory,
     ProductDailyMetrics,
     ProductTemplate,
 )
@@ -41,6 +43,7 @@ arq_pool = None
 
 app = FastAPI(title="Market Discovery API", version="0.1.0")
 app.include_router(health_router)
+app.include_router(feedback_router)
 
 
 @app.on_event("startup")
@@ -92,6 +95,7 @@ class DiscoveryItem(BaseModel):
     title: str
     brand: str | None = None
     pmn: float | None = None
+    pmn_confidence: float | None = None
     price_min_market: float | None = None
     delta_vs_pmn_pct: float | None = None
     liquidity_score: float | None = None
@@ -111,6 +115,7 @@ def products_discovery(
     max_margin: float | None = Query(None, description="max % below PMN (e.g., 0)"),
     min_liquidity: float | None = Query(None, description="min liquidity score (0-1)"),
     min_trend: float | None = Query(None, description="min trend score"),
+    min_pmn_confidence: float | None = Query(None, description="min PMN confidence (0-1)"),
     sort_by: str | None = Query(
         "margin", description="Sort by: margin, liquidity, trend, last_sold"
     ),
@@ -176,6 +181,13 @@ def products_discovery(
         if not pmn or pmn.pmn is None:
             continue
 
+        # Extract confidence and filter
+        pmn_confidence = _decimal_to_float(pmn.confidence) if pmn else None
+        if min_pmn_confidence is not None and (
+            pmn_confidence is None or pmn_confidence < min_pmn_confidence
+        ):
+            continue
+
         # Calculate delta vs PMN
         pmn_value = _decimal_to_float(pmn.pmn)
         best_price_value = _decimal_to_float(best_price)
@@ -208,6 +220,7 @@ def products_discovery(
                 title=product.name,
                 brand=product.brand,
                 pmn=pmn_value,
+                pmn_confidence=pmn_confidence,
                 price_min_market=best_price_value,
                 delta_vs_pmn_pct=round(delta_pct, 2) if delta_pct else None,
                 liquidity_score=liquidity,
@@ -544,6 +557,39 @@ def product_price_history(
                 "count": row.count,
             }
             for row in active_history
+        ],
+    }
+
+
+@app.get("/products/{product_id}/pmn-history")
+def product_pmn_history(
+    product_id: str,
+    limit: int = Query(50, description="Max number of records to return"),
+    db: Session = Depends(get_db),
+):
+    """Get PMN computation history for a product (newest first)."""
+    _get_product_or_404(db, product_id)
+
+    rows = (
+        db.query(PMNHistory)
+        .filter(PMNHistory.product_id == product_id)
+        .order_by(desc(PMNHistory.computed_at))
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "product_id": product_id,
+        "history": [
+            {
+                "computed_at": row.computed_at.isoformat() if row.computed_at else None,
+                "pmn": _decimal_to_float(row.pmn),
+                "pmn_low": _decimal_to_float(row.pmn_low),
+                "pmn_high": _decimal_to_float(row.pmn_high),
+                "confidence": _decimal_to_float(row.confidence),
+                "sample_size": row.sample_size,
+            }
+            for row in rows
         ],
     }
 
