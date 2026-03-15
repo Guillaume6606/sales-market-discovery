@@ -34,9 +34,13 @@ def upgrade():
             "feedback_id", sa.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")
         ),
         sa.Column("alert_id", sa.BigInteger, sa.ForeignKey("alert_event.alert_id")),
-        sa.Column("feedback", sa.Text),
+        sa.Column("feedback", sa.Text, nullable=False),
         sa.Column("notes", sa.Text),
         sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now()),
+        sa.CheckConstraint(
+            "feedback IN ('interested', 'not_interested', 'purchased')",
+            name="ck_alert_feedback_valid",
+        ),
     )
 
     # Add columns to listing_observation

@@ -4,10 +4,11 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+import numpy as np
 from loguru import logger
 from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, make_transient
 
 from ingestion.connectors.ebay import fetch_ebay_listings, fetch_ebay_sold
 from ingestion.connectors.leboncoin_api import (
@@ -239,7 +240,7 @@ def _persist_listings(
                 if screenshot_paths and listing.listing_id in screenshot_paths:
                     screenshot_path = screenshot_paths[listing.listing_id]
 
-                _upsert_listing(
+                success = _upsert_listing(
                     db,
                     product,
                     listing,
@@ -247,7 +248,8 @@ def _persist_listings(
                     llm_validation_result=llm_result,
                     screenshot_path=screenshot_path,
                 )
-                processed_count += 1
+                if success:
+                    processed_count += 1
             except Exception as exc:
                 logger.error(
                     f"Failed to persist listing {listing.listing_id} for product {product_id}: {exc}"
@@ -290,6 +292,8 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
                     .filter(ProductTemplate.product_id == snapshot.product_id)
                     .first()
                 )
+                if product_template:
+                    make_transient(product_template)
 
             deduped = _dedupe_listings(listings)
             run.listings_deduped = len(deduped)
@@ -362,6 +366,8 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, An
                     .filter(ProductTemplate.product_id == snapshot.product_id)
                     .first()
                 )
+                if product_template:
+                    make_transient(product_template)
 
             deduped = _dedupe_listings(listings)
             run.listings_deduped = len(deduped)
@@ -427,6 +433,8 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[st
                     .filter(ProductTemplate.product_id == snapshot.product_id)
                     .first()
                 )
+                if product_template:
+                    make_transient(product_template)
 
             deduped = _dedupe_listings(listings)
             run.listings_deduped = len(deduped)
@@ -492,6 +500,8 @@ async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, A
                     .filter(ProductTemplate.product_id == snapshot.product_id)
                     .first()
                 )
+                if product_template:
+                    make_transient(product_template)
 
             deduped = _dedupe_listings(listings)
             run.listings_deduped = len(deduped)
@@ -557,6 +567,8 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
                     .filter(ProductTemplate.product_id == snapshot.product_id)
                     .first()
                 )
+                if product_template:
+                    make_transient(product_template)
 
             deduped = _dedupe_listings(listings)
             run.listings_deduped = len(deduped)
@@ -668,8 +680,8 @@ def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
             "price_std": pmn_data.get("pmn_high", 0) - pmn_data.get("pmn_low", 0)
             if pmn_data["pmn"]
             else 0,
-            "price_p25": min(prices) if prices else None,
-            "price_p75": max(prices) if prices else None,
+            "price_p25": float(np.percentile(prices, 25)) if prices else None,
+            "price_p75": float(np.percentile(prices, 75)) if prices else None,
             "liquidity_score": liquidity_score,
             "trend_score": trend_score,
         }

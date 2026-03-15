@@ -9,6 +9,7 @@ from sqlalchemy import (
     UUID,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     ForeignKey,
@@ -171,10 +172,16 @@ class IngestionRun(Base):
 
 class AlertFeedback(Base):
     __tablename__ = "alert_feedback"
+    __table_args__ = (
+        CheckConstraint(
+            "feedback IN ('interested', 'not_interested', 'purchased')",
+            name="ck_alert_feedback_valid",
+        ),
+    )
 
     feedback_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
     alert_id = Column(BigInteger, ForeignKey("alert_event.alert_id"))
-    feedback = Column(Text)  # interested/not_interested/purchased
+    feedback = Column(Text, nullable=False)
     notes = Column(Text)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
