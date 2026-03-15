@@ -1,17 +1,19 @@
 """
 LeBonCoin connector using advanced web scraping
 """
-import asyncio
+
 import json
 import re
-from typing import Dict, List, Any, Optional
-from datetime import datetime, timezone
-from urllib.parse import urlencode, quote
+from datetime import UTC, datetime
+from typing import Any
+from urllib.parse import urlencode
+
 from bs4 import BeautifulSoup
 from loguru import logger
 
-from libs.common.scraping import ScrapingSession, ScrapingUtils, scraping_config
 from libs.common.models import Listing
+from libs.common.scraping import ScrapingSession, ScrapingUtils, scraping_config
+
 
 class LeBonCoinConnector:
     """LeBonCoin scraping connector"""
@@ -31,7 +33,10 @@ class LeBonCoinConnector:
         # LeBonCoin condition mappings (French)
         if any(word in condition_lower for word in ["neuf", "new", "nouveau"]):
             return "new"
-        elif any(word in condition_lower for word in ["Très bon état", "comme neuf", "like new", "excellent"]):
+        elif any(
+            word in condition_lower
+            for word in ["Très bon état", "comme neuf", "like new", "excellent"]
+        ):
             return "like_new"
         elif any(word in condition_lower for word in ["bon état", "good", "bien"]):
             return "good"
@@ -40,7 +45,9 @@ class LeBonCoinConnector:
 
         return None
 
-    async def search_items(self, keyword: str, category: str = "", limit: int = 50) -> List[Listing]:
+    async def search_items(
+        self, keyword: str, category: str = "", limit: int = 50
+    ) -> list[Listing]:
         """
         Search for items on LeBonCoin
 
@@ -87,13 +94,15 @@ class LeBonCoinConnector:
                         price=item_dict.get("price"),
                         currency=item_dict.get("currency", "EUR"),
                         condition_raw=item_dict.get("condition"),
-                        condition_norm=self.normalize_condition_leboncoin(item_dict.get("condition", "")),
+                        condition_norm=self.normalize_condition_leboncoin(
+                            item_dict.get("condition", "")
+                        ),
                         location=item_dict.get("location"),
                         seller_rating=1.0 if item_dict.get("is_pro") else 0.0,
                         shipping_cost=item_dict.get("shipping_cost"),
-                        observed_at=datetime.now(timezone.utc),
+                        observed_at=datetime.now(UTC),
                         is_sold=False,
-                        url=item_dict.get("item_url")
+                        url=item_dict.get("item_url"),
                     )
                     items.append(listing)
 
@@ -106,7 +115,7 @@ class LeBonCoinConnector:
 
         return items
 
-    async def get_item_details(self, item_url: str) -> Optional[Dict[str, Any]]:
+    async def get_item_details(self, item_url: str) -> dict[str, Any] | None:
         """
         Get detailed information about a specific item
 
@@ -124,11 +133,13 @@ class LeBonCoinConnector:
                 item_details = self._parse_item_details(html_content, item_url)
 
                 if item_details:
-                    item_details.update({
-                        "source": "leboncoin",
-                        "observed_at": datetime.now(timezone.utc).isoformat(),
-                        "item_url": item_url
-                    })
+                    item_details.update(
+                        {
+                            "source": "leboncoin",
+                            "observed_at": datetime.now(UTC).isoformat(),
+                            "item_url": item_url,
+                        }
+                    )
 
                 return item_details
 
@@ -136,9 +147,9 @@ class LeBonCoinConnector:
             logger.error(f"Error getting item details from {item_url}: {e}")
             return None
 
-    def _parse_search_results(self, html_content: str) -> List[Dict[str, Any]]:
+    def _parse_search_results(self, html_content: str) -> list[dict[str, Any]]:
         """Parse search results HTML"""
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html_content, "html.parser")
         # 1) Prefer structured data exposed by the Next.js payload (contains full ad objects)
         items_from_json = self._parse_next_data(soup)
         if items_from_json:
@@ -146,12 +157,12 @@ class LeBonCoinConnector:
             return items_from_json
 
         # 2) Fallback to scraping rendered cards if structured data is missing
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         item_selectors = [
             '[data-testid="ad-card"]',
             'a[data-qa-id="aditem_container"]',
-            '.ad',
-            '.item',
+            ".ad",
+            ".item",
             '[class*="ad-"]',
         ]
 
@@ -163,7 +174,9 @@ class LeBonCoinConnector:
                 break
 
         if not item_elements:
-            logger.warning("No item elements found in search results (structured payload unavailable)")
+            logger.warning(
+                "No item elements found in search results (structured payload unavailable)"
+            )
             return items
 
         for element in item_elements:
@@ -176,7 +189,7 @@ class LeBonCoinConnector:
 
         return items
 
-    def _parse_next_data(self, soup: BeautifulSoup) -> List[Dict[str, Any]]:
+    def _parse_next_data(self, soup: BeautifulSoup) -> list[dict[str, Any]]:
         """Extract listings from the Next.js __NEXT_DATA__ payload."""
         script_tag = soup.find("script", id="__NEXT_DATA__", type="application/json")
         if not script_tag or not script_tag.string:
@@ -192,7 +205,7 @@ class LeBonCoinConnector:
         if not ads:
             return []
 
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         for ad in ads:
             item = self._map_ad_to_item(ad)
@@ -206,10 +219,10 @@ class LeBonCoinConnector:
 
         return items
 
-    def _extract_ads_from_json(self, payload: Any) -> List[Dict[str, Any]]:
+    def _extract_ads_from_json(self, payload: Any) -> list[dict[str, Any]]:
         """Walk the JSON payload and collect dictionaries that look like ads."""
         stack = [payload]
-        ads: List[Dict[str, Any]] = []
+        ads: list[dict[str, Any]] = []
 
         while stack:
             current = stack.pop()
@@ -222,7 +235,7 @@ class LeBonCoinConnector:
 
         return ads
 
-    def _map_ad_to_item(self, ad: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _map_ad_to_item(self, ad: dict[str, Any]) -> dict[str, Any] | None:
         """Convert a raw ad dictionary to the internal item format."""
         listing_id = ad.get("list_id") or ad.get("ad_id") or ad.get("id")
         if listing_id is None:
@@ -234,7 +247,7 @@ class LeBonCoinConnector:
         description = ad.get("body") or ad.get("description") or ""
 
         price_info = ad.get("price")
-        price: Optional[float] = None
+        price: float | None = None
         currency = "EUR"
 
         if isinstance(price_info, dict):
@@ -312,7 +325,9 @@ class LeBonCoinConnector:
 
         category = ad.get("category_name") or ad.get("category_label") or ad.get("category")
 
-        date_listed = ad.get("first_publication_date") or ad.get("index_date") or ad.get("publication_date")
+        date_listed = (
+            ad.get("first_publication_date") or ad.get("index_date") or ad.get("publication_date")
+        )
 
         shipping_cost = None
         shipping_info = ad.get("shipping") or price_info or {}
@@ -341,26 +356,32 @@ class LeBonCoinConnector:
             "shipping_cost": shipping_cost,
         }
 
-    def _parse_item_element(self, element) -> Optional[Dict[str, Any]]:
+    def _parse_item_element(self, element) -> dict[str, Any] | None:
         """Parse individual item element"""
         try:
             # Extract item URL
-            link_element = element if element.name == 'a' and element.get('href') else element.select_one('a[href]')
+            link_element = (
+                element
+                if element.name == "a" and element.get("href")
+                else element.select_one("a[href]")
+            )
             if not link_element:
                 return None
 
-            item_url = link_element['href']
-            if not item_url.startswith('http'):
+            item_url = link_element["href"]
+            if not item_url.startswith("http"):
                 item_url = f"{self.BASE_URL}{item_url}"
 
             # Extract title
             title_element = (
                 element.select_one('[data-testid="ad-title"]')
-                or element.select_one('h3')
-                or element.select_one('h2')
-                or element.select_one('.title')
+                or element.select_one("h3")
+                or element.select_one("h2")
+                or element.select_one(".title")
             )
-            title = self.scraping_utils.clean_text(title_element.get_text()) if title_element else ""
+            title = (
+                self.scraping_utils.clean_text(title_element.get_text()) if title_element else ""
+            )
 
             # Extract price
             price_element = (
@@ -383,7 +404,7 @@ class LeBonCoinConnector:
 
             # Extract date
             date_element = (
-                element.select_one('time')
+                element.select_one("time")
                 or element.select_one('[data-testid="date"]')
                 or element.select_one('span[class*="Date"]')
                 or element.select_one('span[class*="date"]')
@@ -392,8 +413,8 @@ class LeBonCoinConnector:
             date_obj = self.scraping_utils.extract_date(date_text)
 
             # Extract image URL
-            image_element = element.select_one('img[src]')
-            image_url = image_element['src'] if image_element else ""
+            image_element = element.select_one("img[src]")
+            image_url = image_element["src"] if image_element else ""
 
             # Extract description/preview text
             desc_element = (
@@ -402,11 +423,15 @@ class LeBonCoinConnector:
                 or element.select_one('span[class*="description"]')
                 or element.select_one('p[class*="text"]')
             )
-            description = self.scraping_utils.clean_text(desc_element.get_text()) if desc_element else ""
+            description = (
+                self.scraping_utils.clean_text(desc_element.get_text()) if desc_element else ""
+            )
 
             # Determine if it's a professional seller (pro)
             is_pro = False
-            pro_indicator = element.select_one('[data-testid="pro-label"], [class*="Pro"], [class*="pro"]')
+            pro_indicator = element.select_one(
+                '[data-testid="pro-label"], [class*="Pro"], [class*="pro"]'
+            )
             if pro_indicator:
                 is_pro = True
 
@@ -429,13 +454,13 @@ class LeBonCoinConnector:
             logger.error(f"Error parsing item element: {e}")
             return None
 
-    def _parse_item_details(self, html_content: str, item_url: str) -> Optional[Dict[str, Any]]:
+    def _parse_item_details(self, html_content: str, item_url: str) -> dict[str, Any] | None:
         """Parse detailed item page"""
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = BeautifulSoup(html_content, "html.parser")
 
         try:
             # Try to find JSON-LD structured data first (more reliable)
-            json_ld = soup.find('script', type='application/ld+json')
+            json_ld = soup.find("script", type="application/ld+json")
             if json_ld:
                 try:
                     structured_data = json.loads(json_ld.string)
@@ -450,7 +475,7 @@ class LeBonCoinConnector:
             logger.error(f"Error parsing item details: {e}")
             return None
 
-    def _parse_structured_data(self, structured_data: Dict, item_url: str) -> Dict[str, Any]:
+    def _parse_structured_data(self, structured_data: dict, item_url: str) -> dict[str, Any]:
         """Parse JSON-LD structured data"""
         try:
             # LeBonCoin might use different structured data formats
@@ -458,28 +483,28 @@ class LeBonCoinConnector:
                 structured_data = structured_data[0]
 
             # Extract basic information
-            title = structured_data.get('name', '')
-            description = structured_data.get('description', '')
+            title = structured_data.get("name", "")
+            description = structured_data.get("description", "")
 
             # Extract price
-            offers = structured_data.get('offers', {})
+            offers = structured_data.get("offers", {})
             if isinstance(offers, list):
                 offers = offers[0]
 
-            price = offers.get('price')
+            price = offers.get("price")
             if isinstance(price, str):
                 price = float(price)
 
-            currency = offers.get('priceCurrency', 'EUR')
+            currency = offers.get("priceCurrency", "EUR")
 
             # Extract location
-            location = structured_data.get('address', {})
-            location_text = location.get('addressLocality', '')
+            location = structured_data.get("address", {})
+            location_text = location.get("addressLocality", "")
 
             # Extract images
-            images = structured_data.get('image', [])
+            images = structured_data.get("image", [])
             if isinstance(images, dict):
-                images = [images.get('url', '')]
+                images = [images.get("url", "")]
             elif isinstance(images, str):
                 images = [images]
 
@@ -491,25 +516,25 @@ class LeBonCoinConnector:
                 "currency": currency,
                 "location": location_text,
                 "images": images,
-                "category": structured_data.get('category', ''),
+                "category": structured_data.get("category", ""),
             }
 
         except Exception as e:
             logger.error(f"Error parsing structured data: {e}")
             return {}
 
-    def _parse_item_html(self, soup: BeautifulSoup, item_url: str) -> Dict[str, Any]:
+    def _parse_item_html(self, soup: BeautifulSoup, item_url: str) -> dict[str, Any]:
         """Parse item details from HTML"""
         # Extract title
-        title_element = soup.find(['h1', '[data-testid="adview-title"]'])
+        title_element = soup.find(["h1", '[data-testid="adview-title"]'])
         title = self.scraping_utils.clean_text(title_element.get_text()) if title_element else ""
 
         # Extract description
         desc_selectors = [
             '[data-testid="adview-description"]',
-            '.description',
-            '#description',
-            '.ad-description'
+            ".description",
+            "#description",
+            ".ad-description",
         ]
 
         description = ""
@@ -520,12 +545,7 @@ class LeBonCoinConnector:
                 break
 
         # Extract price
-        price_selectors = [
-            '[data-testid="price"]',
-            '.price',
-            '.item_price',
-            '[class*="price"]'
-        ]
+        price_selectors = ['[data-testid="price"]', ".price", ".item_price", '[class*="price"]']
 
         price = None
         for selector in price_selectors:
@@ -539,9 +559,9 @@ class LeBonCoinConnector:
         # Extract location
         location_selectors = [
             '[data-testid="adview-location"]',
-            '.location',
-            '.item_location',
-            '[class*="location"]'
+            ".location",
+            ".item_location",
+            '[class*="location"]',
         ]
 
         location = ""
@@ -556,25 +576,25 @@ class LeBonCoinConnector:
         images = []
         image_selectors = [
             '[data-testid="adview-image"] img',
-            '.ad-images img',
-            '.item-images img',
-            'img[src*="image"]'
+            ".ad-images img",
+            ".item-images img",
+            'img[src*="image"]',
         ]
 
         for selector in image_selectors:
             image_elements = soup.select(selector)
             for img in image_elements[:10]:  # Limit to 10 images
-                src = img.get('src') or img.get('data-src')
-                if src and src.startswith(('http', '//')):
-                    if src.startswith('//'):
-                        src = 'https:' + src
+                src = img.get("src") or img.get("data-src")
+                if src and src.startswith(("http", "//")):
+                    if src.startswith("//"):
+                        src = "https:" + src
                     images.append(src)
 
         # Extract category
         category_selectors = [
             '[data-testid="breadcrumb"] a:last-child',
-            '.breadcrumb a:last-child',
-            '.category'
+            ".breadcrumb a:last-child",
+            ".category",
         ]
 
         category = ""
@@ -598,7 +618,7 @@ class LeBonCoinConnector:
     def _extract_listing_id(self, url: str) -> str:
         """Extract listing ID from URL"""
         # LeBonCoin URLs typically follow pattern: /detail/ID or /ad/ID
-        match = re.search(r'/(\d+)', url)
+        match = re.search(r"/(\d+)", url)
         return match.group(1) if match else url
 
     def _extract_category_from_element(self, element) -> str:
@@ -628,23 +648,27 @@ class LeBonCoinConnector:
             return self.scraping_utils.clean_text(condition_element.get_text())
         return "Unknown"
 
+
 # Convenience functions for backward compatibility with eBay connector
-async def fetch_leboncoin_listings(keyword: str, limit: int = 50) -> List[Listing]:
+async def fetch_leboncoin_listings(keyword: str, limit: int = 50) -> list[Listing]:
     """Fetch current listings from LeBonCoin"""
     connector = LeBonCoinConnector()
     return await connector.search_items(keyword, limit=limit)
 
-async def fetch_leboncoin_sold(keyword: str, limit: int = 50) -> List[Listing]:
+
+async def fetch_leboncoin_sold(keyword: str, limit: int = 50) -> list[Listing]:
     """
     LeBonCoin doesn't have a direct "sold" API like eBay.
     This is a placeholder that returns recent listings as proxy for sold items.
     """
-    logger.warning("LeBonCoin doesn't provide sold items data like eBay. Returning recent listings as proxy.")
+    logger.warning(
+        "LeBonCoin doesn't provide sold items data like eBay. Returning recent listings as proxy."
+    )
     connector = LeBonCoinConnector()
     return await connector.search_items(keyword, limit=limit)
 
-def parse_leboncoin_response(response_data: Dict, is_sold: bool = False) -> List[Listing]:
+
+def parse_leboncoin_response(response_data: dict, is_sold: bool = False) -> list[Listing]:
     """Parse LeBonCoin response (placeholder for compatibility)"""
     # Since we're using scraping, this function is mainly for compatibility
     return response_data if isinstance(response_data, list) else []
-

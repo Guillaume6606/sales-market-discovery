@@ -1,20 +1,19 @@
 """
 Advanced web scraping utilities with anti-bot detection bypass
 """
+
 import asyncio
-import json
-import os
 import random
-import time
-import asyncio, random
-from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
-import httpx
-from loguru import logger
-from fake_useragent import UserAgent
-import cloudscraper
-from patchright.async_api import async_playwright, Browser, Page, BrowserContext, PlaywrightContextManager, TimeoutError as PWTimeout
 import re
+from datetime import datetime
+
+import cloudscraper
+import httpx
+from fake_useragent import UserAgent
+from loguru import logger
+from patchright.async_api import BrowserContext, Page, PlaywrightContextManager, async_playwright
+from patchright.async_api import TimeoutError as PWTimeout
+
 from .settings import settings
 
 # Advanced browser fingerprinting patch from test-stealth.py
@@ -128,24 +127,25 @@ class ScrapingConfig:
 
     def __init__(self):
         self.use_proxies = False
-        self.proxy_list: List[str] = []
+        self.proxy_list: list[str] = []
         self.min_delay = 1.0
         self.max_delay = 3.0
         self.max_retries = 3
         self.timeout = 30.0
         self.use_playwright = settings.use_playwright
 
+
 class ScrapingSession:
     """Advanced scraping session with anti-bot detection bypass"""
 
-    def __init__(self, config: Optional[ScrapingConfig] = None):
+    def __init__(self, config: ScrapingConfig | None = None):
         self.config = config or ScrapingConfig()
         self.session = None
         self.ua_generator = UserAgent()
         self._last_request_time = 0
         self._request_count = 0
-        self._playwright_context: Optional[BrowserContext] = None
-        self._playwright_instance: Optional[PlaywrightContextManager] = None
+        self._playwright_context: BrowserContext | None = None
+        self._playwright_instance: PlaywrightContextManager | None = None
 
     async def __aenter__(self):
         await self.initialize()
@@ -158,45 +158,45 @@ class ScrapingSession:
         """Initialize scraping session"""
         # Create cloudscraper session for basic anti-bot bypass
         self.session = cloudscraper.create_scraper(
-            browser={
-                'browser': 'chrome',
-                'platform': 'windows',
-                'desktop': True
-            }
+            browser={"browser": "chrome", "platform": "windows", "desktop": True}
         )
 
         # Set default headers
-        self.session.headers.update({
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        })
+        self.session.headers.update(
+            {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+        )
 
         # Initialize Playwright with stealth configuration if needed
         if self.config.use_playwright:
             self._playwright_instance = await async_playwright().start()
 
             # Use persistent context with stealth configuration (from test-stealth.py)
-            self._playwright_context = await self._playwright_instance.chromium.launch_persistent_context(
-                user_data_dir="/tmp/pwuser",
-                locale="fr-FR",
-                timezone_id="Europe/Paris",
-                geolocation={"latitude": 48.8566, "longitude": 2.3522},
-                channel="chrome",      # requires: patchright install chrome
-                headless=False,        # run with xvfb-run in CI if needed
-                no_viewport=True,       # use the OS window size 
-                service_workers="block",
-                args=[
-                    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
-                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                    "--webrtc-stun-probe-trial=disabled",
-                    "--use-fake-device-for-media-stream",
-                    "--use-fake-ui-for-media-stream",
-                ]
-                # IMPORTANT: do NOT set user_agent or extra headers here
+            self._playwright_context = (
+                await self._playwright_instance.chromium.launch_persistent_context(
+                    user_data_dir="/tmp/pwuser",
+                    locale="fr-FR",
+                    timezone_id="Europe/Paris",
+                    geolocation={"latitude": 48.8566, "longitude": 2.3522},
+                    channel="chrome",  # requires: patchright install chrome
+                    headless=False,  # run with xvfb-run in CI if needed
+                    no_viewport=True,  # use the OS window size
+                    service_workers="block",
+                    args=[
+                        "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+                        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                        "--webrtc-stun-probe-trial=disabled",
+                        "--use-fake-device-for-media-stream",
+                        "--use-fake-ui-for-media-stream",
+                    ],
+                    # IMPORTANT: do NOT set user_agent or extra headers here
+                )
             )
 
             # Apply stealth patch
@@ -231,27 +231,27 @@ class ScrapingSession:
         delay = random.uniform(self.config.min_delay, self.config.max_delay)
         await asyncio.sleep(delay)
 
-    def _get_random_headers(self) -> Dict[str, str]:
+    def _get_random_headers(self) -> dict[str, str]:
         """Generate random headers for request"""
         headers = {
-            'User-Agent': self._get_random_user_agent(),
-            'Referer': self._get_random_referer(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+            "User-Agent": self._get_random_user_agent(),
+            "Referer": self._get_random_referer(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
         }
 
         # Add some randomness to headers
         if random.random() < 0.5:
-            headers['Cache-Control'] = 'max-age=0'
+            headers["Cache-Control"] = "max-age=0"
 
         if random.random() < 0.3:
-            headers['Sec-Fetch-Dest'] = 'document'
-            headers['Sec-Fetch-Mode'] = 'navigate'
-            headers['Sec-Fetch-Site'] = 'none'
+            headers["Sec-Fetch-Dest"] = "document"
+            headers["Sec-Fetch-Mode"] = "navigate"
+            headers["Sec-Fetch-Site"] = "none"
 
         return headers
 
@@ -263,7 +263,7 @@ class ScrapingSession:
             try:
                 # Apply delay between attempts
                 if attempt > 0:
-                    delay = min(2 ** attempt, 10)  # Exponential backoff
+                    delay = min(2**attempt, 10)  # Exponential backoff
                     await asyncio.sleep(delay)
 
                 # Update headers
@@ -302,7 +302,7 @@ class ScrapingSession:
             "verify you are human",
             "suspicious activity",
             "rate limit",
-            "too many requests"
+            "too many requests",
         ]
 
         content = response.text.lower()
@@ -349,26 +349,23 @@ class ScrapingSession:
             selectors = [
                 # Didomi (used by leboncoin)
                 "#didomi-notice-agree-button",
-                "pierce/#didomi-notice-agree-button"
-                'button:has-text("Accepter")',
-                'button:has-text("J’accepte")',      # curly apostrophe
-                "button:has-text(\"J'accepte\")",    # straight apostrophe
+                'pierce/#didomi-notice-agree-buttonbutton:has-text("Accepter")',
+                'button:has-text("J’accepte")',  # curly apostrophe
+                'button:has-text("J\'accepte")',  # straight apostrophe
                 'button:has-text("Tout accepter")',
                 'button:has-text("Accepter & Fermer")',
                 'button:has-text("Accepter & Fermer →")',
                 "pierce/button:has-text('Accepter')",
-                "pierce/button:has-text(\"J’accepte\")",
-                "pierce/button:has-text(\"J'accepte\")",
+                'pierce/button:has-text("J’accepte")',
+                'pierce/button:has-text("J\'accepte")',
                 "pierce/button:has-text('Accept & Close')",
                 "pierce/button:has-text('Accept & Close →')",
                 "pierce/button:has-text('Tout accepter')",
                 "pierce/button:has-text('Accept all')",
-
                 # OneTrust
                 "#onetrust-accept-btn-handler",
                 "button#onetrust-accept-btn-handler",
                 "button:has-text('Tout accepter')",
-
                 # Sourcepoint / Quantcast
                 'button[title="Accept All"]',
                 'button:has-text("Accept all")',
@@ -376,11 +373,9 @@ class ScrapingSession:
                 'button:has-text("I agree")',
                 'button:has-text("J\'accepte tout")',
                 'button:has-text("Accepter tout")',
-
                 # TrustArc
                 "#truste-consent-button",
                 ".truste-button2",
-
                 # Cookiebot
                 "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
             ]
@@ -500,26 +495,27 @@ class ScrapingSession:
             response.raise_for_status()
             return response.text
 
+
 class ScrapingUtils:
     """Utility functions for scraping operations"""
 
     @staticmethod
-    def extract_price(text: str) -> Optional[float]:
+    def extract_price(text: str) -> float | None:
         """Extract price from text"""
         if not text:
             return None
 
         # Remove common separators and extract numbers
         price_patterns = [
-            r'(\d+(?:\s?\d{3})*(?:[.,]\d{2})?)',  # 1,234.56 or 1234.56 or 1 234,56
-            r'(\d+(?:[.,]\d{2}))'  # Simple decimal format
+            r"(\d+(?:\s?\d{3})*(?:[.,]\d{2})?)",  # 1,234.56 or 1234.56 or 1 234,56
+            r"(\d+(?:[.,]\d{2}))",  # Simple decimal format
         ]
 
         for pattern in price_patterns:
-            matches = re.findall(pattern, text.replace(' ', ''))
+            matches = re.findall(pattern, text.replace(" ", ""))
             if matches:
                 # Clean the match and convert to float
-                price_str = matches[0].replace(' ', '').replace(',', '.')
+                price_str = matches[0].replace(" ", "").replace(",", ".")
                 try:
                     return float(price_str)
                 except ValueError:
@@ -528,15 +524,15 @@ class ScrapingUtils:
         return None
 
     @staticmethod
-    def extract_location(text: str) -> Optional[str]:
+    def extract_location(text: str) -> str | None:
         """Extract location from text"""
         if not text:
             return None
 
         # Common French location patterns
         location_patterns = [
-            r'(\d{5}\s+[A-Za-z\s-]+)',  # Postal code + city
-            r'([A-Za-z\s-]+(?:\d{5})?)',  # City name patterns
+            r"(\d{5}\s+[A-Za-z\s-]+)",  # Postal code + city
+            r"([A-Za-z\s-]+(?:\d{5})?)",  # City name patterns
         ]
 
         for pattern in location_patterns:
@@ -547,23 +543,23 @@ class ScrapingUtils:
         return None
 
     @staticmethod
-    def extract_date(text: str) -> Optional[datetime]:
+    def extract_date(text: str) -> datetime | None:
         """Extract date from text"""
         if not text:
             return None
 
         # French date patterns
         date_patterns = [
-            r'(\d{1,2}/\d{1,2}/\d{4})',  # DD/MM/YYYY
-            r'(\d{1,2}-\d{1,2}-\d{4})',  # DD-MM-YYYY
-            r'(\d{4}-\d{1,2}-\d{1,2})',  # YYYY-MM-DD
+            r"(\d{1,2}/\d{1,2}/\d{4})",  # DD/MM/YYYY
+            r"(\d{1,2}-\d{1,2}-\d{4})",  # DD-MM-YYYY
+            r"(\d{4}-\d{1,2}-\d{1,2})",  # YYYY-MM-DD
         ]
 
         for pattern in date_patterns:
             matches = re.findall(pattern, text)
             if matches:
                 date_str = matches[0]
-                for fmt in ['%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d']:
+                for fmt in ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]:
                     try:
                         return datetime.strptime(date_str, fmt)
                     except ValueError:
@@ -578,12 +574,13 @@ class ScrapingUtils:
             return ""
 
         # Remove extra whitespace
-        text = re.sub(r'\s+', ' ', text.strip())
+        text = re.sub(r"\s+", " ", text.strip())
 
         # Remove HTML entities
-        text = re.sub(r'&[a-zA-Z]+;', ' ', text)
+        text = re.sub(r"&[a-zA-Z]+;", " ", text)
 
         return text.strip()
+
 
 # Global instances
 scraping_config = ScrapingConfig()
