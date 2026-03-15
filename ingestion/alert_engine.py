@@ -297,16 +297,17 @@ async def trigger_alerts(
                     alert_id=alert_event.alert_id,
                 )
 
-                # Update delivery result
+                # Update delivery result and commit immediately so the
+                # alert_id referenced in the Telegram callback_data is
+                # persisted even if a later iteration fails.
                 alert_event.delivery = send_result
+                db.commit()
                 created_events.append(alert_event)
 
                 logger.info(
                     f"Triggered alert for rule {rule.name} (ID: {rule.rule_id}) "
                     f"on listing {listing.obs_id}"
                 )
-
-        db.commit()
         return created_events
 
     except Exception as e:

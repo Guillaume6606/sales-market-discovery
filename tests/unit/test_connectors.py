@@ -113,8 +113,7 @@ class TestEbayParsing:
         from ingestion.connectors.ebay import normalize_condition
 
         assert normalize_condition("Brand New") == "new"
-        # "Like New" matches "new" first due to substring check order in normalize_condition
-        assert normalize_condition("Like New") == "new"
+        assert normalize_condition("Like New") == "like_new"
         assert normalize_condition("Excellent") == "like_new"
         assert normalize_condition("Mint") == "like_new"
         assert normalize_condition("Very Good") == "good"

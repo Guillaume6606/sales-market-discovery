@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from libs.common.db import get_db
@@ -32,6 +32,26 @@ class FeedbackCreate(BaseModel):
     notes: str | None = None
 
 
+def _verify_webhook_secret(request: Request) -> None:
+    """Verify Telegram webhook secret if configured."""
+    if not settings.telegram_webhook_secret:
+        return
+    token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if token != settings.telegram_webhook_secret:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
+
+
+def _upsert_feedback(db: Session, alert_id: int, feedback: str, notes: str | None = None) -> str:
+    """Atomic upsert of feedback for an alert. Returns 'created' or 'updated'."""
+    existing = db.query(AlertFeedback).filter(AlertFeedback.alert_id == alert_id).first()
+    if existing:
+        existing.feedback = feedback
+        existing.notes = notes if notes is not None else existing.notes
+        return "updated"
+    db.add(AlertFeedback(alert_id=alert_id, feedback=feedback, notes=notes))
+    return "created"
+
+
 # --------------------------------------------------------------------------- #
 # Telegram webhook
 # --------------------------------------------------------------------------- #
@@ -40,6 +60,8 @@ class FeedbackCreate(BaseModel):
 @router.post("/webhooks/telegram")
 async def telegram_webhook(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Handle Telegram callback_query from inline keyboard buttons."""
+    _verify_webhook_secret(request)
+
     try:
         body = await request.json()
     except Exception as exc:
@@ -71,14 +93,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)) -> d
     if not alert:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert not found")
 
-    # Upsert feedback
-    existing = db.query(AlertFeedback).filter(AlertFeedback.alert_id == alert_id).first()
-    if existing:
-        existing.feedback = action
-        existing.created_at = datetime.now(UTC)
-    else:
-        db.add(AlertFeedback(alert_id=alert_id, feedback=action))
-
+    _upsert_feedback(db, alert_id, action)
     db.commit()
 
     # Answer callback query and remove keyboard
@@ -123,23 +138,9 @@ def create_feedback(
     if not alert:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert not found")
 
-    # Upsert
-    existing = db.query(AlertFeedback).filter(AlertFeedback.alert_id == alert_id).first()
-    if existing:
-        existing.feedback = payload.feedback
-        existing.notes = payload.notes
-        existing.created_at = datetime.now(UTC)
-        db.commit()
-        return {"status": "updated", "alert_id": alert_id, "feedback": payload.feedback}
-
-    fb = AlertFeedback(
-        alert_id=alert_id,
-        feedback=payload.feedback,
-        notes=payload.notes,
-    )
-    db.add(fb)
+    result = _upsert_feedback(db, alert_id, payload.feedback, payload.notes)
     db.commit()
-    return {"status": "created", "alert_id": alert_id, "feedback": payload.feedback}
+    return {"status": result, "alert_id": alert_id, "feedback": payload.feedback}
 
 
 @router.get("/alerts/events/{alert_id}/feedback")
@@ -152,18 +153,19 @@ def get_feedback(
     if not alert:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert not found")
 
-    feedbacks = db.query(AlertFeedback).filter(AlertFeedback.alert_id == alert_id).all()
+    fb = db.query(AlertFeedback).filter(AlertFeedback.alert_id == alert_id).first()
+    if not fb:
+        return {"alert_id": alert_id, "feedback": None}
+
     return {
         "alert_id": alert_id,
-        "feedbacks": [
-            {
-                "feedback_id": str(fb.feedback_id),
-                "feedback": fb.feedback,
-                "notes": fb.notes,
-                "created_at": fb.created_at.isoformat() if fb.created_at else None,
-            }
-            for fb in feedbacks
-        ],
+        "feedback": {
+            "feedback_id": str(fb.feedback_id),
+            "feedback": fb.feedback,
+            "notes": fb.notes,
+            "created_at": fb.created_at.isoformat() if fb.created_at else None,
+            "updated_at": fb.updated_at.isoformat() if fb.updated_at else None,
+        },
     }
 
 
@@ -185,47 +187,38 @@ def alert_precision(
         db.query(func.count(AlertEvent.alert_id))
         .filter(
             AlertEvent.sent_at >= since,
-            AlertEvent.suppressed == False,
+            AlertEvent.suppressed.is_(False),
         )
         .scalar()
         or 0
     )
 
-    # Alerts with feedback
-    feedback_subq = (
-        db.query(AlertFeedback.alert_id, AlertFeedback.feedback)
+    # Single query for all feedback counts
+    row = (
+        db.query(
+            func.count(func.distinct(AlertFeedback.alert_id)).label("total"),
+            func.count(
+                case((AlertFeedback.feedback == "interested", AlertFeedback.alert_id))
+            ).label("interested"),
+            func.count(
+                case((AlertFeedback.feedback == "not_interested", AlertFeedback.alert_id))
+            ).label("not_interested"),
+            func.count(case((AlertFeedback.feedback == "purchased", AlertFeedback.alert_id))).label(
+                "purchased"
+            ),
+        )
         .join(AlertEvent, AlertEvent.alert_id == AlertFeedback.alert_id)
         .filter(
             AlertEvent.sent_at >= since,
-            AlertEvent.suppressed == False,
+            AlertEvent.suppressed.is_(False),
         )
-        .subquery()
+        .one()
     )
 
-    total_with_feedback = (
-        db.query(func.count(func.distinct(feedback_subq.c.alert_id))).scalar() or 0
-    )
-
-    interested_count = (
-        db.query(func.count(feedback_subq.c.alert_id))
-        .filter(feedback_subq.c.feedback == "interested")
-        .scalar()
-        or 0
-    )
-
-    not_interested_count = (
-        db.query(func.count(feedback_subq.c.alert_id))
-        .filter(feedback_subq.c.feedback == "not_interested")
-        .scalar()
-        or 0
-    )
-
-    purchased_count = (
-        db.query(func.count(feedback_subq.c.alert_id))
-        .filter(feedback_subq.c.feedback == "purchased")
-        .scalar()
-        or 0
-    )
+    total_with_feedback = row.total or 0
+    interested_count = row.interested or 0
+    not_interested_count = row.not_interested or 0
+    purchased_count = row.purchased or 0
 
     precision = (
         round((interested_count + purchased_count) / total_with_feedback, 4)

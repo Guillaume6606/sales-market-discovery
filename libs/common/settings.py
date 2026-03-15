@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # Telegram Configuration
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_webhook_secret: str | None = None
 
     # Screenshot Configuration
     screenshot_storage_path: str = Field(default="/data/screenshots")

@@ -130,11 +130,11 @@ def normalize_condition(condition_raw: str) -> str | None:
 
     condition_lower = condition_raw.lower()
 
-    # eBay condition mappings
-    if any(word in condition_lower for word in ["new", "brand new", "nib"]):
-        return "new"
-    elif any(word in condition_lower for word in ["like new", "excellent", "mint"]):
+    # eBay condition mappings — check more specific strings before generic ones
+    if any(word in condition_lower for word in ["like new", "excellent", "mint"]):
         return "like_new"
+    elif any(word in condition_lower for word in ["brand new", "new", "nib"]):
+        return "new"
     elif any(word in condition_lower for word in ["very good", "good"]):
         return "good"
     elif any(word in condition_lower for word in ["acceptable", "fair", "poor"]):

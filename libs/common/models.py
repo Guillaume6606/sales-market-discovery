@@ -196,10 +196,11 @@ class AlertFeedback(Base):
     )
 
     feedback_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
-    alert_id = Column(BigInteger, ForeignKey("alert_event.alert_id"))
+    alert_id = Column(BigInteger, ForeignKey("alert_event.alert_id"), nullable=False, unique=True)
     feedback = Column(Text, nullable=False)
     notes = Column(Text)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
     alert = relationship("AlertEvent", back_populates="feedbacks")
 
