@@ -20,6 +20,7 @@ from libs.common.db import SessionLocal
 from libs.common.models import (
     ListingObservation,
     MarketPriceNormal,
+    PMNHistory,
     ProductDailyMetrics,
     ProductTemplate,
 )
@@ -199,6 +200,23 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
             db.add(new_pmn)
 
         db.commit()
+
+        # Record PMN history (separate try/except so failure doesn't roll back main PMN)
+        try:
+            history_row = PMNHistory(
+                product_id=product_id,
+                computed_at=datetime.now(UTC),
+                pmn=pmn_result["pmn"],
+                pmn_low=pmn_result["pmn_low"],
+                pmn_high=pmn_result["pmn_high"],
+                confidence=confidence,
+                sample_size=len(prices),
+            )
+            db.add(history_row)
+            db.commit()
+        except Exception as hist_err:
+            logger.warning(f"Failed to record PMN history for {product_id}: {hist_err}")
+            db.rollback()
 
         logger.info(
             f"PMN computed for product {product_id}: "
