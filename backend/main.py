@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
+from backend.routers.health import router as health_router
 from ingestion.constants import SUPPORTED_PROVIDERS
 from libs.common.db import engine, get_db
 from libs.common.log import logger
@@ -24,7 +25,6 @@ from libs.common.models import (
     ProductTemplate,
 )
 from libs.common.settings import settings
-from backend.routers.health import router as health_router
 
 # ARQ-based ingestion - no need to import heavy ingestion modules in backend
 
@@ -1046,7 +1046,7 @@ async def ingestion_status(db: Session = Depends(get_db)):
             # Use ARQ pool to get queue length
             queue_length = await arq_pool.zcard("arq:queue")
             arq_status = "connected"
-        except:
+        except Exception:
             arq_status = "error"
 
     return {
@@ -1644,7 +1644,7 @@ def get_computation_status(db: Session = Depends(get_db)):
 @app.get("/products/{product_id}/filtering-stats")
 def get_filtering_stats(product_id: str, db: Session = Depends(get_db)):
     """Get filtering effectiveness metrics for a product."""
-    product = _get_product_or_404(db, product_id)
+    _get_product_or_404(db, product_id)
 
     # Get total listings
     total_listings = (

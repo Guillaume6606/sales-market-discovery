@@ -63,7 +63,7 @@ def pmn_from_prices(
     # Calculate time range if timestamps provided
     time_range_days = None
     if timestamps and len(timestamps) == len(prices):
-        valid_timestamps = [ts for ts, p in zip(timestamps, prices) if pd.notna(p)]
+        valid_timestamps = [ts for ts, p in zip(timestamps, prices, strict=True) if pd.notna(p)]
         if valid_timestamps:
             time_range = max(valid_timestamps) - min(valid_timestamps)
             time_range_days = time_range.days

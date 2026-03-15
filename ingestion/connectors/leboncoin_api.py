@@ -123,7 +123,9 @@ class LeBonCoinAPIConnector:
         title = self._extract_field(ad, ad_data, ["subject", "title", "name"]) or ""
         price_value, currency = self._extract_price(ad, ad_data)
 
-        description = self._extract_field(ad, ad_data, ["body", "description", "content"])
+        self._extract_field(
+            ad, ad_data, ["body", "description", "content"]
+        )  # reserved for future use
         condition_raw = (
             self._extract_field(ad, ad_data, ["condition", "item_condition", "state"]) or None
         )

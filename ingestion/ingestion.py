@@ -577,7 +577,6 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
 def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
     """Calculate daily metrics for a product"""
     with SessionLocal() as db:
-        today = date.today()
         now_utc = datetime.now(UTC)
 
         # Get sold items from last 30 days
