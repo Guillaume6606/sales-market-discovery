@@ -13,7 +13,11 @@ class ValidationStats:
 
 
 def validate_listing(listing: Listing) -> str | None:
-    """Return None if valid, rejection reason string if invalid."""
+    """Return None if valid, rejection reason string if invalid.
+
+    Note: price=None is intentionally allowed — some listings have price
+    discovered later via updates or marketplace-specific fields.
+    """
     if listing.price is not None:
         if listing.price <= 0:
             return "price_non_positive"

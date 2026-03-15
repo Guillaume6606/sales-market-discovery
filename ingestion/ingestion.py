@@ -1,5 +1,4 @@
 from collections.abc import Iterable
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -7,7 +6,7 @@ from typing import Any
 import numpy as np
 from loguru import logger
 from sqlalchemy import and_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, make_transient
 
 from ingestion.connectors.ebay import fetch_ebay_listings, fetch_ebay_sold
@@ -20,6 +19,7 @@ from ingestion.constants import SUPPORTED_PROVIDERS
 from ingestion.filtering import filter_listings_multi_stage
 from ingestion.pricing import pmn_from_prices
 from ingestion.run_tracker import filtering_stats_to_dict, track_ingestion_run
+from ingestion.schemas import ProductTemplateSnapshot
 from ingestion.validation import validate_listings
 from libs.common.db import SessionLocal
 from libs.common.models import (
@@ -28,23 +28,6 @@ from libs.common.models import (
     ProductDailyMetrics,
     ProductTemplate,
 )
-
-
-@dataclass
-class ProductTemplateSnapshot:
-    product_id: str
-    name: str
-    description: str | None
-    search_query: str
-    category_id: str
-    category_name: str | None
-    brand: str | None
-    price_min: float | None
-    price_max: float | None
-    providers: list[str]
-    words_to_avoid: list[str]
-    enable_llm_validation: bool
-    is_active: bool
 
 
 def _decimal_to_float(value: Decimal | float | None) -> float | None:
@@ -250,7 +233,7 @@ def _persist_listings(
                 )
                 if success:
                     processed_count += 1
-            except Exception as exc:
+            except SQLAlchemyError as exc:
                 logger.error(
                     f"Failed to persist listing {listing.listing_id} for product {product_id}: {exc}"
                 )
@@ -276,8 +259,8 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
         f"Starting eBay sold ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    with track_ingestion_run(product_id, "ebay", "ingest_ebay_sold") as run:
-        try:
+    try:
+        with track_ingestion_run(product_id, "ebay", "ingest_ebay_sold") as run:
             listings = await fetch_ebay_sold(_compose_search_term(snapshot), limit)
             run.listings_fetched = len(listings) if listings else 0
 
@@ -326,13 +309,11 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
             )
             return {"status": "no_data", "count": 0}
 
-        except Exception as exc:
-            run.status = "error"
-            run.error_message = str(exc)[:2000]
-            logger.error(
-                f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}"
-            )
-            return {"status": "error", "error": str(exc)}
+    except Exception as exc:
+        logger.error(
+            f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
 
 
 async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -350,8 +331,8 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, An
         f"Starting eBay listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    with track_ingestion_run(product_id, "ebay", "ingest_ebay_listings") as run:
-        try:
+    try:
+        with track_ingestion_run(product_id, "ebay", "ingest_ebay_listings") as run:
             listings = await fetch_ebay_listings(_compose_search_term(snapshot), limit)
             run.listings_fetched = len(listings) if listings else 0
 
@@ -400,13 +381,11 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, An
             )
             return {"status": "no_data", "count": 0}
 
-        except Exception as exc:
-            run.status = "error"
-            run.error_message = str(exc)[:2000]
-            logger.error(
-                f"Error in eBay listings ingestion for product {snapshot.product_id}: {exc}"
-            )
-            return {"status": "error", "error": str(exc)}
+    except Exception as exc:
+        logger.error(
+            f"Error in eBay listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
 
 
 async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -418,8 +397,8 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[st
         f"Starting LeBonCoin listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    with track_ingestion_run(product_id, "leboncoin", "ingest_leboncoin_listings") as run:
-        try:
+    try:
+        with track_ingestion_run(product_id, "leboncoin", "ingest_leboncoin_listings") as run:
             listings = await fetch_leboncoin_api_listings(_compose_search_term(snapshot), limit)
             run.listings_fetched = len(listings) if listings else 0
 
@@ -467,13 +446,11 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[st
             )
             return {"status": "no_data", "count": 0}
 
-        except Exception as exc:
-            run.status = "error"
-            run.error_message = str(exc)[:2000]
-            logger.error(
-                f"Error in LeBonCoin listings ingestion for product {snapshot.product_id}: {exc}"
-            )
-            return {"status": "error", "error": str(exc)}
+    except Exception as exc:
+        logger.error(
+            f"Error in LeBonCoin listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
 
 
 async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -485,8 +462,8 @@ async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, A
         f"Starting LeBonCoin 'sold' ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    with track_ingestion_run(product_id, "leboncoin", "ingest_leboncoin_sold") as run:
-        try:
+    try:
+        with track_ingestion_run(product_id, "leboncoin", "ingest_leboncoin_sold") as run:
             listings = await fetch_leboncoin_api_sold(_compose_search_term(snapshot), limit)
             run.listings_fetched = len(listings) if listings else 0
 
@@ -534,13 +511,11 @@ async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, A
             )
             return {"status": "no_data", "count": 0}
 
-        except Exception as exc:
-            run.status = "error"
-            run.error_message = str(exc)[:2000]
-            logger.error(
-                f"Error in LeBonCoin 'sold' ingestion for product {snapshot.product_id}: {exc}"
-            )
-            return {"status": "error", "error": str(exc)}
+    except Exception as exc:
+        logger.error(
+            f"Error in LeBonCoin 'sold' ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
 
 
 async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -552,8 +527,8 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
         f"Starting Vinted listings ingestion for product '{snapshot.name}' ({snapshot.product_id})"
     )
 
-    with track_ingestion_run(product_id, "vinted", "ingest_vinted_listings") as run:
-        try:
+    try:
+        with track_ingestion_run(product_id, "vinted", "ingest_vinted_listings") as run:
             listings = await fetch_vinted_listings(_compose_search_term(snapshot), limit)
             run.listings_fetched = len(listings) if listings else 0
 
@@ -601,13 +576,11 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
             )
             return {"status": "no_data", "count": 0}
 
-        except Exception as exc:
-            run.status = "error"
-            run.error_message = str(exc)[:2000]
-            logger.error(
-                f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}"
-            )
-            return {"status": "error", "error": str(exc)}
+    except Exception as exc:
+        logger.error(
+            f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}"
+        )
+        return {"status": "error", "error": str(exc)}
 
 
 def calculate_daily_metrics(product_id: str) -> dict[str, Any]:

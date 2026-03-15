@@ -1,5 +1,5 @@
 from ingestion.filtering import _matches_brand, _matches_price, _matches_words_to_avoid
-from tests.conftest import ProductTemplateSnapshot
+from ingestion.schemas import ProductTemplateSnapshot
 
 
 class TestMatchesPrice:
