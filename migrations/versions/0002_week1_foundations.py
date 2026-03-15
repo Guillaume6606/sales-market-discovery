@@ -46,6 +46,20 @@ def upgrade():
         sa.Column("is_stale", sa.Boolean, server_default=sa.text("false")),
     )
 
+    # Remove historical duplicates before enforcing unique constraint.
+    # Keep the row with the highest obs_id (most recent insert) for each
+    # (source, listing_id, product_id) group.
+    op.execute(
+        sa.text("""
+            DELETE FROM listing_observation
+            WHERE obs_id NOT IN (
+                SELECT MAX(obs_id)
+                FROM listing_observation
+                GROUP BY source, listing_id, product_id
+            )
+        """)
+    )
+
     # Add unique constraint on listing_observation
     op.create_unique_constraint(
         "uq_listing_source_product",

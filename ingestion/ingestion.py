@@ -119,6 +119,7 @@ def _upsert_listing(
     listing_source = listing.source
     now_utc = datetime.now(timezone.utc)
 
+    savepoint = db.begin_nested()
     try:
         existing = (
             db.query(ListingObservation)
@@ -181,9 +182,10 @@ def _upsert_listing(
             )
             db.add(observation)
 
+        savepoint.commit()
         return True
     except IntegrityError:
-        db.rollback()
+        savepoint.rollback()
         logger.warning(
             f"IntegrityError upserting listing {listing.listing_id} "
             f"(source={listing_source}, product={product.product_id})"
