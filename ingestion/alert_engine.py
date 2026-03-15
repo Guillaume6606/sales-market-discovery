@@ -2,7 +2,7 @@
 Alert rule evaluation engine for triggering Telegram notifications.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -18,6 +18,7 @@ from libs.common.models import (
     ProductDailyMetrics,
     ProductTemplate,
 )
+from libs.common.settings import settings
 from libs.common.telegram_service import send_opportunity_alert
 
 
@@ -202,6 +203,24 @@ async def trigger_alerts(
             if not listing or not product_template:
                 continue
 
+            # Suppress alerts for low-confidence PMN
+            if pmn_data and pmn_data.confidence is not None:
+                conf = float(pmn_data.confidence)
+                if conf < settings.min_pmn_confidence:
+                    suppressed_event = AlertEvent(
+                        product_id=product_template.product_id,
+                        obs_id=listing.obs_id,
+                        sent_at=datetime.now(UTC),
+                        delivery={
+                            "suppressed_reason": "low_pmn_confidence",
+                            "confidence": conf,
+                        },
+                        suppressed=True,
+                    )
+                    db.add(suppressed_event)
+                    created_events.append(suppressed_event)
+                    continue
+
             # Evaluate rules
             matching_rules = evaluate_alert_rules(listing, product_template, pmn_data, metrics, db)
 
@@ -264,7 +283,7 @@ async def trigger_alerts(
                     rule_id=rule.rule_id,
                     product_id=product_template.product_id,
                     obs_id=listing.obs_id,
-                    sent_at=datetime.now(timezone.utc),
+                    sent_at=datetime.now(UTC),
                     delivery=send_result,
                     suppressed=False,
                 )
