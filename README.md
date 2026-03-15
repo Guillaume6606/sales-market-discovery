@@ -1,13 +1,13 @@
-# Market Discovery & PMN — Skeleton
+# Market Discovery & PMN
 
-Mono‑repo skeleton for a Flip/Resell Market Discovery app with **FastAPI**, **Streamlit**, **PostgreSQL**, **Redis**, **Arq**, **Alembic**, and **Advanced Web Scraping** for eBay and LeBonCoin integration.
+Mono‑repo for a Flip/Resell Market Discovery & Arbitrage Detection platform with **FastAPI**, **Streamlit**, **PostgreSQL**, **Redis**, **Arq**, **Alembic**, and **Advanced Web Scraping** across eBay, LeBonCoin, and Vinted.
 
 ## Components
-- `backend/` — FastAPI app exposing product discovery and alert rules APIs.
-- `ingestion/` — Advanced connectors (eBay API + LeBonCoin scraping), normalization, PMN engine, scheduled via Arq workers.
+- `backend/` — FastAPI REST API: product discovery, alert rules, health monitoring endpoints.
+- `ingestion/` — Marketplace connectors (eBay API, LeBonCoin API/scraping, Vinted scraping), PMN engine with confidence scoring, opportunity alerting, scheduled via Arq workers.
 - `ui/` — Streamlit dashboard with arbitrage discovery, product details, and price history charts.
-- `libs/common/` — Shared utilities including advanced web scraping with anti-bot detection bypass.
-- `infra/` — Docker & compose for local dev, Alembic migrations, pre-commit, Makefile.
+- `libs/common/` — Shared ORM models, DB connection, settings, Telegram service, advanced web scraping with anti-bot detection bypass.
+- `migrations/` — Alembic database migrations.
 
 ## Features
 
@@ -26,12 +26,21 @@ Mono‑repo skeleton for a Flip/Resell Market Discovery app with **FastAPI**, **
 - **Stealth Testing**: Built-in CreepJS analysis for fingerprinting evaluation
 
 ### 📊 Real-Time Analytics & Discovery
-- **PMN Calculations**: Predicted Market Net with confidence intervals
-- **Arbitrage Discovery**: Find products with listings below market price
+- **PMN Calculations**: Price of Market Normal with confidence intervals and confidence scoring
+- **PMN Confidence**: Weighted score (sample size, data freshness, price consistency) to avoid false-positive alerts
+- **Arbitrage Discovery**: Find products with listings below market price (stale listings excluded)
 - **Liquidity Scoring**: Based on sales volume and frequency
 - **Trend Analysis**: Moving averages and price trend detection
 - **Multi-Source Aggregation**: Combined insights from eBay, LeBonCoin, and Vinted
 - **Interactive Dashboard**: Streamlit UI with filters, charts, and real-time updates
+
+### 🔍 Observability & Alerting
+- **Health Endpoints**: `/health/ingestion`, `/health/products`, `/health/overview` — monitor connector success rates, product staleness, system status
+- **System Health Alerts**: Automated Telegram alerts when products go stale or connectors fail repeatedly
+- **Ingestion Run Tracking**: Every ingestion run tracked with timing, listing counts, and error details
+- **Stale Listing Detection**: Automated daily marking of unseen listings; reset on re-observation
+- **Alert Confidence Suppression**: Alerts suppressed when PMN confidence is below configurable threshold
+- **Alert Feedback Loop**: Track user feedback (interested/not_interested/purchased) on triggered alerts
 
 ### Quick start (local)
 ```bash
@@ -125,16 +134,28 @@ curl -X POST "http://localhost:8000/ingestion/vinted/trigger-listings?keyword=Ad
 curl -X POST "http://localhost:8000/ingestion/vinted/trigger-sold?keyword=Zara&limit=50"
 ```
 
-#### Status and Statistics
+#### Health & Monitoring
 ```bash
-# Get ingestion status and statistics
+# Per-connector ingestion health (success rates, durations, totals)
+curl http://localhost:8000/health/ingestion
+
+# Per-product staleness status
+curl http://localhost:8000/health/products
+
+# System overview (connector colors, stale count, recent runs)
+curl http://localhost:8000/health/overview
+
+# Ingestion status and statistics
 curl http://localhost:8000/ingestion/status
 ```
 
 ### Automated Scheduling
+- **Stale listing detection**: Daily at 1:00 AM
 - **eBay ingestion**: Daily at 2:00 AM
 - **LeBonCoin ingestion**: Daily at 3:00 AM
 - **Vinted ingestion**: Daily at 4:00 AM
+- **PMN & metrics computation**: Daily at 5:00 AM (after ingestion)
+- **System health check**: Every 2 hours (sends Telegram alert on issues)
 - **Background processing**: Non-blocking ingestion via Arq workers
 
 ### Dev commands
@@ -160,10 +181,10 @@ If you encounter issues with Playwright browser installation in Docker:
 **Manual browser installation** (if needed):
 ```bash
 # Install browsers manually
-docker compose exec ingestion poetry run playwright install chromium
+docker compose exec ingestion uv run playwright install chromium
 
 # Or install all browsers
-docker compose exec ingestion poetry run playwright install
+docker compose exec ingestion uv run playwright install
 ```
 
 #### Scraping Dependencies
@@ -175,7 +196,7 @@ The ingestion container includes all necessary system dependencies for web scrap
 
 ### Common Issues
 
-1. **Import errors**: Ensure all dependencies are installed with `poetry install`
+1. **Import errors**: Ensure all dependencies are installed with `uv pip install -e ".[dev]"`
 2. **Browser not found**: Playwright browsers may need manual installation
 3. **Permission denied**: Check Docker container permissions for browser downloads
 4. **Rate limiting**: Adjust `SCRAPING_*_DELAY` values if hitting rate limits
