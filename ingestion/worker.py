@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from arq import cron
 from arq.connections import RedisSettings
+from sqlalchemy import and_, update
 
 from ingestion.alert_engine import trigger_alerts
 from ingestion.computation import (
@@ -22,6 +23,7 @@ from libs.common.db import SessionLocal
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.log import logger
 from libs.common.models import (
+    IngestionRun,
     ListingObservation,
     MarketPriceNormal,
     ProductDailyMetrics,
@@ -29,6 +31,7 @@ from libs.common.models import (
 )
 from libs.common.screenshot_service import capture_listing_screenshot
 from libs.common.settings import settings
+from libs.common.telegram_service import send_system_alert
 
 
 async def ping(ctx):
@@ -342,7 +345,7 @@ async def validate_listing_with_llm(ctx, obs_id: int):
                 location=listing.location,
                 seller_rating=float(listing.seller_rating) if listing.seller_rating else None,
                 shipping_cost=float(listing.shipping_cost) if listing.shipping_cost else None,
-                observed_at=listing.observed_at or datetime.now(timezone.utc),
+                observed_at=listing.observed_at or datetime.now(UTC),
                 is_sold=listing.is_sold or False,
                 url=listing.url,
             )
@@ -354,7 +357,7 @@ async def validate_listing_with_llm(ctx, obs_id: int):
             # Update listing with validation result
             listing.llm_validated = True
             listing.llm_validation_result = validation_result
-            listing.llm_validated_at = datetime.now(timezone.utc)
+            listing.llm_validated_at = datetime.now(UTC)
             if screenshot_path:
                 listing.screenshot_path = screenshot_path
 
@@ -464,6 +467,7 @@ async def process_opportunity_alerts(ctx, product_id: str):
                 .filter(
                     ListingObservation.product_id == product_id,
                     ListingObservation.is_sold == False,
+                    ListingObservation.is_stale == False,
                     ListingObservation.price.isnot(None),
                     ListingObservation.price < pmn_data.pmn,
                 )
@@ -500,6 +504,98 @@ async def process_opportunity_alerts(ctx, product_id: str):
         return {"status": "error", "error": str(exc)}
 
 
+async def mark_stale_listings(ctx: dict) -> dict:
+    """Mark listings as stale if not seen within stale_listing_days."""
+    cutoff = datetime.now(UTC) - timedelta(days=settings.stale_listing_days)
+
+    with SessionLocal() as db:
+        result = db.execute(
+            update(ListingObservation)
+            .where(
+                and_(
+                    ListingObservation.last_seen_at < cutoff,
+                    ListingObservation.is_sold == False,
+                    ListingObservation.is_stale == False,
+                )
+            )
+            .values(is_stale=True)
+        )
+        count = result.rowcount
+        db.commit()
+
+    logger.info(f"Marked {count} listings as stale (not seen since {cutoff.isoformat()})")
+    return {"marked_stale": count}
+
+
+async def check_system_health(ctx: dict) -> dict:
+    """Check for stale products and failing connectors, send Telegram alert if issues found."""
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=settings.stale_product_hours)
+
+    with SessionLocal() as db:
+        # Stale products
+        stale_products_raw = (
+            db.query(ProductTemplate)
+            .filter(
+                ProductTemplate.is_active == True,
+            )
+            .all()
+        )
+
+        stale_products = []
+        for p in stale_products_raw:
+            if p.last_ingested_at is None:
+                stale_products.append({"name": p.name, "hours_since_ingestion": None})
+            else:
+                ts = p.last_ingested_at
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+                if ts < cutoff:
+                    hours = (now - ts).total_seconds() / 3600
+                    stale_products.append({"name": p.name, "hours_since_ingestion": hours})
+
+        # Failing connectors
+        sources = (
+            db.query(IngestionRun.source).filter(IngestionRun.source.isnot(None)).distinct().all()
+        )
+
+        failing_connectors = []
+        threshold = settings.connector_failure_threshold
+        for (source,) in sources:
+            recent_runs = (
+                db.query(IngestionRun)
+                .filter(IngestionRun.source == source)
+                .order_by(IngestionRun.started_at.desc())
+                .limit(threshold)
+                .all()
+            )
+            if len(recent_runs) >= threshold and all(r.status == "error" for r in recent_runs):
+                last_error = recent_runs[0].error_message or "unknown"
+                failing_connectors.append(
+                    {
+                        "name": source,
+                        "consecutive_failures": len(recent_runs),
+                        "last_error": last_error,
+                    }
+                )
+
+    if stale_products or failing_connectors:
+        await send_system_alert(
+            "System Health Alert",
+            stale_products,
+            failing_connectors,
+        )
+
+    logger.info(
+        f"System health check: {len(stale_products)} stale products, "
+        f"{len(failing_connectors)} failing connectors"
+    )
+    return {
+        "stale_products": len(stale_products),
+        "failing_connectors": len(failing_connectors),
+    }
+
+
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     functions = [
@@ -521,6 +617,9 @@ class WorkerSettings:
         validate_listing_with_llm,
         capture_listing_screenshot_task,
         process_opportunity_alerts,
+        # Staleness & health tasks
+        mark_stale_listings,
+        check_system_health,
     ]
     cron_jobs = [
         cron(ping, minute=0),  # Run ping every hour
@@ -528,4 +627,10 @@ class WorkerSettings:
         cron(scheduled_leboncoin_ingestion, hour=3),  # Run LeBonCoin ingestion daily at 3 AM
         cron(scheduled_vinted_ingestion, hour=4),  # Run Vinted ingestion daily at 4 AM
         cron(scheduled_computation, hour=5),  # Run computation daily at 5 AM (after ingestion)
+        cron(mark_stale_listings, hour=1),  # Mark stale listings daily at 1 AM
+        cron(
+            check_system_health,
+            hour={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22},
+            minute=30,
+        ),  # Check system health every 2 hours
     ]

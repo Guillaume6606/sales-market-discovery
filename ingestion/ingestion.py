@@ -1,5 +1,5 @@
 from collections.abc import Iterable
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -101,7 +101,7 @@ def _upsert_listing(
     screenshot_path: str | None = None,
 ) -> bool:
     listing_source = listing.source
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
 
     savepoint = db.begin_nested()
     try:
@@ -119,7 +119,7 @@ def _upsert_listing(
 
         observed_at = listing.observed_at
         if observed_at and observed_at.tzinfo is None:
-            observed_at = observed_at.replace(tzinfo=timezone.utc)
+            observed_at = observed_at.replace(tzinfo=UTC)
 
         is_sold = force_is_sold if force_is_sold is not None else listing.is_sold
 
@@ -135,6 +135,7 @@ def _upsert_listing(
             existing.observed_at = observed_at
             existing.url = listing.url
             existing.last_seen_at = now_utc
+            existing.is_stale = False
 
             # Update LLM validation fields if provided
             if llm_validation_result is not None:
@@ -238,7 +239,7 @@ def _persist_listings(
                     f"Failed to persist listing {listing.listing_id} for product {product_id}: {exc}"
                 )
 
-        product.last_ingested_at = datetime.now(timezone.utc)
+        product.last_ingested_at = datetime.now(UTC)
         db.commit()
 
     return processed_count
@@ -310,9 +311,7 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
             return {"status": "no_data", "count": 0}
 
     except Exception as exc:
-        logger.error(
-            f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}"
-        )
+        logger.error(f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}")
         return {"status": "error", "error": str(exc)}
 
 
@@ -376,15 +375,11 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, An
                 return {"status": "success", "count": processed}
 
             run.status = "no_data"
-            logger.warning(
-                f"No eBay listings matched filters for product {snapshot.product_id}"
-            )
+            logger.warning(f"No eBay listings matched filters for product {snapshot.product_id}")
             return {"status": "no_data", "count": 0}
 
     except Exception as exc:
-        logger.error(
-            f"Error in eBay listings ingestion for product {snapshot.product_id}: {exc}"
-        )
+        logger.error(f"Error in eBay listings ingestion for product {snapshot.product_id}: {exc}")
         return {"status": "error", "error": str(exc)}
 
 
@@ -571,23 +566,18 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
                 return {"status": "success", "count": processed}
 
             run.status = "no_data"
-            logger.warning(
-                f"No Vinted listings matched filters for product {snapshot.product_id}"
-            )
+            logger.warning(f"No Vinted listings matched filters for product {snapshot.product_id}")
             return {"status": "no_data", "count": 0}
 
     except Exception as exc:
-        logger.error(
-            f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}"
-        )
+        logger.error(f"Error in Vinted listings ingestion for product {snapshot.product_id}: {exc}")
         return {"status": "error", "error": str(exc)}
 
 
 def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
     """Calculate daily metrics for a product"""
     with SessionLocal() as db:
-        today = date.today()
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
 
         # Get sold items from last 30 days
         thirty_days_ago = now_utc - timedelta(days=30)
@@ -630,7 +620,7 @@ def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
         def _ensure_aware(dt: datetime | None) -> datetime | None:
             if dt is None:
                 return None
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
         recent_7d = []
         for item in sold_items:

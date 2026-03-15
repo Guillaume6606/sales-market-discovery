@@ -1,9 +1,11 @@
 """LeBonCoin connector backed by the public lbc package."""
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
 
 import lbc
 from loguru import logger
@@ -21,8 +23,8 @@ class LeBonCoinAPIConnector:
     def __init__(
         self,
         *,
-        client: Optional[lbc.Client] = None,
-        proxy: Optional[lbc.Proxy] = None,
+        client: lbc.Client | None = None,
+        proxy: lbc.Proxy | None = None,
     ) -> None:
         # Allow dependency injection for easier testing while still supporting proxy configuration.
         if client is not None:
@@ -37,15 +39,15 @@ class LeBonCoinAPIConnector:
     async def search_items(
         self,
         *,
-        keyword: Optional[str] = None,
+        keyword: str | None = None,
         limit: int = 50,
-        url: Optional[str] = None,
-        locations: Optional[Iterable[lbc.City | lbc.Department | lbc.Region]] = None,
+        url: str | None = None,
+        locations: Iterable[lbc.City | lbc.Department | lbc.Region] | None = None,
         sort: lbc.Sort = lbc.Sort.NEWEST,
         ad_type: lbc.AdType = lbc.AdType.OFFER,
         owner_type: lbc.OwnerType = lbc.OwnerType.ALL,
-        extra_filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Listing]:
+        extra_filters: dict[str, Any] | None = None,
+    ) -> list[Listing]:
         """Search active listings by delegating to ``lbc.Client.search``.
 
         Parameters mirror ``lbc.Client.search``. Either ``keyword`` or ``url`` must be provided.
@@ -61,9 +63,9 @@ class LeBonCoinAPIConnector:
         per_page = min(max(limit, 1), self.MAX_PAGE_SIZE)
         remaining = limit
         page = 1
-        results: List[Listing] = []
+        results: list[Listing] = []
 
-        filters: Dict[str, Any] = {
+        filters: dict[str, Any] = {
             "page": page,
             "limit": per_page,
             "sort": sort,
@@ -111,7 +113,7 @@ class LeBonCoinAPIConnector:
 
         return results
 
-    def _map_ad_to_listing(self, ad: Any) -> Optional[Listing]:
+    def _map_ad_to_listing(self, ad: Any) -> Listing | None:
         ad_data = self._ad_to_dict(ad)
         listing_id = self._extract_listing_id(ad, ad_data)
         if not listing_id:
@@ -121,8 +123,12 @@ class LeBonCoinAPIConnector:
         title = self._extract_field(ad, ad_data, ["subject", "title", "name"]) or ""
         price_value, currency = self._extract_price(ad, ad_data)
 
-        description = self._extract_field(ad, ad_data, ["body", "description", "content"])
-        condition_raw = self._extract_field(ad, ad_data, ["condition", "item_condition", "state"]) or None
+        self._extract_field(
+            ad, ad_data, ["body", "description", "content"]
+        )  # reserved for future use
+        condition_raw = (
+            self._extract_field(ad, ad_data, ["condition", "item_condition", "state"]) or None
+        )
         location = self._extract_location(ad_data)
         shipping_cost = self._extract_shipping_cost(ad_data)
         url = self._extract_field(ad, ad_data, ["url", "permalink", "short_url"])
@@ -138,7 +144,7 @@ class LeBonCoinAPIConnector:
             location=location,
             seller_rating=None,
             shipping_cost=shipping_cost,
-            observed_at=datetime.now(timezone.utc),
+            observed_at=datetime.now(UTC),
             is_sold=False,
             url=url,
             brand=None,
@@ -147,21 +153,20 @@ class LeBonCoinAPIConnector:
         )
 
     @staticmethod
-    def normalize_condition_leboncoin(condition_raw: str) -> Optional[str]:
+    def normalize_condition_leboncoin(condition_raw: str) -> str | None:
         if not condition_raw:
             return None
 
         condition_lower = condition_raw.lower()
         normalized = (
-            condition_lower.replace("é", "e")
-            .replace("è", "e")
-            .replace("ê", "e")
-            .replace("à", "a")
+            condition_lower.replace("é", "e").replace("è", "e").replace("ê", "e").replace("à", "a")
         )
 
         if any(word in normalized for word in ["neuf", "new", "nouveau"]):
             return "new"
-        if any(word in normalized for word in ["tres bon etat", "comme neuf", "like new", "excellent"]):
+        if any(
+            word in normalized for word in ["tres bon etat", "comme neuf", "like new", "excellent"]
+        ):
             return "like_new"
         if any(word in normalized for word in ["bon etat", "good", "bien"]):
             return "good"
@@ -171,7 +176,7 @@ class LeBonCoinAPIConnector:
         return None
 
     @staticmethod
-    def _ad_to_dict(ad: Any) -> Dict[str, Any]:
+    def _ad_to_dict(ad: Any) -> dict[str, Any]:
         if isinstance(ad, dict):
             return ad
 
@@ -192,7 +197,7 @@ class LeBonCoinAPIConnector:
         return {}
 
     @staticmethod
-    def _extract_field(ad: Any, ad_data: Dict[str, Any], keys: Iterable[str]) -> Optional[Any]:
+    def _extract_field(ad: Any, ad_data: dict[str, Any], keys: Iterable[str]) -> Any | None:
         for key in keys:
             if key in ad_data and ad_data[key] not in (None, ""):
                 return ad_data[key]
@@ -202,7 +207,7 @@ class LeBonCoinAPIConnector:
                     return value
         return None
 
-    def _extract_price(self, ad: Any, ad_data: Dict[str, Any]) -> Tuple[Optional[float], Optional[str]]:
+    def _extract_price(self, ad: Any, ad_data: dict[str, Any]) -> tuple[float | None, str | None]:
         currency = ad_data.get("currency") or ad_data.get("price_currency") or "EUR"
         price_info = ad_data.get("price")
 
@@ -237,7 +242,7 @@ class LeBonCoinAPIConnector:
 
         return None, currency
 
-    def _extract_location(self, ad_data: Dict[str, Any]) -> Optional[str]:
+    def _extract_location(self, ad_data: dict[str, Any]) -> str | None:
         location_info = ad_data.get("location")
         if isinstance(location_info, dict):
             parts = [
@@ -254,7 +259,7 @@ class LeBonCoinAPIConnector:
 
         return None
 
-    def _extract_shipping_cost(self, ad_data: Dict[str, Any]) -> Optional[float]:
+    def _extract_shipping_cost(self, ad_data: dict[str, Any]) -> float | None:
         shipping_info = ad_data.get("shipping") or ad_data.get("delivery")
         if isinstance(shipping_info, dict):
             for key in ("price", "amount", "value"):
@@ -270,7 +275,7 @@ class LeBonCoinAPIConnector:
         return None
 
     @staticmethod
-    def _extract_listing_id(ad: Any, ad_data: Dict[str, Any]) -> Optional[str]:
+    def _extract_listing_id(ad: Any, ad_data: dict[str, Any]) -> str | None:
         for key in ("list_id", "id", "ad_id", "document_id", "slug"):
             value = ad_data.get(key)
             if value:
@@ -291,7 +296,7 @@ async def fetch_leboncoin_api_listings(
     keyword: str,
     limit: int = 50,
     **search_kwargs: Any,
-) -> List[Listing]:
+) -> list[Listing]:
     connector = LeBonCoinAPIConnector()
     url = search_kwargs.pop("url", None)
     locations = search_kwargs.pop("locations", None)
@@ -311,11 +316,13 @@ async def fetch_leboncoin_api_listings(
     )
 
 
-async def fetch_leboncoin_api_sold(keyword: str, limit: int = 50) -> List[Listing]:
-    logger.warning("LeBonCoin API does not expose sold listings; returning active listings as proxy.")
+async def fetch_leboncoin_api_sold(keyword: str, limit: int = 50) -> list[Listing]:
+    logger.warning(
+        "LeBonCoin API does not expose sold listings; returning active listings as proxy."
+    )
     return await fetch_leboncoin_api_listings(keyword, limit)
 
 
-def parse_leboncoin_api_ads(ads: Iterable[Any]) -> List[Listing]:
+def parse_leboncoin_api_ads(ads: Iterable[Any]) -> list[Listing]:
     connector = LeBonCoinAPIConnector()
     return [listing for ad in ads if (listing := connector._map_ad_to_listing(ad))]

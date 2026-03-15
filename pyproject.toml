@@ -64,10 +64,19 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "S", "C90"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "E712",   # == True/False — required for SQLAlchemy column comparisons
+    "B008",   # Depends() in defaults — standard FastAPI pattern
+    "C901",   # complexity — tracked but not blocking
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S"]
+"libs/common/settings.py" = ["S105"]                          # dev default password
+"libs/common/scraping.py" = ["S108", "S110", "S311", "E722"]  # temp dir, UA fallback, random
+"ingestion/connectors/*" = ["S110", "S311"]                    # random delays, fallback patterns
+"ui/app.py" = ["B007"]                                         # iterrows loop variable
 
 [tool.mypy]
 python_version = "3.11"

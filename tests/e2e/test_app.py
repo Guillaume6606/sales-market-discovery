@@ -45,7 +45,7 @@ def test_backend_health_endpoints():
         assert response.status == 200
         body = response.json()
         assert "total_products" in body
-        print(f"PASS: /ingestion/status returns status data")
+        print("PASS: /ingestion/status returns status data")
 
         browser.close()
 

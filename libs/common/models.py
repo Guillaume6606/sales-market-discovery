@@ -113,6 +113,7 @@ class MarketPriceNormal(Base):
     pmn_low = Column(Numeric)
     pmn_high = Column(Numeric)
     methodology = Column(JSON)
+    confidence = Column(Numeric)
 
     # Relationship
     product = relationship("ProductTemplate", back_populates="pmn")

@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     screenshot_storage_path: str = Field(default="/data/screenshots")
     screenshot_enabled: bool = Field(default=False)
 
+    # Observability & Staleness
+    stale_product_hours: int = Field(default=24)
+    stale_listing_days: int = Field(default=7)
+    connector_failure_threshold: int = Field(default=3)
+    min_pmn_confidence: float = Field(default=0.3)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
