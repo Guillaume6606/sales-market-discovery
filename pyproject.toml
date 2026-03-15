@@ -56,15 +56,8 @@ dev = [
     "pytest-asyncio>=0.24.0",
 ]
 
-[tool.setuptools]
-packages = [
-    "libs",
-    "libs.common",
-    "ingestion",
-    "ingestion.connectors",
-    "backend",
-    "tests",
-]
+[tool.setuptools.packages.find]
+include = ["libs*", "ingestion*", "backend*"]
 
 [tool.ruff]
 line-length = 100
@@ -87,3 +80,5 @@ no_implicit_optional = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["e2e: end-to-end tests requiring live services"]
+addopts = "-m 'not e2e'"
