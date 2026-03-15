@@ -1,6 +1,9 @@
 """End-to-end tests for the Market Discovery application using Playwright."""
 
+import pytest
 from playwright.sync_api import sync_playwright
+
+pytestmark = pytest.mark.e2e
 
 
 def test_backend_api_docs():
@@ -99,13 +102,13 @@ def test_streamlit_product_setup_tab():
 
         # Click Product Setup tab in sidebar
         product_setup = page.get_by_text("Product Setup")
-        if product_setup.count() > 0:
-            product_setup.first.click()
-            page.wait_for_timeout(2000)
+        assert product_setup.count() > 0, "Product Setup tab not found"
+        product_setup.first.click()
+        page.wait_for_timeout(2000)
 
-            content = page.content()
-            assert "Manage Categories" in content or "Category" in content
-            print("PASS: Product Setup tab shows category management")
+        content = page.content()
+        assert "Manage Categories" in content or "Category" in content
+        print("PASS: Product Setup tab shows category management")
 
         page.screenshot(path="/tmp/ui_product_setup.png", full_page=True)
         browser.close()
