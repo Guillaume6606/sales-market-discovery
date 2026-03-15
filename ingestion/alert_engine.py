@@ -269,25 +269,36 @@ async def trigger_alerts(
                     "description": product_template.description,
                 }
 
-                # Send Telegram alert
-                screenshot_path = listing.screenshot_path
-                send_result = await send_opportunity_alert(
-                    opportunity_dict,
-                    listing_dict,
-                    product_dict,
-                    screenshot_path=screenshot_path,
-                )
-
-                # Create alert event
+                # Create alert event first (to get alert_id for inline keyboard)
                 alert_event = AlertEvent(
                     rule_id=rule.rule_id,
                     product_id=product_template.product_id,
                     obs_id=listing.obs_id,
                     sent_at=datetime.now(UTC),
-                    delivery=send_result,
+                    delivery=None,
                     suppressed=False,
                 )
                 db.add(alert_event)
+                db.flush()  # Get alert_id
+
+                # Send Telegram alert with alert_id for inline keyboard
+                screenshot_path = listing.screenshot_path
+                pmn_conf = (
+                    float(pmn_data.confidence)
+                    if pmn_data and pmn_data.confidence is not None
+                    else None
+                )
+                send_result = await send_opportunity_alert(
+                    opportunity_dict,
+                    listing_dict,
+                    product_dict,
+                    screenshot_path=screenshot_path,
+                    pmn_confidence=pmn_conf,
+                    alert_id=alert_event.alert_id,
+                )
+
+                # Update delivery result
+                alert_event.delivery = send_result
                 created_events.append(alert_event)
 
                 logger.info(
