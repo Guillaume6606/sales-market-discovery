@@ -87,6 +87,61 @@ Reference spec: `docs/superpowers/specs/2026-03-14-roadmap-objectives-kpis-desig
 - [x] ARQ worker with 7 cron jobs (stale detection, 3 connectors, computation, health check)
 - [x] Extract shared `decimal_to_float()` to `libs/common/utils.py`
 
+### Connector & Scraper Audit (Week 4)
+Deep audit of all marketplace connectors and the stealth scraping stack. The platform is only as good as its data — validate that every connector reliably returns accurate, complete listings before closing M1.
+
+**eBay connector (`ingestion/connectors/ebay.py`)**
+- [ ] Live validation: trigger eBay ingestion for 5+ known products, compare fetched listings against manual eBay search
+- [ ] Verify price extraction accuracy (currency handling, shipping included vs excluded)
+- [ ] Verify condition normalization covers all eBay condition strings (New, Like New, Very Good, Good, Acceptable)
+- [ ] Verify seller rating extraction (feedbackScore vs positiveFeedbackPercent)
+- [ ] Test pagination: request 100+ items, verify all pages fetched
+- [ ] Test error handling: invalid API key, rate limiting (HTTP 429), network timeout
+- [ ] Verify sold item timestamps (observed_at) match eBay's endTime, not fetch time
+
+**LeBonCoin connector (`ingestion/connectors/leboncoin_api.py`)**
+- [ ] Live validation: trigger LeBonCoin ingestion, compare fetched listings against manual site search
+- [ ] Verify price extraction from all known response shapes (int, float, dict with amount/value)
+- [ ] Verify location extraction (city + zipcode from nested dict)
+- [ ] Verify listing ID extraction robustness (list_id, id, ad_id, slug, URL fallback)
+- [ ] Test pagination: request >35 items (MAX_PAGE_SIZE), verify multi-page fetch
+- [ ] Test with `lbc` library edge cases: empty results, API rate limits, auth failures
+- [ ] Validate that "sold" proxy (returning active listings) is documented and understood
+
+**Vinted connector (`ingestion/connectors/vinted.py`)**
+- [ ] Live validation: trigger Vinted ingestion, compare fetched listings against manual site search
+- [ ] Validate HTML parsing selectors still match current Vinted DOM structure
+- [ ] Test price extraction: all 3 strategies (CSS selector, regex on text, parent element scan)
+- [ ] Test title extraction: verify it picks real titles, not price strings or brand names
+- [ ] Verify `_validate_item_data()` catches all junk (non-numeric IDs, prices <0.5 or >10K, short titles)
+- [ ] Test with empty search results, single result, 50+ results
+- [ ] Verify listing ID extraction from URL regex (`/items/(\d+)`)
+
+**Stealth scraping stack (`libs/common/scraping.py`)**
+- [ ] Run stealth test suite against CreepJS and BrowserScan (`test-stealth.py`, `test-stealth-config.py`)
+- [ ] Document detection scores: WebRTC, Canvas/WebGL, fonts, timezone, plugins, CDP detection
+- [ ] Verify Playwright stealth patches are applied (navigator.webdriver, chrome.runtime, permissions)
+- [ ] Verify CloudScraper fallback works when Playwright is disabled (`USE_PLAYWRIGHT=false`)
+- [ ] Test User-Agent rotation: verify realistic browser fingerprints across requests
+- [ ] Test proxy support: verify requests route through proxy when configured
+- [ ] Measure request timing: verify delays between requests respect `SCRAPING_*_DELAY` settings
+- [ ] Test retry logic: simulate 403/429/5xx responses, verify backoff and recovery
+- [ ] Test under Docker: verify scraping works inside ingestion container with xvfb + seccomp
+
+**Cross-connector data quality validation**
+- [ ] Compare same product across all 3 connectors: verify normalized `Listing` fields are consistent
+- [ ] Verify condition normalization produces same output for equivalent conditions across platforms
+- [ ] Validate that `is_sold` flag is correctly set per connector (eBay: findCompletedItems, LeBonCoin: proxy, Vinted: N/A)
+- [ ] Check for systematic missing fields: run ingestion for 10 products, report % of listings missing price/title/URL/condition per connector
+- [ ] Verify deduplication: ingest same product twice, confirm no duplicate `listing_observation` rows
+- [ ] Measure connector reliability: run each connector 10 times, report success/failure rate and timing
+
+**Fixes and hardening**
+- [ ] Fix any selector/parsing issues discovered during live validation
+- [ ] Add missing error handling for uncovered edge cases
+- [ ] Update stealth patches if detection scores are poor (>30%)
+- [ ] Document known limitations per connector (e.g., LeBonCoin has no true sold data)
+
 ### Milestone 1 Exit Criteria
 - [x] Platform runs without silent failures (health monitoring active)
 - [x] Ingestion health visible at a glance (3 health endpoints)
@@ -94,6 +149,9 @@ Reference spec: `docs/superpowers/specs/2026-03-14-roadmap-objectives-kpis-desig
 - [x] Feedback loop operational (Telegram inline keyboard + precision analytics)
 - [x] CI pipeline running on push
 - [ ] 7 consecutive days without silent failures (requires deployment + monitoring period)
+- [ ] All 3 connectors validated against live data with documented accuracy
+- [ ] Stealth scraper detection score <30% on CreepJS/BrowserScan
+- [ ] Cross-connector data quality report generated (missing field rates, consistency)
 
 ---
 
