@@ -1,7 +1,7 @@
 """Tests for health endpoints."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -79,7 +79,8 @@ class TestProductHealth:
 
 
 class TestOverview:
-    def test_returns_expected_keys(self, client, db_session):
+    @patch("backend.routers.health.compute_precision_summary", return_value={"precision": None})
+    def test_returns_expected_keys(self, mock_precision, client, db_session):
         """GET /health/overview returns expected structure."""
         # Mock sources query
         db_session.query.return_value.filter.return_value.distinct.return_value.all.return_value = []
@@ -94,8 +95,10 @@ class TestOverview:
         assert "connectors" in data
         assert "stale_product_count" in data
         assert "recent_runs" in data
+        assert "precision" in data
 
-    def test_green_status_when_healthy(self, client, db_session):
+    @patch("backend.routers.health.compute_precision_summary", return_value={"precision": None})
+    def test_green_status_when_healthy(self, mock_precision, client, db_session):
         """System status is green when no stale products and no red connectors."""
         db_session.query.return_value.filter.return_value.distinct.return_value.all.return_value = []
         db_session.query.return_value.filter.return_value.all.return_value = []
