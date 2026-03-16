@@ -22,6 +22,7 @@ from ingestion.schemas import ProductTemplateSnapshot
 from ingestion.validation import validate_listings
 from libs.common.db import SessionLocal
 from libs.common.models import (
+    IngestionRun,
     Listing,
     ListingObservation,
     ProductDailyMetrics,
@@ -177,6 +178,7 @@ def _persist_listings(
     force_is_sold: bool | None = None,
     llm_validation_results: dict[str, dict] | None = None,
     screenshot_paths: dict[str, str] | None = None,
+    tracker: IngestionRun | None = None,
 ) -> int:
     """
     Persist listings with optional LLM validation results and screenshot paths.
@@ -192,6 +194,11 @@ def _persist_listings(
         return 0
 
     valid_listings, validation_stats = validate_listings(listings)
+    if tracker is not None:
+        tracker.listings_missing_price = (
+            validation_stats.rejected_price + validation_stats.missing_price
+        )
+        tracker.listings_missing_title = validation_stats.rejected_title
     if validation_stats.rejected_price or validation_stats.rejected_title:
         logger.info(
             f"Validation: {validation_stats.passed}/{validation_stats.total} passed "
@@ -287,6 +294,7 @@ async def ingest_ebay_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
                 force_is_sold=True,
                 llm_validation_results=llm_results if llm_results else None,
                 screenshot_paths=screenshot_paths if screenshot_paths else None,
+                tracker=run,
             )
             run.listings_persisted = processed
 
@@ -357,6 +365,7 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, An
                 force_is_sold=False,
                 llm_validation_results=llm_results if llm_results else None,
                 screenshot_paths=screenshot_paths if screenshot_paths else None,
+                tracker=run,
             )
             run.listings_persisted = processed
 
@@ -418,6 +427,7 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[st
                 force_is_sold=False,
                 llm_validation_results=llm_results if llm_results else None,
                 screenshot_paths=screenshot_paths if screenshot_paths else None,
+                tracker=run,
             )
             run.listings_persisted = processed
 
@@ -483,6 +493,7 @@ async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, A
                 force_is_sold=True,
                 llm_validation_results=llm_results if llm_results else None,
                 screenshot_paths=screenshot_paths if screenshot_paths else None,
+                tracker=run,
             )
             run.listings_persisted = processed
 
@@ -548,6 +559,7 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
                 force_is_sold=False,
                 llm_validation_results=llm_results if llm_results else None,
                 screenshot_paths=screenshot_paths if screenshot_paths else None,
+                tracker=run,
             )
             run.listings_persisted = processed
 
