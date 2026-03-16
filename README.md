@@ -40,7 +40,14 @@ Mono‑repo for a Flip/Resell Market Discovery & Arbitrage Detection platform wi
 - **Ingestion Run Tracking**: Every ingestion run tracked with timing, listing counts, and error details
 - **Stale Listing Detection**: Automated daily marking of unseen listings; reset on re-observation
 - **Alert Confidence Suppression**: Alerts suppressed when PMN confidence is below configurable threshold
-- **Alert Feedback Loop**: Track user feedback (interested/not_interested/purchased) on triggered alerts
+- **PMN History**: Every PMN computation recorded for backtesting; queryable via `/products/{id}/pmn-history`
+- **Confidence in API**: Discovery endpoint exposes `pmn_confidence` and supports `min_pmn_confidence` filter; Telegram alerts show confidence badge
+
+### 🔄 Feedback Loop & Precision Tracking
+- **Telegram Inline Keyboard**: Opportunity alerts include Interested / Not Interested / Purchased buttons
+- **Telegram Webhook**: `POST /webhooks/telegram` processes inline keyboard presses, records feedback, removes keyboard
+- **Manual Feedback API**: `POST /alerts/events/{id}/feedback` and `GET /alerts/events/{id}/feedback`
+- **Alert Precision Analytics**: `GET /analytics/alert-precision` — total alerts, feedback rate, precision (interested+purchased / total feedback)
 
 ### Quick start (local)
 ```bash
@@ -132,6 +139,29 @@ curl -X POST "http://localhost:8000/ingestion/vinted/trigger-listings?keyword=Ad
 
 # Trigger Vinted 'sold' items (recent listings as proxy)
 curl -X POST "http://localhost:8000/ingestion/vinted/trigger-sold?keyword=Zara&limit=50"
+```
+
+#### PMN History & Confidence
+```bash
+# Get PMN computation history for backtesting
+curl "http://localhost:8000/products/{product_id}/pmn-history?limit=50"
+
+# Filter discovery by PMN confidence
+curl "http://localhost:8000/products/discovery?min_pmn_confidence=0.5"
+```
+
+#### Feedback & Precision
+```bash
+# Submit feedback on an alert
+curl -X POST "http://localhost:8000/alerts/events/{alert_id}/feedback" \
+  -H "Content-Type: application/json" \
+  -d '{"feedback": "interested"}'
+
+# Get feedback for an alert
+curl "http://localhost:8000/alerts/events/{alert_id}/feedback"
+
+# Get alert precision analytics (last 30 days)
+curl "http://localhost:8000/analytics/alert-precision?days=30"
 ```
 
 #### Health & Monitoring

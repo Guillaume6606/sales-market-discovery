@@ -8,10 +8,11 @@ from typing import Any
 
 from loguru import logger
 
+from libs.common.models import VALID_FEEDBACK_VALUES
 from libs.common.settings import settings
 
 try:
-    from telegram import Bot
+    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.error import RetryAfter, TelegramError, TimedOut
 
     TELEGRAM_AVAILABLE = True
@@ -37,11 +38,27 @@ def _get_bot() -> Bot | None:
         return None
 
 
+def _confidence_badge(confidence: float | None) -> str:
+    """Return a human-readable confidence badge string for Telegram messages."""
+    if confidence is None:
+        return ""
+    pct = round(confidence * 100)
+    if confidence >= 0.7:
+        label = "high"
+    elif confidence >= 0.4:
+        label = "medium"
+    else:
+        label = "low"
+    return f"\n📈 <b>Confidence:</b> {label} ({pct}%)"
+
+
 async def send_opportunity_alert(
     opportunity: dict[str, Any],
     listing: dict[str, Any],
     product_template: dict[str, Any],
     screenshot_path: str | None = None,
+    pmn_confidence: float | None = None,
+    alert_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Send opportunity alert via Telegram.
@@ -90,8 +107,26 @@ async def send_opportunity_alert(
 📊 <b>PMN:</b> €{pmn:.2f}
 
 💵 <b>Margin:</b> {margin_pct:.1f}% (€{margin_abs:.2f})
-
+{_confidence_badge(pmn_confidence)}
 🔗 <a href="{listing_url}">View Listing</a>"""
+
+        # Build inline keyboard if alert_id is provided
+        reply_markup = None
+        if alert_id is not None and TELEGRAM_AVAILABLE:
+            # Button labels keyed by feedback value from the canonical constant
+            _labels = {
+                "interested": "Interested",
+                "not_interested": "Not Interested",
+                "purchased": "Purchased",
+            }
+            buttons = [
+                InlineKeyboardButton(
+                    _labels.get(val, val),
+                    callback_data=f"fb:{alert_id}:{val}",
+                )
+                for val in VALID_FEEDBACK_VALUES
+            ]
+            reply_markup = InlineKeyboardMarkup([buttons[:2], buttons[2:]])
 
         # Send message
         try:
@@ -104,6 +139,7 @@ async def send_opportunity_alert(
                         caption=message_text,
                         parse_mode="HTML",
                         disable_web_page_preview=False,
+                        reply_markup=reply_markup,
                     )
             else:
                 # Send text only
@@ -112,6 +148,7 @@ async def send_opportunity_alert(
                     text=message_text,
                     parse_mode="HTML",
                     disable_web_page_preview=False,
+                    reply_markup=reply_markup,
                 )
 
             logger.info(f"Sent Telegram alert for listing {listing.get('listing_id', 'unknown')}")

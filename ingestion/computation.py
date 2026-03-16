@@ -9,7 +9,7 @@ This module implements the core computation algorithms:
 """
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func
@@ -20,6 +20,7 @@ from libs.common.db import SessionLocal
 from libs.common.models import (
     ListingObservation,
     MarketPriceNormal,
+    PMNHistory,
     ProductDailyMetrics,
     ProductTemplate,
 )
@@ -98,7 +99,7 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
             db.query(ListingObservation.price, ListingObservation.observed_at)
             .filter(
                 ListingObservation.product_id == product_id,
-                ListingObservation.is_sold == True,
+                ListingObservation.is_sold.is_(True),
                 ListingObservation.price.isnot(None),
                 ListingObservation.observed_at >= ninety_days_ago,
             )
@@ -120,7 +121,7 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
                 db.query(ListingObservation.price, ListingObservation.observed_at)
                 .filter(
                     ListingObservation.product_id == product_id,
-                    ListingObservation.is_sold == False,
+                    ListingObservation.is_sold.is_(False),
                     ListingObservation.price.isnot(None),
                     ListingObservation.observed_at >= ninety_days_ago,
                 )
@@ -164,6 +165,7 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
                 newest = max(aware_timestamps)
                 newest_sale_age_days = (datetime.now(UTC) - newest).total_seconds() / 86400.0
 
+        # Approximate std_dev as CI half-width (pmn_high ≈ pmn + 1σ)
         std_dev = pmn_result["pmn_high"] - pmn_result["pmn"]
         confidence = compute_pmn_confidence(
             sample_size=len(prices),
@@ -197,6 +199,18 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
                 confidence=confidence,
             )
             db.add(new_pmn)
+
+        # Record PMN history in the same transaction as the main PMN upsert
+        history_row = PMNHistory(
+            product_id=product_id,
+            computed_at=datetime.now(UTC),
+            pmn=pmn_result["pmn"],
+            pmn_low=pmn_result["pmn_low"],
+            pmn_high=pmn_result["pmn_high"],
+            confidence=confidence,
+            sample_size=len(prices),
+        )
+        db.add(history_row)
 
         db.commit()
 
@@ -259,7 +273,7 @@ def compute_liquidity_score(product_id: str, db: Session | None = None) -> dict[
             db.query(func.count(ListingObservation.obs_id))
             .filter(
                 ListingObservation.product_id == product_id,
-                ListingObservation.is_sold == True,
+                ListingObservation.is_sold.is_(True),
                 ListingObservation.observed_at >= thirty_days_ago,
             )
             .scalar()
@@ -270,7 +284,7 @@ def compute_liquidity_score(product_id: str, db: Session | None = None) -> dict[
             db.query(func.count(ListingObservation.obs_id))
             .filter(
                 ListingObservation.product_id == product_id,
-                ListingObservation.is_sold == True,
+                ListingObservation.is_sold.is_(True),
                 ListingObservation.observed_at >= seven_days_ago,
             )
             .scalar()
@@ -284,7 +298,7 @@ def compute_liquidity_score(product_id: str, db: Session | None = None) -> dict[
         active_count = (
             db.query(func.count(ListingObservation.obs_id))
             .filter(
-                ListingObservation.product_id == product_id, ListingObservation.is_sold == False
+                ListingObservation.product_id == product_id, ListingObservation.is_sold.is_(False)
             )
             .scalar()
             or 0
@@ -578,7 +592,9 @@ def compute_all_product_metrics(
         # Get product IDs if not provided
         if product_ids is None:
             products = (
-                db.query(ProductTemplate.product_id).filter(ProductTemplate.is_active == True).all()
+                db.query(ProductTemplate.product_id)
+                .filter(ProductTemplate.is_active.is_(True))
+                .all()
             )
             product_ids = [str(p.product_id) for p in products]
 
@@ -609,8 +625,6 @@ def compute_all_product_metrics(
                 liquidity_data = compute_liquidity_score(product_id, db)
 
                 # Update or create daily metrics
-                from datetime import date
-
                 existing_metrics = (
                     db.query(ProductDailyMetrics)
                     .filter(

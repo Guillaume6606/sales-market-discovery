@@ -1,6 +1,5 @@
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
 from typing import Any
 
 import numpy as np
@@ -28,14 +27,7 @@ from libs.common.models import (
     ProductDailyMetrics,
     ProductTemplate,
 )
-
-
-def _decimal_to_float(value: Decimal | float | None) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
+from libs.common.utils import decimal_to_float as _decimal_to_float
 
 
 def _snapshot_product(product: ProductTemplate) -> ProductTemplateSnapshot:

@@ -119,6 +119,21 @@ class MarketPriceNormal(Base):
     product = relationship("ProductTemplate", back_populates="pmn")
 
 
+class PMNHistory(Base):
+    __tablename__ = "pmn_history"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    product_id = Column(UUID, ForeignKey("product_template.product_id"), nullable=False)
+    computed_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    pmn = Column(Numeric)
+    pmn_low = Column(Numeric)
+    pmn_high = Column(Numeric)
+    confidence = Column(Numeric)
+    sample_size = Column(Integer)
+
+    product = relationship("ProductTemplate", back_populates="pmn_history")
+
+
 class AlertRule(Base):
     __tablename__ = "alert_rule"
 
@@ -171,6 +186,9 @@ class IngestionRun(Base):
     product = relationship("ProductTemplate")
 
 
+VALID_FEEDBACK_VALUES = ("interested", "not_interested", "purchased")
+
+
 class AlertFeedback(Base):
     __tablename__ = "alert_feedback"
     __table_args__ = (
@@ -181,10 +199,11 @@ class AlertFeedback(Base):
     )
 
     feedback_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
-    alert_id = Column(BigInteger, ForeignKey("alert_event.alert_id"))
+    alert_id = Column(BigInteger, ForeignKey("alert_event.alert_id"), nullable=False, unique=True)
     feedback = Column(Text, nullable=False)
     notes = Column(Text)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
     alert = relationship("AlertEvent", back_populates="feedbacks")
 
@@ -195,6 +214,7 @@ Category.products = relationship("ProductTemplate", back_populates="category")
 ProductTemplate.observations = relationship("ListingObservation", back_populates="product")
 ProductTemplate.daily_metrics = relationship("ProductDailyMetrics", back_populates="product")
 ProductTemplate.pmn = relationship("MarketPriceNormal", back_populates="product", uselist=False)
+ProductTemplate.pmn_history = relationship("PMNHistory", back_populates="product")
 
 
 # Standardized Listing model for all connectors

@@ -3,7 +3,6 @@ Alert rule evaluation engine for triggering Telegram notifications.
 """
 
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
 from loguru import logger
@@ -20,15 +19,7 @@ from libs.common.models import (
 )
 from libs.common.settings import settings
 from libs.common.telegram_service import send_opportunity_alert
-
-
-def _decimal_to_float(value: Decimal | float | None) -> float | None:
-    """Convert Decimal to float."""
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
+from libs.common.utils import decimal_to_float as _decimal_to_float
 
 
 def evaluate_alert_rules(
@@ -59,7 +50,7 @@ def evaluate_alert_rules(
 
     try:
         # Get all active alert rules
-        rules = db.query(AlertRule).filter(AlertRule.is_active == True).all()
+        rules = db.query(AlertRule).filter(AlertRule.is_active.is_(True)).all()
 
         matching_rules = []
 
@@ -159,7 +150,7 @@ def _check_duplicate_alert(
         .filter(
             AlertEvent.rule_id == rule_id,
             AlertEvent.obs_id == obs_id,
-            AlertEvent.suppressed == False,
+            AlertEvent.suppressed.is_(False),
         )
         .first()
     )
@@ -218,6 +209,7 @@ async def trigger_alerts(
                         suppressed=True,
                     )
                     db.add(suppressed_event)
+                    db.commit()
                     created_events.append(suppressed_event)
                     continue
 
@@ -269,33 +261,45 @@ async def trigger_alerts(
                     "description": product_template.description,
                 }
 
-                # Send Telegram alert
-                screenshot_path = listing.screenshot_path
-                send_result = await send_opportunity_alert(
-                    opportunity_dict,
-                    listing_dict,
-                    product_dict,
-                    screenshot_path=screenshot_path,
-                )
-
-                # Create alert event
+                # Create alert event first (to get alert_id for inline keyboard)
                 alert_event = AlertEvent(
                     rule_id=rule.rule_id,
                     product_id=product_template.product_id,
                     obs_id=listing.obs_id,
                     sent_at=datetime.now(UTC),
-                    delivery=send_result,
+                    delivery=None,
                     suppressed=False,
                 )
                 db.add(alert_event)
+                db.flush()  # Get alert_id
+
+                # Send Telegram alert with alert_id for inline keyboard
+                screenshot_path = listing.screenshot_path
+                pmn_conf = (
+                    float(pmn_data.confidence)
+                    if pmn_data and pmn_data.confidence is not None
+                    else None
+                )
+                send_result = await send_opportunity_alert(
+                    opportunity_dict,
+                    listing_dict,
+                    product_dict,
+                    screenshot_path=screenshot_path,
+                    pmn_confidence=pmn_conf,
+                    alert_id=alert_event.alert_id,
+                )
+
+                # Update delivery result and commit immediately so the
+                # alert_id referenced in the Telegram callback_data is
+                # persisted even if a later iteration fails.
+                alert_event.delivery = send_result
+                db.commit()
                 created_events.append(alert_event)
 
                 logger.info(
                     f"Triggered alert for rule {rule.name} (ID: {rule.rule_id}) "
                     f"on listing {listing.obs_id}"
                 )
-
-        db.commit()
         return created_events
 
     except Exception as e:
