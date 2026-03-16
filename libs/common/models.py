@@ -181,8 +181,8 @@ class IngestionRun(Base):
     listings_persisted = Column(Integer)
     filtering_stats = Column(JSON)
     error_message = Column(Text)
-    listings_missing_price = Column(Integer)
-    listings_missing_title = Column(Integer)
+    listings_missing_price = Column(Integer)  # valid listings with price=None
+    listings_missing_title = Column(Integer)  # listings rejected for empty title
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     product = relationship("ProductTemplate")
