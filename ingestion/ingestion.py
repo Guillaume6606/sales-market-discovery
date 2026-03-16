@@ -196,7 +196,7 @@ def _persist_listings(
     valid_listings, validation_stats = validate_listings(listings)
     if tracker is not None:
         tracker.listings_missing_price = validation_stats.missing_price  # passed but price=None
-        tracker.listings_missing_title = validation_stats.rejected_title  # rejected for empty title
+        tracker.listings_rejected_title = validation_stats.rejected_title
     if validation_stats.rejected_price or validation_stats.rejected_title:
         logger.info(
             f"Validation: {validation_stats.passed}/{validation_stats.total} passed "

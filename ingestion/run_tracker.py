@@ -48,7 +48,7 @@ def track_ingestion_run(
     tracker.listings_persisted = None
     tracker.filtering_stats = None
     tracker.listings_missing_price = None
-    tracker.listings_missing_title = None
+    tracker.listings_rejected_title = None
     tracker.status = "success"
     tracker.error_message = None
 
@@ -74,7 +74,7 @@ def track_ingestion_run(
                     persisted.listings_persisted = tracker.listings_persisted
                     persisted.filtering_stats = tracker.filtering_stats
                     persisted.listings_missing_price = tracker.listings_missing_price
-                    persisted.listings_missing_title = tracker.listings_missing_title
+                    persisted.listings_rejected_title = tracker.listings_rejected_title
                     persisted.error_message = tracker.error_message
                     db.commit()
         except Exception as db_exc:

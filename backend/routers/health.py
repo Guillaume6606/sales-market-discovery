@@ -106,7 +106,7 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
         missing_data = (
             db.query(
                 func.sum(IngestionRun.listings_missing_price),
-                func.sum(IngestionRun.listings_missing_title),
+                func.sum(IngestionRun.listings_rejected_title),
             )
             .filter(
                 IngestionRun.source == source,
@@ -115,7 +115,7 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
             .first()
         )
         missing_price_total = int(missing_data[0] or 0) if missing_data else 0
-        missing_title_total = int(missing_data[1] or 0) if missing_data else 0
+        rejected_title_total = int(missing_data[1] or 0) if missing_data else 0
 
         result.append(
             {
@@ -131,7 +131,7 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
                 "avg_duration_s": round(float(avg_duration), 2) if avg_duration else None,
                 "total_listings_persisted": int(total_persisted),
                 "missing_price_total": int(missing_price_total),
-                "missing_title_total": int(missing_title_total),
+                "rejected_title_total": int(rejected_title_total),
             }
         )
 

@@ -28,7 +28,7 @@ def _serialize_run(run: IngestionRun) -> dict[str, Any]:
         "listings_deduped": run.listings_deduped,
         "listings_persisted": run.listings_persisted,
         "listings_missing_price": run.listings_missing_price,
-        "listings_missing_title": run.listings_missing_title,
+        "listings_rejected_title": run.listings_rejected_title,
         "filtering_stats": run.filtering_stats,
         "error_message": run.error_message,
         "created_at": run.created_at.isoformat() if run.created_at else None,
