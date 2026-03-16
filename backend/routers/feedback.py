@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import case, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -38,7 +38,7 @@ class FeedbackCreate(BaseModel):
 class FeedbackUpdate(BaseModel):
     feedback: str | None = None
     notes: str | None = None
-    profit: float | None = None
+    profit: float | None = Field(None, ge=0)
 
 
 def _verify_webhook_secret(request: Request) -> None:

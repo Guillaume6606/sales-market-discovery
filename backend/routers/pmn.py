@@ -58,7 +58,7 @@ def _compute_accuracy_for_snapshots(
         pmn = _decimal_to_float(snap.pmn)
         pmn_low = _decimal_to_float(snap.pmn_low)
         pmn_high = _decimal_to_float(snap.pmn_high)
-        if pmn is None:
+        if not pmn:
             continue
 
         # Filter sold observations in this window
@@ -185,7 +185,7 @@ def get_aggregate_pmn_accuracy(
 
     pid_list = [pid for (pid,) in product_ids]
 
-    # Batch-load all data in 3 queries instead of 3N+1
+    # Batch-load all data in 3 queries instead of 3N+1 (+ 1 low-confidence query below)
     all_snapshots = (
         db.query(PMNHistory)
         .filter(PMNHistory.product_id.in_(pid_list))

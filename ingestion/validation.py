@@ -10,7 +10,7 @@ class ValidationStats:
     rejected_price: int = 0
     rejected_title: int = 0
     missing_price: int = 0  # passed validation but price is None
-    missing_title: int = 0  # passed validation but title is empty/whitespace-only
+    missing_title: int = 0  # unused: empty titles are rejected by validate_listing
     rejected_reasons: dict[str, int] = field(default_factory=dict)
 
 
