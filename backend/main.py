@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from backend.routers.feedback import router as feedback_router
 from backend.routers.health import router as health_router
+from backend.routers.ingestion import router as ingestion_router
+from backend.routers.pmn import router as pmn_router
 from ingestion.constants import SUPPORTED_PROVIDERS
 from libs.common.db import engine, get_db
 from libs.common.log import logger
@@ -45,6 +47,8 @@ arq_pool = None
 app = FastAPI(title="Market Discovery API", version="0.1.0")
 app.include_router(health_router)
 app.include_router(feedback_router)
+app.include_router(ingestion_router)
+app.include_router(pmn_router)
 
 
 @app.on_event("startup")

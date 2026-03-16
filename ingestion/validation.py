@@ -9,6 +9,8 @@ class ValidationStats:
     passed: int = 0
     rejected_price: int = 0
     rejected_title: int = 0
+    missing_price: int = 0  # passed validation but price is None
+    missing_title: int = 0  # unused: empty titles are rejected by validate_listing
     rejected_reasons: dict[str, int] = field(default_factory=dict)
 
 
@@ -40,6 +42,8 @@ def validate_listings(listings: list[Listing]) -> tuple[list[Listing], Validatio
         if reason is None:
             valid.append(listing)
             stats.passed += 1
+            if listing.price is None:
+                stats.missing_price += 1
         else:
             stats.rejected_reasons[reason] = stats.rejected_reasons.get(reason, 0) + 1
             if reason.startswith("price"):
