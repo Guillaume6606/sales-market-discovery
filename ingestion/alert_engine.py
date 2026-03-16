@@ -50,7 +50,7 @@ def evaluate_alert_rules(
 
     try:
         # Get all active alert rules
-        rules = db.query(AlertRule).filter(AlertRule.is_active == True).all()
+        rules = db.query(AlertRule).filter(AlertRule.is_active.is_(True)).all()
 
         matching_rules = []
 
@@ -150,7 +150,7 @@ def _check_duplicate_alert(
         .filter(
             AlertEvent.rule_id == rule_id,
             AlertEvent.obs_id == obs_id,
-            AlertEvent.suppressed == False,
+            AlertEvent.suppressed.is_(False),
         )
         .first()
     )
@@ -209,6 +209,7 @@ async def trigger_alerts(
                         suppressed=True,
                     )
                     db.add(suppressed_event)
+                    db.commit()
                     created_events.append(suppressed_event)
                     continue
 
