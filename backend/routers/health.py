@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import case, desc, func
 from sqlalchemy.orm import Session
 
+from backend.routers.feedback import compute_precision_summary
 from libs.common.db import get_db
 from libs.common.models import IngestionRun, ProductTemplate
 from libs.common.settings import settings
@@ -101,6 +102,21 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
         total_7d = runs_7d.total if runs_7d else 0
         successes_7d = runs_7d.successes if runs_7d else 0
 
+        # 7d missing data aggregation (single query for both columns)
+        missing_data = (
+            db.query(
+                func.sum(IngestionRun.listings_missing_price),
+                func.sum(IngestionRun.listings_missing_title),
+            )
+            .filter(
+                IngestionRun.source == source,
+                IngestionRun.started_at >= seven_d_ago,
+            )
+            .first()
+        )
+        missing_price_total = int(missing_data[0] or 0) if missing_data else 0
+        missing_title_total = int(missing_data[1] or 0) if missing_data else 0
+
         result.append(
             {
                 "source": source,
@@ -114,6 +130,8 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
                 "success_rate_7d": round(successes_7d / total_7d, 2) if total_7d > 0 else None,
                 "avg_duration_s": round(float(avg_duration), 2) if avg_duration else None,
                 "total_listings_persisted": int(total_persisted),
+                "missing_price_total": int(missing_price_total),
+                "missing_title_total": int(missing_title_total),
             }
         )
 
@@ -125,7 +143,7 @@ def get_product_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     """Per-product staleness information."""
     now = datetime.now(UTC)
 
-    products = db.query(ProductTemplate).filter(ProductTemplate.is_active == True).all()
+    products = db.query(ProductTemplate).filter(ProductTemplate.is_active.is_(True)).all()
 
     result = []
     for product in products:
@@ -200,7 +218,7 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
         connectors.append({"source": source, "status": color, "success_rate_24h": round(rate, 2)})
 
     # Stale product count
-    products = db.query(ProductTemplate).filter(ProductTemplate.is_active == True).all()
+    products = db.query(ProductTemplate).filter(ProductTemplate.is_active.is_(True)).all()
     stale_count = 0
     for product in products:
         if not product.last_ingested_at:
@@ -234,4 +252,5 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
         "connectors": connectors,
         "stale_product_count": stale_count,
         "recent_runs": recent_runs_data,
+        "precision": compute_precision_summary(db),
     }

@@ -35,6 +35,12 @@ class FeedbackCreate(BaseModel):
     notes: str | None = None
 
 
+class FeedbackUpdate(BaseModel):
+    feedback: str | None = None
+    notes: str | None = None
+    profit: float | None = None
+
+
 def _verify_webhook_secret(request: Request) -> None:
     """Verify Telegram webhook secret if configured."""
     if not settings.telegram_webhook_secret:
@@ -175,9 +181,47 @@ def get_feedback(
             "feedback_id": str(fb.feedback_id),
             "feedback": fb.feedback,
             "notes": fb.notes,
+            "profit": float(fb.profit) if fb.profit is not None else None,
             "created_at": fb.created_at.isoformat() if fb.created_at else None,
             "updated_at": fb.updated_at.isoformat() if fb.updated_at else None,
         },
+    }
+
+
+@router.patch("/alerts/feedback/{feedback_id}")
+def update_feedback(
+    feedback_id: str,
+    payload: FeedbackUpdate,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Update feedback fields (feedback, notes, profit)."""
+    fb = db.query(AlertFeedback).filter(AlertFeedback.feedback_id == feedback_id).first()
+    if not fb:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Feedback not found")
+
+    if payload.feedback is not None:
+        if payload.feedback not in VALID_FEEDBACK:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"feedback must be one of: {', '.join(sorted(VALID_FEEDBACK))}",
+            )
+        fb.feedback = payload.feedback
+    if payload.notes is not None:
+        fb.notes = payload.notes
+    if payload.profit is not None:
+        fb.profit = payload.profit
+
+    db.commit()
+    db.refresh(fb)
+
+    return {
+        "feedback_id": str(fb.feedback_id),
+        "alert_id": fb.alert_id,
+        "feedback": fb.feedback,
+        "notes": fb.notes,
+        "profit": float(fb.profit) if fb.profit is not None else None,
+        "created_at": fb.created_at.isoformat() if fb.created_at else None,
+        "updated_at": fb.updated_at.isoformat() if fb.updated_at else None,
     }
 
 
@@ -186,15 +230,13 @@ def get_feedback(
 # --------------------------------------------------------------------------- #
 
 
-@router.get("/analytics/alert-precision")
-def alert_precision(
-    days: int = Query(30, description="Look-back period in days"),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    """Compute alert precision metrics over the given period."""
+def compute_precision_summary(db: Session, days: int = 30) -> dict[str, Any]:
+    """Compute alert precision metrics over the given period.
+
+    Extracted as a helper so it can be reused in the health overview.
+    """
     since = datetime.now(UTC) - timedelta(days=days)
 
-    # Non-suppressed alerts in period
     total_alerts = (
         db.query(func.count(AlertEvent.alert_id))
         .filter(
@@ -205,7 +247,6 @@ def alert_precision(
         or 0
     )
 
-    # Single query for all feedback counts
     row = (
         db.query(
             func.count(func.distinct(AlertFeedback.alert_id)).label("total"),
@@ -232,7 +273,7 @@ def alert_precision(
             "days": days,
             "total_alerts": total_alerts,
             "total_with_feedback": 0,
-            "feedback_rate": round(0 / total_alerts, 4) if total_alerts > 0 else None,
+            "feedback_rate": 0.0 if total_alerts > 0 else None,
             "interested_count": 0,
             "not_interested_count": 0,
             "purchased_count": 0,
@@ -261,3 +302,12 @@ def alert_precision(
         "purchased_count": purchased_count,
         "precision": precision,
     }
+
+
+@router.get("/analytics/alert-precision")
+def alert_precision(
+    days: int = Query(30, ge=1, description="Look-back period in days"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Compute alert precision metrics over the given period."""
+    return compute_precision_summary(db, days)
