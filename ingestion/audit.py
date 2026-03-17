@@ -150,10 +150,11 @@ async def judge_listing(
     try:
         import google.generativeai as genai
 
-        if not settings.gemini_api_key:
-            raise ValueError("GEMINI_API_KEY not set")
+        # Use explicit API key if set, otherwise fall back to Application Default Credentials
+        if settings.gemini_api_key:
+            genai.configure(api_key=settings.gemini_api_key)
+        # else: genai auto-discovers ADC from gcloud auth application-default login
 
-        genai.configure(api_key=settings.gemini_api_key)
         model = genai.GenerativeModel(settings.gemini_model)
 
         content_parts: list[Any] = []
