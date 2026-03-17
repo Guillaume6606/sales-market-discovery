@@ -73,4 +73,8 @@ Full roadmap, KPIs, and milestone definitions in `docs/superpowers/specs/2026-03
 3. **Get Smarter** (W9-14) — Product discovery engine, trend detection, advanced LLM, seller intelligence
 4. **Scale Up** (W15-20) — Portfolio management, new marketplaces, auto-pricing, performance analytics
 
-**Current focus:** Milestone 1. See `docs/milestone-1-todo.md` for the full task breakdown with dependencies and suggested weekly execution order.
+**Current focus:** Milestone 2. See `docs/milestone-1-todo.md` (completed) and future `docs/milestone-2-todo.md` for task breakdowns.
+
+## Planning Rule
+
+**Before planning or starting work on a new milestone/phase**, always read the current `docs/milestone-*-todo.md` files first to understand what's done, what's pending, and what was deferred. Never assume a milestone is complete without checking the todo against the actual codebase.
