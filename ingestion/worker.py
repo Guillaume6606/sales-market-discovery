@@ -80,6 +80,14 @@ async def scheduled_ebay_ingestion(ctx):
             logger.error(f"Error in scheduled eBay ingestion for {product_id}: {exc}")
             results[product_id] = {"status": "error", "error": str(exc)}
 
+    if settings.audit_enabled:
+        try:
+            pool = ctx.get("redis") or ctx.get("pool")
+            if pool:
+                await pool.enqueue_job("audit_ingestion_sample", source="ebay")
+        except Exception as exc:
+            logger.warning("Failed to enqueue audit task: %s", exc)
+
     return results
 
 
@@ -102,6 +110,14 @@ async def scheduled_leboncoin_ingestion(ctx):
             logger.error(f"Error in scheduled LeBonCoin ingestion for {product_id}: {exc}")
             results[product_id] = {"status": "error", "error": str(exc)}
 
+    if settings.audit_enabled:
+        try:
+            pool = ctx.get("redis") or ctx.get("pool")
+            if pool:
+                await pool.enqueue_job("audit_ingestion_sample", source="leboncoin")
+        except Exception as exc:
+            logger.warning("Failed to enqueue audit task: %s", exc)
+
     return results
 
 
@@ -123,6 +139,14 @@ async def scheduled_vinted_ingestion(ctx):
         except Exception as exc:
             logger.error(f"Error in scheduled Vinted ingestion for {product_id}: {exc}")
             results[product_id] = {"status": "error", "error": str(exc)}
+
+    if settings.audit_enabled:
+        try:
+            pool = ctx.get("redis") or ctx.get("pool")
+            if pool:
+                await pool.enqueue_job("audit_ingestion_sample", source="vinted")
+        except Exception as exc:
+            logger.warning("Failed to enqueue audit task: %s", exc)
 
     return results
 
@@ -596,6 +620,64 @@ async def check_system_health(ctx: dict) -> dict:
     }
 
 
+async def audit_ingestion_sample(
+    ctx: dict, source: str, ingestion_run_id: str | None = None
+) -> dict:
+    """Sample recent listings from an ingestion run and audit them."""
+    if not settings.audit_enabled:
+        return {"status": "disabled"}
+
+    with SessionLocal() as db:
+        query = (
+            db.query(ListingObservation)
+            .filter(
+                ListingObservation.source == source,
+                ListingObservation.url.isnot(None),
+            )
+            .order_by(ListingObservation.last_seen_at.desc())
+            .limit(settings.audit_sample_size)
+        )
+        listings = query.all()
+
+        if not listings:
+            return {"status": "no_listings", "source": source}
+
+        for listing in listings:
+            db.expunge(listing)
+
+    from ingestion.audit import audit_listings
+
+    records = await audit_listings(
+        listings,
+        audit_mode="continuous",
+        ingestion_run_id=ingestion_run_id,
+    )
+
+    with SessionLocal() as db:
+        for r in records:
+            db.add(r)
+        db.commit()
+
+    from ingestion.audit import compute_connector_accuracy
+
+    accuracy_data = compute_connector_accuracy(records)
+    for src, data in accuracy_data.items():
+        if data["status"] == "red":
+            try:
+                from libs.common.telegram_service import send_connector_quality_alert
+
+                await send_connector_quality_alert(src, data)
+            except Exception as exc:
+                logger.error("Failed to send quality alert: %s", exc)
+
+    return {
+        "status": "success",
+        "source": source,
+        "audited": len(records),
+        "accuracy": {s: d["accuracy"] for s, d in accuracy_data.items()},
+    }
+
+
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     functions = [
@@ -620,6 +702,8 @@ class WorkerSettings:
         # Staleness & health tasks
         mark_stale_listings,
         check_system_health,
+        # Audit tasks
+        audit_ingestion_sample,
     ]
     cron_jobs = [
         cron(ping, minute=0),  # Run ping every hour
