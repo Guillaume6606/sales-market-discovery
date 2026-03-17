@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     connector_failure_threshold: int = Field(default=3)
     min_pmn_confidence: float = Field(default=0.3)
 
+    # Connector audit
+    audit_enabled: bool = True
+    audit_sample_size: int = 3
+    audit_accuracy_green: float = 0.90
+    audit_accuracy_yellow: float = 0.80
+    audit_daily_token_budget: int = 100000
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
