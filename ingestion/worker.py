@@ -678,6 +678,54 @@ async def audit_ingestion_sample(
     }
 
 
+async def run_on_demand_audit(
+    ctx: dict,
+    connector: str | None = None,
+    sample_size: int = 20,
+    product_id: str | None = None,
+) -> dict:
+    """Run an on-demand connector audit."""
+    import redis as redis_lib
+
+    try:
+        with SessionLocal() as db:
+            query = db.query(ListingObservation).filter(
+                ListingObservation.url.isnot(None),
+            )
+            if connector:
+                query = query.filter(ListingObservation.source == connector)
+            if product_id:
+                query = query.filter(ListingObservation.product_id == product_id)
+
+            listings = (
+                query.order_by(ListingObservation.last_seen_at.desc()).limit(sample_size).all()
+            )
+            for listing in listings:
+                db.expunge(listing)
+
+        if not listings:
+            return {"status": "no_listings"}
+
+        from ingestion.audit import audit_listings, compute_connector_accuracy
+
+        records = await audit_listings(listings, audit_mode="on_demand")
+
+        with SessionLocal() as db:
+            for r in records:
+                db.add(r)
+            db.commit()
+
+        accuracy = compute_connector_accuracy(records)
+        return {"status": "success", "audited": len(records), "accuracy": accuracy}
+
+    finally:
+        try:
+            r = redis_lib.from_url(settings.redis_url)
+            r.delete("audit:on_demand:running")
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning("Failed to clear on-demand audit lock: %s", cleanup_exc)
+
+
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     functions = [
@@ -704,6 +752,7 @@ class WorkerSettings:
         check_system_health,
         # Audit tasks
         audit_ingestion_sample,
+        run_on_demand_audit,
     ]
     cron_jobs = [
         cron(ping, minute=0),  # Run ping every hour

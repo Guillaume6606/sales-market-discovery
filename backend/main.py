@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
+from backend.routers.audit import router as audit_router
 from backend.routers.feedback import router as feedback_router
 from backend.routers.health import router as health_router
 from backend.routers.ingestion import router as ingestion_router
@@ -49,6 +50,7 @@ app.include_router(health_router)
 app.include_router(feedback_router)
 app.include_router(ingestion_router)
 app.include_router(pmn_router)
+app.include_router(audit_router)
 
 
 @app.on_event("startup")
