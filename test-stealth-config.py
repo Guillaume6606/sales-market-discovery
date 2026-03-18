@@ -12,9 +12,7 @@ def main() -> None:
             page = browser.new_page()
             page.goto("https://bot.sannysoft.com/")
             page.wait_for_timeout(3000)
-            results = page.evaluate(
-                "() => document.querySelector('#fp2 .result').textContent"
-            )
+            results = page.evaluate("() => document.querySelector('#fp2 .result').textContent")
             print(f"Stealth test result: {results}")
             browser.close()
     except Exception as e:
