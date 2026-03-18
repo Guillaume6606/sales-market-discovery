@@ -567,8 +567,11 @@ class ScrapingSession:
                 if DATADOME_PATTERNS.search(html_content[:5000]):
                     cookie_path = self.config.cookie_path
                     if cookie_path.exists():
-                        cookie_path.unlink()
-                        logger.warning("Deleted stale cookies after DataDome block at {}", url)
+                        # Don't delete cookies — stale cookies + backoff is better
+                        # than a cold start from a flagged IP
+                        logger.warning(
+                            "DataDome block at {} — keeping cookies for next session", url
+                        )
                     raise DataDomeBlockError(url)
 
             # Persist Vinted cookies after successful load
