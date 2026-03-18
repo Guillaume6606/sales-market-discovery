@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     min_pmn_confidence: float = Field(default=0.3)
 
     # Connector audit
-    audit_enabled: bool = True
+    audit_enabled: bool = False
     audit_sample_size: int = 3
     audit_accuracy_green: float = 0.90
     audit_accuracy_yellow: float = 0.80

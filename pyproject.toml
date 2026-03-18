@@ -73,6 +73,7 @@ ignore = [
 "tests/*" = ["S"]
 "libs/common/settings.py" = ["S105"]                          # dev default password
 "libs/common/scraping.py" = ["S108", "S110", "S311", "E722"]  # temp dir, UA fallback, random
+"ingestion/audit.py" = ["S108"]                                # Playwright persistent context temp dir
 "ingestion/connectors/*" = ["S110", "S311"]                    # random delays, fallback patterns
 "ui/app.py" = ["B007"]                                         # iterrows loop variable
 

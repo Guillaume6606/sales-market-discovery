@@ -24,6 +24,7 @@ from libs.common.db import SessionLocal
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.log import logger
 from libs.common.models import (
+    ConnectorAudit,
     IngestionRun,
     ListingObservation,
     MarketPriceNormal,
@@ -629,11 +630,18 @@ async def audit_ingestion_sample(
         return {"status": "disabled"}
 
     with SessionLocal() as db:
+        # Exclude listings already audited in the last 24h to avoid re-auditing
+        recently_audited = (
+            db.query(ConnectorAudit.obs_id)
+            .filter(ConnectorAudit.audited_at >= datetime.now(UTC) - timedelta(hours=24))
+            .subquery()
+        )
         query = (
             db.query(ListingObservation)
             .filter(
                 ListingObservation.source == source,
                 ListingObservation.url.isnot(None),
+                ~ListingObservation.obs_id.in_(recently_audited),
             )
             .order_by(ListingObservation.last_seen_at.desc())
             .limit(settings.audit_sample_size)
