@@ -9,6 +9,7 @@ import random
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import cloudscraper
 import httpx
@@ -357,7 +358,13 @@ class ScrapingSession:
 
         return False
 
-    async def get_html_with_playwright(self, url: str) -> str:
+    async def get_html_with_playwright(
+        self,
+        url: str,
+        *,
+        _capture_screenshot: bool = False,
+        referer: str | None = None,
+    ) -> str | tuple[str, bytes]:
         """Get HTML content using Playwright (handles JS + common consent banners)."""
         if not self._playwright_context:
             raise Exception("Playwright not available - falling back to HTTP request")
@@ -490,7 +497,13 @@ class ScrapingSession:
             await asyncio.sleep(random.uniform(0.5, 1.5))
 
             # Navigate
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            goto_kwargs: dict[str, Any] = {
+                "wait_until": "domcontentloaded",
+                "timeout": 30000,
+            }
+            if referer:
+                goto_kwargs["referer"] = referer
+            response = await page.goto(url, **goto_kwargs)
             if response and response.status in (403, 429):
                 raise Exception(f"Bot detection detected: {response.status}")
 
@@ -542,10 +555,26 @@ class ScrapingSession:
                 except Exception:  # noqa: S110
                     logger.warning("Failed to persist Vinted cookies")
 
+            if _capture_screenshot:
+                try:
+                    screenshot_bytes = await page.screenshot(full_page=True)
+                    return html_content, screenshot_bytes
+                except Exception:  # noqa: S110
+                    logger.warning("Screenshot failed for {}", url)
+
             return html_content
 
         finally:
             await page.close()
+
+    async def capture_page(
+        self, url: str, *, referer: str | None = None
+    ) -> tuple[str, bytes | None]:
+        """Navigate to URL with full stealth, return (html, screenshot_bytes | None)."""
+        result = await self.get_html_with_playwright(url, _capture_screenshot=True, referer=referer)
+        if isinstance(result, tuple):
+            return result
+        return result, None
 
     async def get_html_with_fallback(self, url: str) -> str:
         """Get HTML content with fallback from Playwright to HTTP"""

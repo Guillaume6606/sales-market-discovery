@@ -233,10 +233,9 @@ async def capture_audit_batch(
     listings: list[ListingObservation],
     html_only: bool = False,
 ) -> dict[int, AuditCapture]:
-    """Capture screenshot + HTML for a batch of listings using one Playwright browser."""
+    """Capture screenshot + HTML for a batch of listings using ScrapingSession."""
     import asyncio
     import random
-    import tempfile
 
     results: dict[int, AuditCapture] = {}
     listings_with_urls = [listing for listing in listings if listing.url]
@@ -245,86 +244,53 @@ async def capture_audit_batch(
 
     try:
         import shutil
+        import tempfile
 
-        from patchright.async_api import async_playwright
+        from libs.common.scraping import ScrapingConfig, ScrapingSession
 
-        from libs.common.scraping import STEALTH_PATCH
+        cfg = ScrapingConfig()
+        cfg.use_playwright = True
+        cfg.playwright_user_data_dir = tempfile.mkdtemp(prefix="pwuser-audit-")  # noqa: S108
 
-        async with async_playwright() as p:
-            # Mirror the stealth config from ScrapingSession.initialize()
-            # Use a unique temp dir per batch to avoid conflicts between concurrent audits
-            user_data_dir = tempfile.mkdtemp(prefix="pwuser-audit-")
-            context = await p.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                locale="fr-FR",
-                timezone_id="Europe/Paris",
-                geolocation={"latitude": 48.8566, "longitude": 2.3522},
-                headless=False,
-                no_viewport=True,
-                service_workers="block",
-                args=[
-                    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
-                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                    "--webrtc-stun-probe-trial=disabled",
-                    "--use-fake-device-for-media-stream",
-                    "--use-fake-ui-for-media-stream",
-                ],
-            )
-            await context.add_init_script(STEALTH_PATCH)
-            page = await context.new_page()
-
-            for listing in listings_with_urls:
-                try:
-                    await page.goto(listing.url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            async with ScrapingSession(cfg) as session:
+                for listing in listings_with_urls:
+                    vinted_referer = (
+                        "https://www.vinted.fr/catalog" if listing.source == "vinted" else None
+                    )
                     try:
-                        await page.wait_for_load_state("networkidle", timeout=8000)
-                    except Exception:
-                        await page.wait_for_timeout(3000)
-
-                    # Dismiss consent/cookie banners (only relevant for FR marketplaces)
-                    if listing.source in ("vinted", "leboncoin"):
-                        try:
-                            consent_btn = page.locator(
-                                "button:has-text('Accepter'), #onetrust-accept-btn-handler"
-                            )
-                            if await consent_btn.count() > 0:
-                                await consent_btn.first.click()
-                                await page.wait_for_timeout(1000)
-                        except Exception:
-                            logger.debug("No consent banner found or dismiss failed")
-
-                    html_content = await page.content()
-                    html_snippet = html_content[:50000] if html_content else None
-
-                    screenshot_path = None
-                    if not html_only:
-                        screenshots_dir = Path(settings.screenshot_storage_path) / "audit"
-                        screenshots_dir.mkdir(parents=True, exist_ok=True)
-                        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-                        screenshot_file = screenshots_dir / f"audit_{listing.obs_id}_{ts}.png"
-                        await page.screenshot(
-                            path=str(screenshot_file),
-                            full_page=True,
+                        html_content, screenshot_bytes = await session.capture_page(
+                            listing.url, referer=vinted_referer
                         )
-                        screenshot_path = str(screenshot_file)
+                        html_snippet = html_content[:50000] if html_content else None
 
-                    results[listing.obs_id] = AuditCapture(
-                        screenshot_path=screenshot_path,
-                        html_snippet=html_snippet,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to capture listing {} ({}): {}",
-                        listing.obs_id,
-                        listing.url,
-                        exc,
-                    )
-                    results[listing.obs_id] = AuditCapture(screenshot_path=None, html_snippet=None)
+                        screenshot_path: str | None = None
+                        if not html_only and screenshot_bytes:
+                            screenshots_dir = Path(settings.screenshot_storage_path) / "audit"
+                            screenshots_dir.mkdir(parents=True, exist_ok=True)
+                            ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+                            screenshot_file = screenshots_dir / f"audit_{listing.obs_id}_{ts}.png"
+                            screenshot_file.write_bytes(screenshot_bytes)
+                            screenshot_path = str(screenshot_file)
 
-                await asyncio.sleep(2 + random.random())  # noqa: S311
+                        results[listing.obs_id] = AuditCapture(
+                            screenshot_path=screenshot_path,
+                            html_snippet=html_snippet,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to capture listing {} ({}): {}",
+                            listing.obs_id,
+                            listing.url,
+                            exc,
+                        )
+                        results[listing.obs_id] = AuditCapture(
+                            screenshot_path=None, html_snippet=None
+                        )
 
-            await context.close()
-            shutil.rmtree(user_data_dir, ignore_errors=True)
+                    await asyncio.sleep(2 + random.random())  # noqa: S311
+        finally:
+            shutil.rmtree(cfg.playwright_user_data_dir, ignore_errors=True)
 
     except ImportError:
         logger.error("Playwright not installed — cannot capture audit pages")

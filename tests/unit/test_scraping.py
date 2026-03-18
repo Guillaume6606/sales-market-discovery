@@ -65,3 +65,24 @@ class TestVintedCookiePath:
 
     def test_name_contains_vinted(self) -> None:
         assert "vinted" in VINTED_COOKIE_PATH.name
+
+
+class TestCapturePageSignature:
+    def test_method_exists_and_is_async(self) -> None:
+        import inspect
+
+        from libs.common.scraping import ScrapingSession
+
+        session = ScrapingSession()
+        method = getattr(session, "capture_page", None)
+        assert method is not None
+        assert inspect.iscoroutinefunction(method)
+
+    def test_accepts_url_and_referer(self) -> None:
+        import inspect
+
+        from libs.common.scraping import ScrapingSession
+
+        sig = inspect.signature(ScrapingSession().capture_page)
+        assert "url" in sig.parameters
+        assert "referer" in sig.parameters
