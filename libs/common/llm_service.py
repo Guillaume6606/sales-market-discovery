@@ -18,7 +18,7 @@ from libs.common.settings import settings
 _client_cache: genai.Client | None = None
 
 
-def _get_client() -> genai.Client | None:
+def get_genai_client() -> genai.Client | None:
     """Return a cached Vertex AI genai client."""
     global _client_cache
     if _client_cache is not None:
@@ -60,7 +60,7 @@ def assess_listing_relevance(
             - reasoning: str
             - flags: List[str] (any issues found)
     """
-    client = _get_client()
+    client = get_genai_client()
     if not client:
         logger.warning("LLM validation disabled, skipping assessment")
         return {

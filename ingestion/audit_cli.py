@@ -10,13 +10,16 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-
-from sqlalchemy.orm.session import make_transient
+from sqlalchemy.orm import sessionmaker
 
 from ingestion.audit import audit_listings, compute_connector_accuracy
-from libs.common.db import SessionLocal
+from libs.common.db import SessionLocal, engine
 from libs.common.models import ConnectorAudit, ListingObservation, ProductTemplate
 from libs.common.settings import settings
+
+# Session factory with expire_on_commit=False so detached ORM objects
+# remain accessible outside the session scope (needed for audit pipeline).
+_AuditSession = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -77,12 +80,7 @@ async def _run_ingestion_for_audit(
             except Exception as exc:
                 logger.error("Ingestion failed for %s/%s: %s", connector, product_id, exc)
 
-    from sqlalchemy.orm import sessionmaker
-
-    from libs.common.db import engine
-
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
-    with Session() as db:
+    with _AuditSession() as db:
         for connector in connectors:
             listings = (
                 db.query(ListingObservation)
@@ -106,13 +104,8 @@ def _get_recent_listings(
     limit_per_connector: int = 100,
 ) -> dict[str, list[ListingObservation]]:
     """Fetch recent listings from DB for --skip-ingestion mode."""
-    from sqlalchemy.orm import sessionmaker
-
-    from libs.common.db import engine
-
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
     results: dict[str, list[ListingObservation]] = {}
-    with Session() as db:
+    with _AuditSession() as db:
         for connector in connectors:
             listings = (
                 db.query(ListingObservation)
@@ -336,12 +329,7 @@ async def main() -> None:
         logger.info("Auditing %d listings for %s", len(listings), connector)
         records = await audit_listings(listings, audit_mode="cli", html_only=args.html_only)
 
-        from sqlalchemy.orm import sessionmaker
-
-        from libs.common.db import engine
-
-        PersistSession = sessionmaker(bind=engine, expire_on_commit=False)
-        with PersistSession() as db:
+        with _AuditSession() as db:
             for r in records:
                 db.add(r)
             db.commit()

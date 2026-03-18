@@ -165,14 +165,13 @@ async def judge_listing(
     prompt = _build_judge_prompt(extracted, has_screenshot, exclude_fields=exclude_fields)
 
     try:
-        from google import genai
         from google.genai.types import Part
 
-        client = genai.Client(
-            vertexai=True,
-            project=settings.gcp_project_id,
-            location=settings.gcp_location,
-        )
+        from libs.common.llm_service import get_genai_client
+
+        client = get_genai_client()
+        if client is None:
+            raise RuntimeError("Vertex AI client not available (LLM disabled or init failed)")
 
         content_parts: list[Any] = []
 
@@ -276,16 +275,17 @@ async def capture_audit_batch(
                     except Exception:
                         await page.wait_for_timeout(3000)
 
-                    # Dismiss consent/cookie banners that may block content
-                    try:
-                        consent_btn = page.locator(
-                            "button:has-text('Accepter'), #onetrust-accept-btn-handler"
-                        )
-                        if await consent_btn.count() > 0:
-                            await consent_btn.first.click()
-                            await page.wait_for_timeout(1000)
-                    except Exception:
-                        logger.debug("No consent banner found or dismiss failed")
+                    # Dismiss consent/cookie banners (only relevant for FR marketplaces)
+                    if listing.source in ("vinted", "leboncoin"):
+                        try:
+                            consent_btn = page.locator(
+                                "button:has-text('Accepter'), #onetrust-accept-btn-handler"
+                            )
+                            if await consent_btn.count() > 0:
+                                await consent_btn.first.click()
+                                await page.wait_for_timeout(1000)
+                        except Exception:
+                            logger.debug("No consent banner found or dismiss failed")
 
                     html_content = await page.content()
                     html_snippet = html_content[:50000] if html_content else None
