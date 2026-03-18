@@ -318,6 +318,15 @@ class VintedConnector:
                         logger.debug(f"Title extracted for {item_id}: {title}")
                         break
 
+            # Fallback: extract title from URL slug /items/12345-title-words-here
+            if not title and item_url:
+                slug_match = re.search(r"/items/\d+-(.*?)(?:\?|$)", item_url)
+                if slug_match:
+                    slug_title = slug_match.group(1).replace("-", " ").strip()
+                    if len(slug_title) >= 3:
+                        title = slug_title.title()
+                        logger.debug(f"Title from URL slug for {item_id}: {title}")
+
             # Extract price with MUCH more aggressive strategies
             price = None
 
