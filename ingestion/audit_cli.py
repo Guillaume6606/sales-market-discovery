@@ -11,6 +11,8 @@ from typing import Any
 
 from loguru import logger
 
+from sqlalchemy.orm.session import make_transient
+
 from ingestion.audit import audit_listings, compute_connector_accuracy
 from libs.common.db import SessionLocal
 from libs.common.models import ConnectorAudit, ListingObservation, ProductTemplate
@@ -60,10 +62,11 @@ async def _run_ingestion_for_audit(
         "ebay": {"ebay_sold": listings_per_product, "ebay_listings": listings_per_product},
         "leboncoin": {
             "leboncoin_listings": listings_per_product,
-            "leboncoin_sold": listings_per_product,
         },
         "vinted": {"vinted_listings": listings_per_product},
     }
+
+    ingestion_start = datetime.now(UTC)
 
     for product_id in product_ids:
         for connector in connectors:
@@ -74,7 +77,12 @@ async def _run_ingestion_for_audit(
             except Exception as exc:
                 logger.error("Ingestion failed for %s/%s: %s", connector, product_id, exc)
 
-    with SessionLocal() as db:
+    from sqlalchemy.orm import sessionmaker
+
+    from libs.common.db import engine
+
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    with Session() as db:
         for connector in connectors:
             listings = (
                 db.query(ListingObservation)
@@ -82,13 +90,12 @@ async def _run_ingestion_for_audit(
                     ListingObservation.source == connector,
                     ListingObservation.url.isnot(None),
                     ListingObservation.product_id.in_(product_ids),
+                    ListingObservation.last_seen_at >= ingestion_start,
                 )
                 .order_by(ListingObservation.last_seen_at.desc())
                 .limit(500)
                 .all()
             )
-            for listing in listings:
-                db.expunge(listing)
             results[connector] = listings
 
     return results
@@ -99,8 +106,13 @@ def _get_recent_listings(
     limit_per_connector: int = 100,
 ) -> dict[str, list[ListingObservation]]:
     """Fetch recent listings from DB for --skip-ingestion mode."""
+    from sqlalchemy.orm import sessionmaker
+
+    from libs.common.db import engine
+
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
     results: dict[str, list[ListingObservation]] = {}
-    with SessionLocal() as db:
+    with Session() as db:
         for connector in connectors:
             listings = (
                 db.query(ListingObservation)
@@ -112,8 +124,6 @@ def _get_recent_listings(
                 .limit(limit_per_connector)
                 .all()
             )
-            for listing in listings:
-                db.expunge(listing)
             results[connector] = listings
     return results
 
@@ -131,11 +141,14 @@ def _generate_connector_report(
     verdict = "PASS" if status in ("green", "yellow") else "FAIL" if status == "red" else "UNKNOWN"
     verdict_icon = "✅" if verdict == "PASS" else "❌" if verdict == "FAIL" else "❓"
 
+    verifiable_count = sum(1 for r in records if r.accuracy_score is not None)
+
     lines = [
         f"# {source.title()} Connector Audit — {datetime.now(UTC).strftime('%Y-%m-%d')}",
         "",
         "## Summary",
         f"- Listings audited: {len(records)}",
+        f"- Listings with verifiable fields: {verifiable_count}/{len(records)}",
         f"- Overall accuracy: {accuracy:.1%}"
         if accuracy is not None
         else "- Overall accuracy: N/A",
@@ -323,7 +336,12 @@ async def main() -> None:
         logger.info("Auditing %d listings for %s", len(listings), connector)
         records = await audit_listings(listings, audit_mode="cli", html_only=args.html_only)
 
-        with SessionLocal() as db:
+        from sqlalchemy.orm import sessionmaker
+
+        from libs.common.db import engine
+
+        PersistSession = sessionmaker(bind=engine, expire_on_commit=False)
+        with PersistSession() as db:
             for r in records:
                 db.add(r)
             db.commit()

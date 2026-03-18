@@ -28,6 +28,10 @@ AUDITED_FIELDS = [
     "shipping_cost",
 ]
 
+CONNECTOR_FIELD_EXCLUSIONS: dict[str, set[str]] = {
+    "leboncoin": {"condition"},  # lbc package API does not expose condition
+}
+
 ANTIBOT_PATTERNS = re.compile(
     r"captcha|verify you are human|are you a robot|"
     r"connectez-vous pour continuer|veuillez vous connecter|"
@@ -89,9 +93,20 @@ def _build_extracted_fields(listing: ListingObservation) -> dict[str, Any]:
     }
 
 
-def _build_judge_prompt(extracted: dict[str, Any], has_screenshot: bool) -> str:
+def _build_judge_prompt(
+    extracted: dict[str, Any],
+    has_screenshot: bool,
+    exclude_fields: set[str] | None = None,
+) -> str:
     """Build the LLM judge system prompt."""
     visual_line = "- A screenshot of a marketplace listing page\n" if has_screenshot else ""
+    exclusion_line = ""
+    if exclude_fields:
+        fields_str = ", ".join(sorted(exclude_fields))
+        exclusion_line = (
+            f"- The following fields are known API limitations and should be marked "
+            f"'unverifiable': {fields_str}\n"
+        )
     return (
         "You are a data quality auditor for a marketplace scraping system.\n\n"
         "You will be given:\n"
@@ -117,6 +132,7 @@ def _build_judge_prompt(extracted: dict[str, Any], has_screenshot: bool) -> str:
         '- "correct" = extracted value matches page content (minor formatting differences OK)\n'
         '- "incorrect" = extracted value clearly wrong or missing when visible on page\n'
         '- "unverifiable" = field not visible on page or requires interaction to see\n'
+        f"{exclusion_line}"
         "- For price: currency must also match. Shipping cost included in price = incorrect.\n"
         "- For condition: match the marketplace's condition label, not your interpretation\n"
         '- For is_sold: look for "sold" badges, crossed-out prices, or "vendu" labels\n\n'
@@ -132,6 +148,7 @@ async def judge_listing(
 ) -> dict[str, Any]:
     """Run LLM judge on a single listing."""
     extracted = _build_extracted_fields(listing)
+    exclude_fields = CONNECTOR_FIELD_EXCLUSIONS.get(listing.source)
 
     if capture.html_snippet and detect_antibot(capture.html_snippet):
         blocked_results = {
@@ -145,24 +162,24 @@ async def judge_listing(
         }
 
     has_screenshot = capture.screenshot_path is not None
-    prompt = _build_judge_prompt(extracted, has_screenshot)
+    prompt = _build_judge_prompt(extracted, has_screenshot, exclude_fields=exclude_fields)
 
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai.types import Part
 
-        # Use explicit API key if set, otherwise fall back to Application Default Credentials
-        if settings.gemini_api_key:
-            genai.configure(api_key=settings.gemini_api_key)
-        # else: genai auto-discovers ADC from gcloud auth application-default login
-
-        model = genai.GenerativeModel(settings.gemini_model)
+        client = genai.Client(
+            vertexai=True,
+            project=settings.gcp_project_id,
+            location=settings.gcp_location,
+        )
 
         content_parts: list[Any] = []
 
         if capture.screenshot_path and os.path.exists(capture.screenshot_path):
             with open(capture.screenshot_path, "rb") as f:
                 img_bytes = f.read()
-            content_parts.append({"mime_type": "image/png", "data": img_bytes})
+            content_parts.append(Part.from_bytes(data=img_bytes, mime_type="image/png"))
 
         if capture.html_snippet:
             snippet = capture.html_snippet[:50000]
@@ -170,12 +187,13 @@ async def judge_listing(
 
         content_parts.append(prompt)
 
-        response = model.generate_content(
-            content_parts,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                response_mime_type="application/json",
-            ),
+        response = client.models.generate_content(
+            model=settings.gemini_model,
+            contents=content_parts,
+            config={
+                "temperature": 0.1,
+                "response_mime_type": "application/json",
+            },
         )
 
         raw_text = response.text.strip()
@@ -189,7 +207,7 @@ async def judge_listing(
             cost_tokens = getattr(response.usage_metadata, "total_token_count", 0)
 
     except Exception as exc:
-        logger.error("LLM judge call failed for obs_id=%s: %s", listing.obs_id, exc)
+        logger.error("LLM judge call failed for obs_id={}: {}", listing.obs_id, exc)
         error_results = {
             f: {"verdict": "unverifiable", "reason": f"llm_error: {exc}"} for f in AUDITED_FIELDS
         }
@@ -225,23 +243,27 @@ async def capture_audit_batch(
         return results
 
     try:
-        from playwright.async_api import async_playwright
+        from patchright.async_api import async_playwright
 
         from libs.common.scraping import STEALTH_PATCH
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--webrtc-ip-handling-policy=disable_non_proxied_udp"],
-            )
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1920, "height": 1080},
+            # Mirror the stealth config from ScrapingSession.initialize()
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir="/tmp/pwuser-audit",
                 locale="fr-FR",
                 timezone_id="Europe/Paris",
+                geolocation={"latitude": 48.8566, "longitude": 2.3522},
+                headless=False,
+                no_viewport=True,
+                service_workers="block",
+                args=[
+                    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                    "--webrtc-stun-probe-trial=disabled",
+                    "--use-fake-device-for-media-stream",
+                    "--use-fake-ui-for-media-stream",
+                ],
             )
             await context.add_init_script(STEALTH_PATCH)
             page = await context.new_page()
@@ -249,7 +271,21 @@ async def capture_audit_batch(
             for listing in listings_with_urls:
                 try:
                     await page.goto(listing.url, wait_until="domcontentloaded", timeout=30000)
-                    await page.wait_for_timeout(2000)
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=8000)
+                    except Exception:
+                        await page.wait_for_timeout(3000)
+
+                    # Dismiss consent/cookie banners that may block content
+                    try:
+                        consent_btn = page.locator(
+                            "button:has-text('Accepter'), #onetrust-accept-btn-handler"
+                        )
+                        if await consent_btn.count() > 0:
+                            await consent_btn.first.click()
+                            await page.wait_for_timeout(1000)
+                    except Exception:
+                        logger.debug("No consent banner found or dismiss failed")
 
                     html_content = await page.content()
                     html_snippet = html_content[:50000] if html_content else None
@@ -273,7 +309,7 @@ async def capture_audit_batch(
                     )
                 except Exception as exc:
                     logger.warning(
-                        "Failed to capture listing %s (%s): %s",
+                        "Failed to capture listing {} ({}): {}",
                         listing.obs_id,
                         listing.url,
                         exc,
@@ -282,7 +318,7 @@ async def capture_audit_batch(
 
                 await asyncio.sleep(2 + random.random())  # noqa: S311
 
-            await browser.close()
+            await context.close()
 
     except ImportError:
         logger.error("Playwright not installed — cannot capture audit pages")
