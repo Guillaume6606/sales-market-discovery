@@ -19,21 +19,28 @@ _client_cache: genai.Client | None = None
 
 
 def get_genai_client() -> genai.Client | None:
-    """Return a cached Vertex AI genai client."""
+    """Return a cached genai client.
+
+    Uses API key auth when GEMINI_API_KEY is set (simpler, no GCP project required).
+    Falls back to Vertex AI Application Default Credentials otherwise.
+    """
     global _client_cache
     if _client_cache is not None:
         return _client_cache
     if not settings.llm_enabled:
         return None
     try:
-        _client_cache = genai.Client(
-            vertexai=True,
-            project=settings.gcp_project_id,
-            location=settings.gcp_location,
-        )
+        if settings.gemini_api_key:
+            _client_cache = genai.Client(api_key=settings.gemini_api_key)
+        else:
+            _client_cache = genai.Client(
+                vertexai=True,
+                project=settings.gcp_project_id,
+                location=settings.gcp_location,
+            )
         return _client_cache
     except Exception as e:
-        logger.error("Failed to initialize Vertex AI client: {}", e)
+        logger.error("Failed to initialize Gemini client: {}", e)
         return None
 
 

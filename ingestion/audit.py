@@ -243,6 +243,8 @@ async def capture_audit_batch(
         return results
 
     try:
+        import shutil
+
         from patchright.async_api import async_playwright
 
         from libs.common.scraping import STEALTH_PATCH
@@ -321,6 +323,7 @@ async def capture_audit_batch(
                 await asyncio.sleep(2 + random.random())  # noqa: S311
 
             await context.close()
+            shutil.rmtree(user_data_dir, ignore_errors=True)
 
     except ImportError:
         logger.error("Playwright not installed — cannot capture audit pages")
