@@ -34,9 +34,8 @@ COPY --chown=pwuser:pwuser pyproject.toml uv.lock ./
 USER root
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN uv sync --frozen --no-dev --no-install-project
-RUN uv run playwright install
-RUN uv run patchright install chrome
-RUN chown -R pwuser:pwuser /home/pwuser
+RUN uv run patchright install chromium
+RUN mkdir -p /home/pwuser/.cache/uv && chown -R pwuser:pwuser /home/pwuser
 
 # Copy application code
 COPY --chown=pwuser:pwuser ingestion ./ingestion

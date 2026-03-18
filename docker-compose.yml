@@ -38,6 +38,9 @@ services:
     environment:
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - LOG_LEVEL=DEBUG
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcloud/application_default_credentials.json
+    volumes:
+      - ${HOME}/.config/gcloud:/tmp/gcloud:ro
     tmpfs:
       - /tmp
       - /home/pwuser/.cache

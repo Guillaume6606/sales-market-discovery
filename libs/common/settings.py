@@ -23,10 +23,12 @@ class Settings(BaseSettings):
     # APIs
     ebay_app_id: str | None = None
 
-    # LLM Configuration (Gemini)
+    # LLM Configuration (Gemini via Vertex AI)
     gemini_api_key: str | None = None
-    gemini_model: str = Field(default="gemini-2.0-flash")
+    gemini_model: str = Field(default="gemini-2.5-flash")
     llm_enabled: bool = Field(default=False)
+    gcp_project_id: str | None = None
+    gcp_location: str = Field(default="europe-west1")
 
     # Telegram Configuration
     telegram_bot_token: str | None = None
@@ -53,6 +55,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 settings = Settings()

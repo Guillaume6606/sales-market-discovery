@@ -1,5 +1,5 @@
 """
-LLM Service for listing validation using Google Gemini via LangChain.
+LLM Service for listing validation using Google Gemini via Vertex AI.
 """
 
 import json
@@ -7,53 +7,33 @@ import os
 import re
 from typing import Any
 
+from google import genai
+from google.genai.types import Part
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from libs.common.models import Listing, ProductTemplate
 from libs.common.settings import settings
 
-try:
-    from langchain_core.messages import HumanMessage
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    LANGCHAIN_AVAILABLE = True
-except ImportError:
-    LANGCHAIN_AVAILABLE = False
-    logger.warning("LangChain dependencies not available. LLM validation will be disabled.")
+_client_cache: genai.Client | None = None
 
 
-def _is_llm_enabled() -> bool:
-    """Check if LLM service is properly configured and enabled."""
-    if not LANGCHAIN_AVAILABLE:
-        return False
+def _get_client() -> genai.Client | None:
+    """Return a cached Vertex AI genai client."""
+    global _client_cache
+    if _client_cache is not None:
+        return _client_cache
     if not settings.llm_enabled:
-        return False
-    if not settings.gemini_api_key:
-        logger.warning("Gemini API key not configured")
-        return False
-    return True
-
-
-_llm_client_cache: Any = None
-
-
-def _get_llm_client() -> ChatGoogleGenerativeAI | None:
-    """Initialize and return Gemini LLM client (cached singleton)."""
-    global _llm_client_cache
-    if _llm_client_cache is not None:
-        return _llm_client_cache
-    if not _is_llm_enabled():
         return None
     try:
-        os.environ["GOOGLE_API_KEY"] = settings.gemini_api_key
-        _llm_client_cache = ChatGoogleGenerativeAI(
-            model=settings.gemini_model,
-            temperature=0.1,
+        _client_cache = genai.Client(
+            vertexai=True,
+            project=settings.gcp_project_id,
+            location=settings.gcp_location,
         )
-        return _llm_client_cache
+        return _client_cache
     except Exception as e:
-        logger.error(f"Failed to initialize Gemini client: {e}")
+        logger.error("Failed to initialize Vertex AI client: {}", e)
         return None
 
 
@@ -80,7 +60,8 @@ def assess_listing_relevance(
             - reasoning: str
             - flags: List[str] (any issues found)
     """
-    if not _is_llm_enabled():
+    client = _get_client()
+    if not client:
         logger.warning("LLM validation disabled, skipping assessment")
         return {
             "is_relevant": True,
@@ -89,17 +70,7 @@ def assess_listing_relevance(
             "flags": [],
         }
 
-    client = _get_llm_client()
-    if not client:
-        return {
-            "is_relevant": True,
-            "confidence": 0.0,
-            "reasoning": "LLM client not available",
-            "flags": [],
-        }
-
     try:
-        # Build prompt with product context
         product_desc = product_template.description or product_template.name
         price_range = ""
         if product_template.price_min or product_template.price_max:
@@ -149,36 +120,29 @@ Respond in JSON format:
 
 If words to avoid are found, set is_relevant to false and add them to flags."""
 
-        messages = []
+        content_parts: list[Any] = []
 
-        # Add image if screenshot available
         if screenshot_path and os.path.exists(screenshot_path):
             try:
-                import base64
-
                 with open(screenshot_path, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode()
-                image_url = f"data:image/png;base64,{b64}"
-                human_message = HumanMessage(
-                    content=[
-                        {"type": "text", "text": prompt_text},
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ]
-                )
-                messages.append(human_message)
+                    img_bytes = f.read()
+                content_parts.append(Part.from_bytes(data=img_bytes, mime_type="image/png"))
             except Exception as e:
-                logger.warning(f"Failed to load screenshot {screenshot_path}: {e}")
-                messages.append(HumanMessage(content=prompt_text))
-        else:
-            messages.append(HumanMessage(content=prompt_text))
+                logger.warning("Failed to load screenshot {}: {}", screenshot_path, e)
 
-        # Call Gemini API
-        response = client.invoke(messages)
+        content_parts.append(prompt_text)
 
-        # Parse response
-        response_text = response.content if hasattr(response, "content") else str(response)
+        response = client.models.generate_content(
+            model=settings.gemini_model,
+            contents=content_parts,
+            config={
+                "temperature": 0.1,
+                "response_mime_type": "application/json",
+            },
+        )
 
-        # Try to extract JSON from response
+        response_text = response.text.strip()
+
         try:
             result = json.loads(response_text)
         except json.JSONDecodeError:
@@ -191,26 +155,25 @@ If words to avoid are found, set is_relevant to false and add them to flags."""
             else:
                 result = _parse_response_fallback(response_text)
 
-        # Ensure required fields
         result.setdefault("is_relevant", True)
         result.setdefault("confidence", 0.5)
         result.setdefault("reasoning", response_text[:200])
         result.setdefault("flags", [])
-
-        # Clamp confidence
         result["confidence"] = max(0.0, min(1.0, float(result.get("confidence", 0.5))))
 
         logger.info(
-            f"LLM validation for listing {listing.listing_id}: "
-            f"relevant={result['is_relevant']}, confidence={result['confidence']:.2f}"
+            "LLM validation for listing {}: relevant={}, confidence={:.2f}",
+            listing.listing_id,
+            result["is_relevant"],
+            result["confidence"],
         )
 
         return result
 
     except Exception as e:
-        logger.error(f"Error in LLM assessment: {e}", exc_info=True)
+        logger.error("Error in LLM assessment: {}", e, exc_info=True)
         return {
-            "is_relevant": True,  # Default to accepting on error
+            "is_relevant": True,
             "confidence": 0.0,
             "reasoning": f"Error during validation: {str(e)}",
             "flags": ["validation_error"],
@@ -226,7 +189,6 @@ def _parse_response_fallback(response_text: str) -> dict[str, Any]:
         "flags": [],
     }
 
-    # Try to detect rejection keywords
     rejection_keywords = ["not relevant", "does not match", "incorrect", "wrong product"]
     if any(keyword in response_text.lower() for keyword in rejection_keywords):
         result["is_relevant"] = False
