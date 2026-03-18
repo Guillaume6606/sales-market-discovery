@@ -4,6 +4,7 @@ from typing import Any
 from arq import cron
 from arq.connections import RedisSettings
 from sqlalchemy import and_, update
+from sqlalchemy.orm.session import make_transient
 
 from ingestion.alert_engine import trigger_alerts
 from ingestion.computation import (
@@ -643,7 +644,7 @@ async def audit_ingestion_sample(
             return {"status": "no_listings", "source": source}
 
         for listing in listings:
-            db.expunge(listing)
+            make_transient(listing)
 
     from ingestion.audit import audit_listings
 
@@ -701,7 +702,7 @@ async def run_on_demand_audit(
                 query.order_by(ListingObservation.last_seen_at.desc()).limit(sample_size).all()
             )
             for listing in listings:
-                db.expunge(listing)
+                make_transient(listing)
 
         if not listings:
             return {"status": "no_listings"}
