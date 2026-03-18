@@ -266,7 +266,7 @@ class ScrapingSession:
         if self._playwright_context:
             await self._playwright_context.close()
 
-        if self.config.use_playwright:
+        if self._playwright_instance:
             await self._playwright_instance.stop()
 
     def _get_random_user_agent(self) -> str:
@@ -274,7 +274,7 @@ class ScrapingSession:
         if random.random() < 0.3:  # 30% chance to use fake_useragent
             try:
                 return self.ua_generator.random
-            except:
+            except Exception:  # noqa: S110
                 pass
         return random.choice(self.config.user_agents)
 
@@ -441,7 +441,17 @@ class ScrapingSession:
                 # Cookiebot
                 "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
             ]
-            await page.wait_for_function("window.didomi || window.Didomi", timeout=5000)
+            # Quick check: is any consent banner visible? Skip the 5s Didomi
+            # wait if no consent-related DOM element is present.
+            has_consent_element = await page.evaluate("""
+                !!(document.querySelector('#didomi-notice, #onetrust-banner-sdk, '
+                   + '#truste-consent-button, #CybotCookiebotDialog, '
+                   + '[class*="consent"], [class*="cookie-banner"]'))
+                || !!(window.didomi || window.Didomi)
+            """)
+            if not has_consent_element:
+                return False
+
             clicked = False
             didomi_wall = await page.evaluate("""
                 !!(document.body && document.body.classList.contains('didomi-popup-open'))
