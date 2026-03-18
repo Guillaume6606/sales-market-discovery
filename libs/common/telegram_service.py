@@ -248,6 +248,51 @@ async def send_system_alert(
         return {"status": "error", "error": str(e)}
 
 
+async def send_connector_quality_alert(
+    source: str,
+    accuracy_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Send Telegram alert when connector accuracy drops below threshold."""
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        logger.warning("Telegram not configured, skipping quality alert")
+        return {"status": "not_configured"}
+
+    accuracy = accuracy_data.get("accuracy")
+    per_field = accuracy_data.get("per_field", {})
+    sample_size = accuracy_data.get("sample_size", 0)
+    threshold = settings.audit_accuracy_yellow
+
+    field_lines = []
+    for field, acc in sorted(per_field.items(), key=lambda x: x[1] if x[1] is not None else 0):
+        if acc is None:
+            continue
+        icon = "✓" if acc >= 0.9 else "✗"
+        field_lines.append(f"  - {field}: {acc:.0%} {icon}")
+
+    fields_section = "\n".join(field_lines)
+    acc_str = f"{accuracy:.0%}" if accuracy is not None else "N/A"
+
+    msg = (
+        f"⚠️ <b>Connector Quality Alert</b>\n\n"
+        f"🔴 <b>{html.escape(source)}</b>: accuracy {acc_str} (threshold {threshold:.0%})\n"
+        f"{fields_section}\n\n"
+        f"Last 7d: {sample_size} listings audited\n\n"
+        f"Action: check {html.escape(source)} connector for HTML structure changes"
+    )
+
+    try:
+        bot = Bot(token=settings.telegram_bot_token)
+        message = await bot.send_message(
+            chat_id=settings.telegram_chat_id,
+            text=msg,
+            parse_mode="HTML",
+        )
+        return {"status": "success", "message_id": message.message_id}
+    except Exception as exc:
+        logger.error("Failed to send connector quality alert: %s", exc)
+        return {"status": "error", "error": str(exc)}
+
+
 async def send_test_message(message: str = "Test message from Market Discovery") -> dict[str, Any]:
     """
     Send a test message to verify Telegram configuration.

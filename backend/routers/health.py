@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.routers.feedback import compute_precision_summary
 from libs.common.db import get_db
-from libs.common.models import IngestionRun, ProductTemplate
+from libs.common.models import ConnectorAudit, IngestionRun, ProductTemplate
 from libs.common.settings import settings
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -247,10 +247,21 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
     any_red = any(c["status"] == "red" for c in connectors)
     system_status = "red" if (any_red or stale_count > 0) else "green"
 
+    # Connector audit quality (last 7 days)
+    audit_cutoff = datetime.now(UTC) - timedelta(days=7)
+    audit_records = db.query(ConnectorAudit).filter(ConnectorAudit.audited_at >= audit_cutoff).all()
+
+    connector_quality: dict[str, Any] = {}
+    if audit_records:
+        from ingestion.audit import compute_connector_accuracy
+
+        connector_quality = compute_connector_accuracy(audit_records)
+
     return {
         "system_status": system_status,
         "connectors": connectors,
         "stale_product_count": stale_count,
         "recent_runs": recent_runs_data,
         "precision": compute_precision_summary(db),
+        "connector_quality": connector_quality,
     }

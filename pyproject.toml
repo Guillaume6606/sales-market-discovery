@@ -42,9 +42,7 @@ dependencies = [
     "playwright>=1.47.0",
     "patchright>=1.58.0",
     "lbc>=1.0.9",
-    "langchain>=0.3.0",
-    "langchain-google-genai>=2.0.0",
-    "google-generativeai>=0.8.0",
+    "google-genai>=1.67.0",
 ]
 
 [project.optional-dependencies]
@@ -75,6 +73,7 @@ ignore = [
 "tests/*" = ["S"]
 "libs/common/settings.py" = ["S105"]                          # dev default password
 "libs/common/scraping.py" = ["S108", "S110", "S311", "E722"]  # temp dir, UA fallback, random
+"ingestion/audit.py" = ["S108"]                                # Playwright persistent context temp dir
 "ingestion/connectors/*" = ["S110", "S311"]                    # random delays, fallback patterns
 "ui/app.py" = ["B007"]                                         # iterrows loop variable
 

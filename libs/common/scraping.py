@@ -184,7 +184,6 @@ class ScrapingSession:
                     locale="fr-FR",
                     timezone_id="Europe/Paris",
                     geolocation={"latitude": 48.8566, "longitude": 2.3522},
-                    channel="chrome",  # requires: patchright install chrome
                     headless=False,  # run with xvfb-run in CI if needed
                     no_viewport=True,  # use the OS window size
                     service_workers="block",

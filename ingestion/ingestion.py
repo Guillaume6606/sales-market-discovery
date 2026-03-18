@@ -715,25 +715,30 @@ async def run_full_ingestion(
     }
 
     if "ebay" in candidate_sources:
-        results["ebay_sold"] = await ingest_ebay_sold(
-            snapshot.product_id, limits.get("ebay_sold", 50)
-        )
-        results["ebay_listings"] = await ingest_ebay_listings(
-            snapshot.product_id, limits.get("ebay_listings", 50)
-        )
+        if "ebay_sold" in limits:
+            results["ebay_sold"] = await ingest_ebay_sold(
+                snapshot.product_id, limits.get("ebay_sold", 50)
+            )
+        if "ebay_listings" in limits:
+            results["ebay_listings"] = await ingest_ebay_listings(
+                snapshot.product_id, limits.get("ebay_listings", 50)
+            )
 
     if "leboncoin" in candidate_sources:
-        results["leboncoin_listings"] = await ingest_leboncoin_listings(
-            snapshot.product_id, limits.get("leboncoin_listings", 50)
-        )
-        results["leboncoin_sold"] = await ingest_leboncoin_sold(
-            snapshot.product_id, limits.get("leboncoin_sold", limits.get("leboncoin_listings", 50))
-        )
+        if "leboncoin_listings" in limits:
+            results["leboncoin_listings"] = await ingest_leboncoin_listings(
+                snapshot.product_id, limits.get("leboncoin_listings", 50)
+            )
+        if "leboncoin_sold" in limits:
+            results["leboncoin_sold"] = await ingest_leboncoin_sold(
+                snapshot.product_id, limits.get("leboncoin_sold", 50)
+            )
 
     if "vinted" in candidate_sources:
-        results["vinted_listings"] = await ingest_vinted_listings(
-            snapshot.product_id, limits.get("vinted_listings", 50)
-        )
+        if "vinted_listings" in limits:
+            results["vinted_listings"] = await ingest_vinted_listings(
+                snapshot.product_id, limits.get("vinted_listings", 50)
+            )
 
     try:
         update_product_metrics(snapshot.product_id)

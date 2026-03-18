@@ -4,6 +4,7 @@ from typing import Any
 from arq import cron
 from arq.connections import RedisSettings
 from sqlalchemy import and_, update
+from sqlalchemy.orm.session import make_transient
 
 from ingestion.alert_engine import trigger_alerts
 from ingestion.computation import (
@@ -23,6 +24,7 @@ from libs.common.db import SessionLocal
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.log import logger
 from libs.common.models import (
+    ConnectorAudit,
     IngestionRun,
     ListingObservation,
     MarketPriceNormal,
@@ -80,6 +82,14 @@ async def scheduled_ebay_ingestion(ctx):
             logger.error(f"Error in scheduled eBay ingestion for {product_id}: {exc}")
             results[product_id] = {"status": "error", "error": str(exc)}
 
+    if settings.audit_enabled:
+        try:
+            pool = ctx.get("redis") or ctx.get("pool")
+            if pool:
+                await pool.enqueue_job("audit_ingestion_sample", source="ebay")
+        except Exception as exc:
+            logger.warning("Failed to enqueue audit task: %s", exc)
+
     return results
 
 
@@ -102,6 +112,14 @@ async def scheduled_leboncoin_ingestion(ctx):
             logger.error(f"Error in scheduled LeBonCoin ingestion for {product_id}: {exc}")
             results[product_id] = {"status": "error", "error": str(exc)}
 
+    if settings.audit_enabled:
+        try:
+            pool = ctx.get("redis") or ctx.get("pool")
+            if pool:
+                await pool.enqueue_job("audit_ingestion_sample", source="leboncoin")
+        except Exception as exc:
+            logger.warning("Failed to enqueue audit task: %s", exc)
+
     return results
 
 
@@ -123,6 +141,14 @@ async def scheduled_vinted_ingestion(ctx):
         except Exception as exc:
             logger.error(f"Error in scheduled Vinted ingestion for {product_id}: {exc}")
             results[product_id] = {"status": "error", "error": str(exc)}
+
+    if settings.audit_enabled:
+        try:
+            pool = ctx.get("redis") or ctx.get("pool")
+            if pool:
+                await pool.enqueue_job("audit_ingestion_sample", source="vinted")
+        except Exception as exc:
+            logger.warning("Failed to enqueue audit task: %s", exc)
 
     return results
 
@@ -596,6 +622,123 @@ async def check_system_health(ctx: dict) -> dict:
     }
 
 
+async def audit_ingestion_sample(
+    ctx: dict, source: str, ingestion_run_id: str | None = None
+) -> dict:
+    """Sample recent listings from an ingestion run and audit them."""
+    if not settings.audit_enabled:
+        return {"status": "disabled"}
+
+    if not settings.llm_enabled:
+        logger.warning("audit_enabled=True but llm_enabled=False — skipping audit (no LLM judge)")
+        return {"status": "skipped", "reason": "llm_disabled"}
+
+    with SessionLocal() as db:
+        # Exclude listings already audited in the last 24h to avoid re-auditing
+        recently_audited = (
+            db.query(ConnectorAudit.obs_id)
+            .filter(ConnectorAudit.audited_at >= datetime.now(UTC) - timedelta(hours=24))
+            .subquery()
+        )
+        query = (
+            db.query(ListingObservation)
+            .filter(
+                ListingObservation.source == source,
+                ListingObservation.url.isnot(None),
+                ~ListingObservation.obs_id.in_(recently_audited),
+            )
+            .order_by(ListingObservation.last_seen_at.desc())
+            .limit(settings.audit_sample_size)
+        )
+        listings = query.all()
+
+        if not listings:
+            return {"status": "no_listings", "source": source}
+
+        for listing in listings:
+            make_transient(listing)
+
+    from ingestion.audit import audit_listings
+
+    records = await audit_listings(
+        listings,
+        audit_mode="continuous",
+        ingestion_run_id=ingestion_run_id,
+    )
+
+    with SessionLocal() as db:
+        for r in records:
+            db.add(r)
+        db.commit()
+
+    from ingestion.audit import compute_connector_accuracy
+
+    accuracy_data = compute_connector_accuracy(records)
+    for src, data in accuracy_data.items():
+        if data["status"] == "red":
+            try:
+                from libs.common.telegram_service import send_connector_quality_alert
+
+                await send_connector_quality_alert(src, data)
+            except Exception as exc:
+                logger.error("Failed to send quality alert: %s", exc)
+
+    return {
+        "status": "success",
+        "source": source,
+        "audited": len(records),
+        "accuracy": {s: d["accuracy"] for s, d in accuracy_data.items()},
+    }
+
+
+async def run_on_demand_audit(
+    ctx: dict,
+    connector: str | None = None,
+    sample_size: int = 20,
+    product_id: str | None = None,
+) -> dict:
+    """Run an on-demand connector audit."""
+    import redis as redis_lib
+
+    try:
+        with SessionLocal() as db:
+            query = db.query(ListingObservation).filter(
+                ListingObservation.url.isnot(None),
+            )
+            if connector:
+                query = query.filter(ListingObservation.source == connector)
+            if product_id:
+                query = query.filter(ListingObservation.product_id == product_id)
+
+            listings = (
+                query.order_by(ListingObservation.last_seen_at.desc()).limit(sample_size).all()
+            )
+            for listing in listings:
+                make_transient(listing)
+
+        if not listings:
+            return {"status": "no_listings"}
+
+        from ingestion.audit import audit_listings, compute_connector_accuracy
+
+        records = await audit_listings(listings, audit_mode="on_demand")
+
+        with SessionLocal() as db:
+            for r in records:
+                db.add(r)
+            db.commit()
+
+        accuracy = compute_connector_accuracy(records)
+        return {"status": "success", "audited": len(records), "accuracy": accuracy}
+
+    finally:
+        try:
+            with redis_lib.from_url(settings.redis_url) as r:
+                r.delete("audit:on_demand:running")
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning("Failed to clear on-demand audit lock: %s", cleanup_exc)
+
+
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     functions = [
@@ -620,6 +763,9 @@ class WorkerSettings:
         # Staleness & health tasks
         mark_stale_listings,
         check_system_health,
+        # Audit tasks
+        audit_ingestion_sample,
+        run_on_demand_audit,
     ]
     cron_jobs = [
         cron(ping, minute=0),  # Run ping every hour

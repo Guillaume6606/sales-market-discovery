@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -212,6 +213,33 @@ class AlertFeedback(Base):
 
 
 AlertEvent.feedbacks = relationship("AlertFeedback", back_populates="alert")
+
+
+class ConnectorAudit(Base):
+    __tablename__ = "connector_audit"
+    __table_args__ = (
+        CheckConstraint(
+            "audit_mode IN ('continuous', 'on_demand', 'cli')",
+            name="ck_connector_audit_mode",
+        ),
+    )
+
+    audit_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
+    ingestion_run_id = Column(UUID, ForeignKey("ingestion_run.run_id"))
+    obs_id = Column(BigInteger, ForeignKey("listing_observation.obs_id"), nullable=False)
+    source = Column(Text, nullable=False)
+    audit_mode = Column(Text, nullable=False)
+    screenshot_path = Column(Text)
+    html_snippet = Column(Text)
+    llm_response = Column(JSONB)
+    field_results = Column(JSONB)
+    accuracy_score = Column(Numeric(3, 2))
+    audited_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    cost_tokens = Column(Integer)
+
+    observation = relationship("ListingObservation")
+    ingestion_run = relationship("IngestionRun")
+
 
 Category.products = relationship("ProductTemplate", back_populates="category")
 ProductTemplate.observations = relationship("ListingObservation", back_populates="product")
