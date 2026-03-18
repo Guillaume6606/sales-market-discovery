@@ -25,6 +25,21 @@ def human_delay(min_s: float, max_s: float) -> float:
     return min(max(random.lognormvariate(mu, sigma), min_s), max_s)  # noqa: S311
 
 
+DATADOME_PATTERNS: re.Pattern[str] = re.compile(
+    r"datadome|dd\.js|geo\.captcha-delivery\.com|"
+    r"interstitial\?initialCid|captcha-delivery\.com",
+    re.IGNORECASE,
+)
+
+
+class DataDomeBlockError(RuntimeError):
+    """Raised when DataDome challenge page is detected after page load."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        super().__init__(f"DataDome block detected at {url}")
+
+
 # Advanced browser fingerprinting patch from test-stealth.py
 STEALTH_PATCH = r"""
     (() => {
