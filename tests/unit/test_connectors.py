@@ -299,3 +299,16 @@ class TestVintedParsing:
         # _parse_search_results with no item elements returns empty
         result = self.connector._parse_search_results("<html><body></body></html>")
         assert result == []
+
+    def test_warmup_session_is_async(self) -> None:
+        import inspect
+
+        method = getattr(self.connector, "_warmup_session", None)
+        assert method is not None, "_warmup_session not found on VintedConnector"
+        assert inspect.iscoroutinefunction(method)
+
+    def test_warmup_session_accepts_session_arg(self) -> None:
+        import inspect
+
+        sig = inspect.signature(self.connector._warmup_session)
+        assert "session" in sig.parameters
