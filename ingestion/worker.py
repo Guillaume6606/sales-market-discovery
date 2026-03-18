@@ -629,6 +629,10 @@ async def audit_ingestion_sample(
     if not settings.audit_enabled:
         return {"status": "disabled"}
 
+    if not settings.llm_enabled:
+        logger.warning("audit_enabled=True but llm_enabled=False — skipping audit (no LLM judge)")
+        return {"status": "skipped", "reason": "llm_disabled"}
+
     with SessionLocal() as db:
         # Exclude listings already audited in the last 24h to avoid re-auditing
         recently_audited = (
@@ -729,8 +733,8 @@ async def run_on_demand_audit(
 
     finally:
         try:
-            r = redis_lib.from_url(settings.redis_url)
-            r.delete("audit:on_demand:running")
+            with redis_lib.from_url(settings.redis_url) as r:
+                r.delete("audit:on_demand:running")
         except Exception as cleanup_exc:  # noqa: BLE001
             logger.warning("Failed to clear on-demand audit lock: %s", cleanup_exc)
 

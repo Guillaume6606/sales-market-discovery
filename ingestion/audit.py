@@ -235,6 +235,7 @@ async def capture_audit_batch(
     """Capture screenshot + HTML for a batch of listings using one Playwright browser."""
     import asyncio
     import random
+    import tempfile
 
     results: dict[int, AuditCapture] = {}
     listings_with_urls = [listing for listing in listings if listing.url]
@@ -248,8 +249,10 @@ async def capture_audit_batch(
 
         async with async_playwright() as p:
             # Mirror the stealth config from ScrapingSession.initialize()
+            # Use a unique temp dir per batch to avoid conflicts between concurrent audits
+            user_data_dir = tempfile.mkdtemp(prefix="pwuser-audit-")
             context = await p.chromium.launch_persistent_context(
-                user_data_dir="/tmp/pwuser-audit",
+                user_data_dir=user_data_dir,
                 locale="fr-FR",
                 timezone_id="Europe/Paris",
                 geolocation={"latitude": 48.8566, "longitude": 2.3522},
@@ -298,8 +301,7 @@ async def capture_audit_batch(
                         screenshot_file = screenshots_dir / f"audit_{listing.obs_id}_{ts}.png"
                         await page.screenshot(
                             path=str(screenshot_file),
-                            full_page=False,
-                            clip={"x": 0, "y": 0, "width": 1920, "height": 3000},
+                            full_page=True,
                         )
                         screenshot_path = str(screenshot_file)
 
