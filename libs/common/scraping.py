@@ -3,6 +3,7 @@ Advanced web scraping utilities with anti-bot detection bypass
 """
 
 import asyncio
+import math
 import random
 import re
 from datetime import datetime
@@ -15,6 +16,14 @@ from patchright.async_api import BrowserContext, Page, PlaywrightContextManager,
 from patchright.async_api import TimeoutError as PWTimeout
 
 from .settings import settings
+
+
+def human_delay(min_s: float, max_s: float) -> float:
+    """Log-normally distributed delay clamped to [min_s, max_s] (right-skewed, human-like)."""
+    mu = (math.log(min_s) + math.log(max_s)) / 2
+    sigma = (math.log(max_s) - math.log(min_s)) / 6
+    return min(max(random.lognormvariate(mu, sigma), min_s), max_s)  # noqa: S311
+
 
 # Advanced browser fingerprinting patch from test-stealth.py
 STEALTH_PATCH = r"""
