@@ -32,6 +32,8 @@ CONNECTOR_FIELD_EXCLUSIONS: dict[str, set[str]] = {
     "leboncoin": {"condition"},  # lbc package API does not expose condition
 }
 
+# Post-hoc classification of captured HTML for the LLM judge.
+# scraping.py has its own DATADOME_PATTERNS for live challenge interception.
 ANTIBOT_PATTERNS = re.compile(
     r"captcha|verify you are human|are you a robot|"
     r"connectez-vous pour continuer|veuillez vous connecter|"
@@ -268,7 +270,9 @@ async def capture_audit_batch(
 
         cfg = ScrapingConfig()
         cfg.use_playwright = True
-        cfg.playwright_user_data_dir = tempfile.mkdtemp(prefix="pwuser-audit-")  # noqa: S108
+        audit_tmp = tempfile.mkdtemp(prefix="pwuser-audit-")  # noqa: S108
+        cfg.playwright_user_data_dir = audit_tmp
+        cfg.cookie_path = Path(audit_tmp) / "audit-cookies.json"
 
         try:
             async with ScrapingSession(cfg) as session:

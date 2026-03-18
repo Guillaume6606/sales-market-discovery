@@ -23,13 +23,19 @@ from .settings import settings
 
 def human_delay(min_s: float, max_s: float) -> float:
     """Log-normally distributed delay clamped to [min_s, max_s] (right-skewed, human-like)."""
+    if min_s <= 0:
+        raise ValueError(f"min_s must be > 0, got {min_s}")
+    if max_s <= 0:
+        raise ValueError(f"max_s must be > 0, got {max_s}")
     mu = (math.log(min_s) + math.log(max_s)) / 2
     sigma = (math.log(max_s) - math.log(min_s)) / 6
     return min(max(random.lognormvariate(mu, sigma), min_s), max_s)  # noqa: S311
 
 
+# DataDome-specific detection for live scraping (challenge page interception).
+# audit.py has its own ANTIBOT_PATTERNS for post-hoc classification of captured HTML.
 DATADOME_PATTERNS: re.Pattern[str] = re.compile(
-    r"datadome|dd\.js|geo\.captcha-delivery\.com|"
+    r"datadome|/dd\.js|geo\.captcha-delivery\.com|"
     r"interstitial\?initialCid|captcha-delivery\.com",
     re.IGNORECASE,
 )
@@ -164,6 +170,7 @@ class ScrapingConfig:
         self.timeout = 30.0
         self.use_playwright = settings.use_playwright
         self.playwright_user_data_dir = "/tmp/pwuser"  # noqa: S108
+        self.cookie_path: Path = VINTED_COOKIE_PATH
         self.user_agents: list[str] = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -243,9 +250,9 @@ class ScrapingSession:
             await self._playwright_context.add_init_script(STEALTH_PATCH)
 
             # Restore persisted DataDome cookies for Vinted
-            if VINTED_COOKIE_PATH.exists():
+            if self.config.cookie_path.exists():
                 try:
-                    cookies = json.loads(VINTED_COOKIE_PATH.read_text())
+                    cookies = json.loads(self.config.cookie_path.read_text())
                     await self._playwright_context.add_cookies(cookies)
                     logger.debug("Restored {} Vinted cookies", len(cookies))
                 except Exception:  # noqa: S110
@@ -548,19 +555,21 @@ class ScrapingSession:
                     pass
                 html_content = await page.content()
                 if DATADOME_PATTERNS.search(html_content[:5000]):
-                    if VINTED_COOKIE_PATH.exists():
-                        VINTED_COOKIE_PATH.unlink()
+                    cookie_path = self.config.cookie_path
+                    if cookie_path.exists():
+                        cookie_path.unlink()
                         logger.warning("Deleted stale cookies after DataDome block at {}", url)
                     raise DataDomeBlockError(url)
 
             # Persist Vinted cookies after successful load
-            if "vinted" in url:
+            if "vinted.fr" in url:
                 try:
                     all_cookies = await self._playwright_context.cookies()
                     vinted_cookies = [c for c in all_cookies if "vinted" in c.get("domain", "")]
                     if vinted_cookies:
-                        VINTED_COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                        VINTED_COOKIE_PATH.write_text(json.dumps(vinted_cookies))
+                        cookie_path = self.config.cookie_path
+                        cookie_path.parent.mkdir(parents=True, exist_ok=True)
+                        cookie_path.write_text(json.dumps(vinted_cookies))
                         logger.debug("Saved {} Vinted cookies", len(vinted_cookies))
                 except Exception:  # noqa: S110
                     logger.warning("Failed to persist Vinted cookies")
