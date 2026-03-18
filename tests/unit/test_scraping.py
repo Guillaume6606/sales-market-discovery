@@ -1,8 +1,14 @@
 """Unit tests for scraping stealth utilities."""
 
 import statistics
+from pathlib import Path
 
-from libs.common.scraping import DATADOME_PATTERNS, DataDomeBlockError, human_delay
+from libs.common.scraping import (
+    DATADOME_PATTERNS,
+    VINTED_COOKIE_PATH,
+    DataDomeBlockError,
+    human_delay,
+)
 
 
 class TestHumanDelay:
@@ -45,3 +51,17 @@ class TestDataDomeBlockError:
         err = DataDomeBlockError(url)
         assert url in str(err)
         assert err.url == url
+
+
+class TestVintedCookiePath:
+    def test_is_path_instance(self) -> None:
+        assert isinstance(VINTED_COOKIE_PATH, Path)
+
+    def test_under_tmp_pwuser(self) -> None:
+        assert str(VINTED_COOKIE_PATH).startswith("/tmp/pwuser")
+
+    def test_is_json(self) -> None:
+        assert VINTED_COOKIE_PATH.suffix == ".json"
+
+    def test_name_contains_vinted(self) -> None:
+        assert "vinted" in VINTED_COOKIE_PATH.name

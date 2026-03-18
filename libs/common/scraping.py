@@ -3,10 +3,12 @@ Advanced web scraping utilities with anti-bot detection bypass
 """
 
 import asyncio
+import json
 import math
 import random
 import re
 from datetime import datetime
+from pathlib import Path
 
 import cloudscraper
 import httpx
@@ -38,6 +40,9 @@ class DataDomeBlockError(RuntimeError):
     def __init__(self, url: str) -> None:
         self.url = url
         super().__init__(f"DataDome block detected at {url}")
+
+
+VINTED_COOKIE_PATH: Path = Path("/tmp/pwuser/vinted-cookies.json")  # noqa: S108
 
 
 # Advanced browser fingerprinting patch from test-stealth.py
@@ -157,6 +162,7 @@ class ScrapingConfig:
         self.max_retries = 3
         self.timeout = 30.0
         self.use_playwright = settings.use_playwright
+        self.playwright_user_data_dir = "/tmp/pwuser"  # noqa: S108
 
 
 class ScrapingSession:
@@ -204,7 +210,7 @@ class ScrapingSession:
             # Use persistent context with stealth configuration (from test-stealth.py)
             self._playwright_context = (
                 await self._playwright_instance.chromium.launch_persistent_context(
-                    user_data_dir="/tmp/pwuser",
+                    user_data_dir=self.config.playwright_user_data_dir,
                     locale="fr-FR",
                     timezone_id="Europe/Paris",
                     geolocation={"latitude": 48.8566, "longitude": 2.3522},
@@ -224,6 +230,15 @@ class ScrapingSession:
 
             # Apply stealth patch
             await self._playwright_context.add_init_script(STEALTH_PATCH)
+
+            # Restore persisted DataDome cookies for Vinted
+            if VINTED_COOKIE_PATH.exists():
+                try:
+                    cookies = json.loads(VINTED_COOKIE_PATH.read_text())
+                    await self._playwright_context.add_cookies(cookies)
+                    logger.debug("Restored {} Vinted cookies", len(cookies))
+                except Exception:  # noqa: S110
+                    logger.warning("Failed to restore Vinted cookies — starting fresh")
 
     async def cleanup(self):
         """Cleanup resources"""
@@ -501,6 +516,32 @@ class ScrapingSession:
 
             # Return final HTML
             html_content = await page.content()
+
+            # Detect DataDome challenge page
+            if DATADOME_PATTERNS.search(html_content[:5000]):
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:  # noqa: S110
+                    pass
+                html_content = await page.content()
+                if DATADOME_PATTERNS.search(html_content[:5000]):
+                    if VINTED_COOKIE_PATH.exists():
+                        VINTED_COOKIE_PATH.unlink()
+                        logger.warning("Deleted stale cookies after DataDome block at {}", url)
+                    raise DataDomeBlockError(url)
+
+            # Persist Vinted cookies after successful load
+            if "vinted" in url:
+                try:
+                    all_cookies = await self._playwright_context.cookies()
+                    vinted_cookies = [c for c in all_cookies if "vinted" in c.get("domain", "")]
+                    if vinted_cookies:
+                        VINTED_COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                        VINTED_COOKIE_PATH.write_text(json.dumps(vinted_cookies))
+                        logger.debug("Saved {} Vinted cookies", len(vinted_cookies))
+                except Exception:  # noqa: S110
+                    logger.warning("Failed to persist Vinted cookies")
+
             return html_content
 
         finally:
