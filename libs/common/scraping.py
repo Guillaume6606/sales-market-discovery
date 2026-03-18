@@ -11,8 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import cloudscraper
-import httpx
+from curl_cffi.requests import AsyncSession
 from fake_useragent import UserAgent
 from loguru import logger
 from patchright.async_api import BrowserContext, Page, PlaywrightContextManager, async_playwright
@@ -247,21 +246,17 @@ class ScrapingSession:
 
     async def initialize(self):
         """Initialize scraping session"""
-        # Create cloudscraper session for basic anti-bot bypass
-        self.session = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "desktop": True}
-        )
-
-        # Set default headers
-        self.session.headers.update(
-            {
+        # Create curl_cffi session with Chrome TLS impersonation
+        self.session = AsyncSession(
+            impersonate="chrome",
+            headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
                 "Accept-Encoding": "gzip, deflate, br",
                 "DNT": "1",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1",
-            }
+            },
         )
 
         # Initialize Playwright with stealth configuration if needed
@@ -306,7 +301,7 @@ class ScrapingSession:
     async def cleanup(self):
         """Cleanup resources"""
         if self.session:
-            self.session.close()
+            await self.session.close()
 
         if self._playwright_context:
             await self._playwright_context.close()
@@ -356,26 +351,23 @@ class ScrapingSession:
 
         return headers
 
-    async def get_with_retry(self, url: str, **kwargs) -> httpx.Response:
-        """Make HTTP request with retry logic"""
+    async def get_with_retry(self, url: str, **kwargs) -> Any:
+        """Make HTTP request with retry logic and Chrome TLS impersonation."""
         last_exception = None
 
         for attempt in range(self.config.max_retries):
             try:
-                # Apply delay between attempts
                 if attempt > 0:
-                    delay = min(2**attempt, 10)  # Exponential backoff
+                    delay = min(2**attempt, 10)
                     await asyncio.sleep(delay)
 
-                # Update headers
-                self.session.headers.update(self._get_random_headers())
-
-                # Apply delay between requests
                 await self._apply_random_delay()
 
-                response = self.session.get(url, timeout=self.config.timeout, **kwargs)
+                headers = self._get_random_headers()
+                response = await self.session.get(
+                    url, headers=headers, timeout=self.config.timeout, **kwargs
+                )
 
-                # Check for bot detection
                 if self._is_bot_detected(response):
                     logger.warning(f"Bot detection detected for {url}, attempt {attempt + 1}")
                     if attempt == self.config.max_retries - 1:
@@ -391,7 +383,7 @@ class ScrapingSession:
 
         raise last_exception
 
-    def _is_bot_detected(self, response: httpx.Response) -> bool:
+    def _is_bot_detected(self, response: Any) -> bool:
         """Check if response indicates bot detection"""
         # Common bot detection indicators
         bot_indicators = [
@@ -656,13 +648,12 @@ class ScrapingSession:
     async def get_html_with_fallback(self, url: str) -> str:
         """Get HTML content with fallback from Playwright to HTTP"""
         try:
-            # Try Playwright first
             return await self.get_html_with_playwright(url)
         except Exception as e:
             logger.warning(f"Playwright failed: {e}, falling back to HTTP request")
-            # Fallback to HTTP request
             response = await self.get_with_retry(url)
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise RuntimeError(f"HTTP error: {response.status_code}") from None
             return response.text
 
 
