@@ -3,6 +3,7 @@
 from ingestion.connectors.ebay import parse_ebay_response
 from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
 from ingestion.connectors.vinted import VintedConnector
+from ingestion.connectors.vinted_api import VintedAPIConnector
 
 # =========================================================================== #
 # eBay tests
@@ -312,3 +313,120 @@ class TestVintedParsing:
 
         sig = inspect.signature(self.connector._warmup_session)
         assert "session" in sig.parameters
+
+
+# =========================================================================== #
+# Vinted API tests
+# =========================================================================== #
+
+
+class TestVintedAPIConnector:
+    def setup_method(self) -> None:
+        self.connector = VintedAPIConnector()
+
+    def test_map_item_to_listing_basic(self) -> None:
+        """Map a VintedItem-like dict to a Listing."""
+        item_data = {
+            "id": 12345,
+            "title": "Samsung Galaxy S24 128GB",
+            "price": {"amount": "450.00", "currency_code": "EUR"},
+            "url": "/items/12345-samsung-galaxy",
+            "status": "active",
+            "brand_title": "Samsung",
+            "size_title": "M",
+            "color1": "Black",
+            "localization": "Paris, France",
+        }
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.source == "vinted"
+        assert listing.listing_id == "12345"
+        assert listing.price == 450.0
+        assert listing.currency == "EUR"
+        assert listing.title == "Samsung Galaxy S24 128GB"
+        assert listing.brand == "Samsung"
+        assert listing.url.endswith("/items/12345-samsung-galaxy")
+
+    def test_map_item_to_listing_no_id_returns_none(self) -> None:
+        listing = self.connector._map_item_to_listing({})
+        assert listing is None
+
+    def test_map_item_to_listing_price_as_float(self) -> None:
+        item_data = {"id": 99, "title": "Test", "price": 25.0}
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.price == 25.0
+
+    def test_map_item_sold_detection(self) -> None:
+        item_data = {"id": 1, "title": "Sold Item", "price": 10.0, "is_closed": True}
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.is_sold is True
+
+    def test_map_item_reserved_detection(self) -> None:
+        item_data = {"id": 2, "title": "Reserved Item", "price": 15.0, "is_reserved": True}
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.is_sold is True
+
+    def test_condition_normalization(self) -> None:
+        assert self.connector.normalize_condition_vinted("neuf") == "new"
+        assert self.connector.normalize_condition_vinted("très bon état") == "like_new"
+        assert self.connector.normalize_condition_vinted("bon état") == "good"
+        assert self.connector.normalize_condition_vinted("satisfaisant") == "fair"
+        assert self.connector.normalize_condition_vinted("") is None
+
+    def test_map_item_to_listing_price_as_int(self) -> None:
+        item_data = {"id": 100, "title": "Int Price Item", "price": 30}
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.price == 30.0
+
+    def test_map_item_to_listing_price_as_string(self) -> None:
+        item_data = {"id": 101, "title": "Str Price Item", "price": "42.50"}
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.price == 42.50
+
+    def test_map_item_to_listing_url_prefix(self) -> None:
+        """Relative URL gets prefixed with BASE_URL."""
+        item_data = {"id": 200, "title": "Relative URL", "price": 10.0, "url": "/items/200-test"}
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.url == "https://www.vinted.fr/items/200-test"
+
+    def test_map_item_to_listing_absolute_url(self) -> None:
+        """Absolute URL is kept as-is."""
+        item_data = {
+            "id": 201,
+            "title": "Absolute URL",
+            "price": 10.0,
+            "url": "https://www.vinted.fr/items/201-test",
+        }
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.url == "https://www.vinted.fr/items/201-test"
+
+    def test_map_item_to_listing_size_and_color(self) -> None:
+        item_data = {
+            "id": 300,
+            "title": "With Size & Color",
+            "price": 20.0,
+            "size_title": "L",
+            "color1": "Blue",
+        }
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.size == "L"
+        assert listing.color == "Blue"
+
+    def test_map_item_to_listing_location(self) -> None:
+        item_data = {
+            "id": 400,
+            "title": "With Location",
+            "price": 50.0,
+            "localization": "Lyon, France",
+        }
+        listing = self.connector._map_item_to_listing(item_data)
+        assert listing is not None
+        assert listing.location == "Lyon, France"

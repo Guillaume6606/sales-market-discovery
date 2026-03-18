@@ -677,6 +677,15 @@ class VintedConnector:
 
 # Convenience functions for backward compatibility
 async def fetch_vinted_listings(keyword: str, limit: int = 50) -> list[Listing]:
-    """Fetch current listings from Vinted"""
+    """Fetch current listings from Vinted (API-first, HTML scraping fallback)."""
+    from ingestion.connectors.vinted_api import fetch_vinted_api_listings
+
+    # Try API first (bypasses DataDome)
+    listings = await fetch_vinted_api_listings(keyword, limit)
+    if listings:
+        return listings
+
+    # Fallback to HTML scraping
+    logger.warning("Vinted API returned no results, falling back to HTML scraping")
     connector = VintedConnector()
     return await connector.search_items(keyword, limit=limit)
