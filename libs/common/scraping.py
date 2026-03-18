@@ -164,6 +164,16 @@ class ScrapingConfig:
         self.timeout = 30.0
         self.use_playwright = settings.use_playwright
         self.playwright_user_data_dir = "/tmp/pwuser"  # noqa: S108
+        self.user_agents: list[str] = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        ]
+        self.referers: list[str] = [
+            "https://www.google.com/",
+            "https://www.google.fr/",
+            "https://www.bing.com/",
+        ]
 
 
 class ScrapingSession:
