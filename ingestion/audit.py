@@ -35,7 +35,8 @@ CONNECTOR_FIELD_EXCLUSIONS: dict[str, set[str]] = {
 ANTIBOT_PATTERNS = re.compile(
     r"captcha|verify you are human|are you a robot|"
     r"connectez-vous pour continuer|veuillez vous connecter|"
-    r"access denied|blocked|cloudflare|challenge-platform",
+    r"access denied|blocked|cloudflare|challenge-platform|"
+    r"datadome|captcha-delivery\.com",
     re.IGNORECASE,
 )
 

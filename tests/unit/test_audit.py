@@ -85,3 +85,11 @@ class TestDetectAntibot:
 
     def test_empty_html(self):
         assert detect_antibot("") is False
+
+    def test_datadome_detected(self) -> None:
+        html = "<html><head><title>DataDome</title></head></html>"
+        assert detect_antibot(html) is True
+
+    def test_captcha_delivery_detected(self) -> None:
+        html = '<script src="https://geo.captcha-delivery.com/c.js"></script>'
+        assert detect_antibot(html) is True
