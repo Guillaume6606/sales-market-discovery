@@ -84,6 +84,15 @@ STEALTH_PATCH = r"""
         tryDefine(performance, 'memory', () => ({
         totalJSHeapSize: 3e8, usedJSHeapSize: 1.5e8, jsHeapSizeLimit: 6e8
         }));
+
+        // Navigator identity patches (Windows Chrome fingerprint)
+        tryNav('platform', () => 'Win32');
+        tryNav('hardwareConcurrency', () => 8);
+        tryNav('deviceMemory', () => 8);
+        tryNav('languages', () => ['fr-FR','fr','en-US','en']);
+
+        // Hide automation flag
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
     };
 
     const patchPlugins = () => {
@@ -110,7 +119,7 @@ STEALTH_PATCH = r"""
         Ctx.prototype.getParameter = function(p){
             try {
             if (p === 37445) return 'Google Inc.'; // UNMASKED_VENDOR_WEBGL
-            if (p === 37446) return 'ANGLE (Intel, Mesa Intel(R) UHD Graphics, OpenGL 4.6)';
+            if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)';
             } catch(_) {}
             return GP.call(this, p);
         };
@@ -120,14 +129,31 @@ STEALTH_PATCH = r"""
     };
 
     const patchCanvasAudio = () => {
+        // Canvas 2D getImageData noise (actual noise, not XOR-0 no-op)
         try {
         const gID = CanvasRenderingContext2D.prototype.getImageData;
         CanvasRenderingContext2D.prototype.getImageData = function(x,y,w,h){
             const d = gID.call(this,x,y,w,h);
-            for (let i=0;i<d.data.length;i+=4999) d.data[i]^=0;
+            for (let i=0;i<d.data.length;i+=4999) d.data[i] = (d.data[i] + 1) & 0xFF;
             return d;
         };
         } catch(_) {}
+        // Canvas toDataURL noise
+        try {
+        const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(...args){
+            try {
+            const ctx = this.getContext('2d');
+            if (ctx) {
+                const d = ctx.getImageData(0, 0, Math.min(this.width, 16), 1);
+                for (let i=0;i<d.data.length;i+=7) d.data[i] = (d.data[i] + 1) & 0xFF;
+                ctx.putImageData(d, 0, 0);
+            }
+            } catch(_) {}
+            return origToDataURL.apply(this, args);
+        };
+        } catch(_) {}
+        // Audio fingerprint noise
         try {
         const gCD = AudioBuffer.prototype.getChannelData;
         AudioBuffer.prototype.getChannelData = function(c){
@@ -143,17 +169,34 @@ STEALTH_PATCH = r"""
             const og = OC2D.getImageData;
             OC2D.getImageData = function(x,y,w,h){
             const d = og.call(this,x,y,w,h);
-            for (let i=0;i<d.data.length;i+=4999) d.data[i]^=0;
+            for (let i=0;i<d.data.length;i+=4999) d.data[i] = (d.data[i] + 1) & 0xFF;
             return d;
             };
         }
         } catch(_) {}
     };
 
+    const patchScreen = () => {
+        // Consistent screen dimensions for Windows desktop fingerprint
+        const screenProps = {
+        width: 1920, height: 1080,
+        availWidth: 1920, availHeight: 1040,
+        colorDepth: 24, pixelDepth: 24
+        };
+        for (const [k, v] of Object.entries(screenProps)) {
+        try { Object.defineProperty(screen, k, {get: () => v, configurable: true}); }
+        catch(_) {}
+        }
+    };
+
+    // Document focus patch (headless browsers report false)
+    Document.prototype.hasFocus = () => true;
+
     patchNav();
     patchPlugins();
     patchWebGL();
     patchCanvasAudio();
+    patchScreen();
     })();
 """
 
@@ -236,6 +279,8 @@ class ScrapingSession:
                     no_viewport=True,  # use the OS window size
                     service_workers="block",
                     args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--window-size=1920,1080",
                         "--webrtc-ip-handling-policy=disable_non_proxied_udp",
                         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                         "--webrtc-stun-probe-trial=disabled",

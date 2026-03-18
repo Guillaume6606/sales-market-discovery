@@ -5,6 +5,7 @@ from pathlib import Path
 
 from libs.common.scraping import (
     DATADOME_PATTERNS,
+    STEALTH_PATCH,
     VINTED_COOKIE_PATH,
     DataDomeBlockError,
     human_delay,
@@ -102,3 +103,39 @@ class TestCapturePageSignature:
         sig = inspect.signature(ScrapingSession().capture_page)
         assert "url" in sig.parameters
         assert "referer" in sig.parameters
+
+
+class TestStealthPatchContent:
+    """Verify STEALTH_PATCH addresses known detection vectors."""
+
+    def test_canvas_noise_is_not_noop(self) -> None:
+        # ^=0 is a no-op; must use actual noise like ^=1 or +1
+        assert "^=0" not in STEALTH_PATCH
+
+    def test_webgl_renderer_not_mesa(self) -> None:
+        # Mesa renderer leaks Linux server identity
+        assert "Mesa" not in STEALTH_PATCH
+
+    def test_patches_hardware_concurrency(self) -> None:
+        assert "hardwareConcurrency" in STEALTH_PATCH
+
+    def test_patches_device_memory(self) -> None:
+        assert "deviceMemory" in STEALTH_PATCH
+
+    def test_patches_navigator_languages(self) -> None:
+        assert "languages" in STEALTH_PATCH
+
+    def test_patches_platform(self) -> None:
+        assert "platform" in STEALTH_PATCH
+
+    def test_patches_has_focus(self) -> None:
+        assert "hasFocus" in STEALTH_PATCH
+
+    def test_patches_screen_dimensions(self) -> None:
+        assert "screen" in STEALTH_PATCH and "1920" in STEALTH_PATCH
+
+    def test_patches_webdriver(self) -> None:
+        assert "webdriver" in STEALTH_PATCH
+
+    def test_patches_canvas_to_data_url(self) -> None:
+        assert "toDataURL" in STEALTH_PATCH
