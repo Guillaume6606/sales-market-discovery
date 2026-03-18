@@ -229,9 +229,27 @@ async def judge_listing(
     }
 
 
+def _get_domain(url: str) -> str:
+    """Extract hostname from URL. Returns empty string on failure."""
+    from urllib.parse import urlparse
+
+    if not url:
+        return ""
+    try:
+        return urlparse(url).hostname or ""
+    except Exception:  # noqa: S110
+        return ""
+
+
+def _should_cool_down(consecutive: int, max_consecutive: int) -> bool:
+    """Return True when consecutive same-domain requests reach the threshold."""
+    return consecutive >= max_consecutive
+
+
 async def capture_audit_batch(
     listings: list[ListingObservation],
     html_only: bool = False,
+    max_consecutive_per_domain: int = 5,
 ) -> dict[int, AuditCapture]:
     """Capture screenshot + HTML for a batch of listings using ScrapingSession."""
     import asyncio
@@ -246,7 +264,7 @@ async def capture_audit_batch(
         import shutil
         import tempfile
 
-        from libs.common.scraping import ScrapingConfig, ScrapingSession
+        from libs.common.scraping import ScrapingConfig, ScrapingSession, human_delay
 
         cfg = ScrapingConfig()
         cfg.use_playwright = True
@@ -254,7 +272,29 @@ async def capture_audit_batch(
 
         try:
             async with ScrapingSession(cfg) as session:
+                current_domain = ""
+                domain_consecutive = 0
+
                 for listing in listings_with_urls:
+                    # Domain-batch cooling
+                    listing_domain = _get_domain(listing.url or "")
+                    if listing_domain == current_domain:
+                        domain_consecutive += 1
+                    else:
+                        current_domain = listing_domain
+                        domain_consecutive = 1
+
+                    if _should_cool_down(domain_consecutive, max_consecutive_per_domain):
+                        cool = human_delay(15.0, 30.0)
+                        logger.info(
+                            "Cooling {:.1f}s after {} consecutive {} requests",
+                            cool,
+                            domain_consecutive,
+                            current_domain,
+                        )
+                        await asyncio.sleep(cool)
+                        domain_consecutive = 1
+
                     vinted_referer = (
                         "https://www.vinted.fr/catalog" if listing.source == "vinted" else None
                     )
@@ -305,6 +345,7 @@ async def audit_listings(
     audit_mode: str,
     ingestion_run_id: str | None = None,
     html_only: bool = False,
+    max_consecutive_per_domain: int = 5,
 ) -> list[ConnectorAudit]:
     """Full audit pipeline: capture pages -> judge each -> return records."""
     from libs.common.db import SessionLocal
@@ -327,7 +368,11 @@ async def audit_listings(
                 )
                 return []
 
-    captures = await capture_audit_batch(listings, html_only=html_only)
+    captures = await capture_audit_batch(
+        listings,
+        html_only=html_only,
+        max_consecutive_per_domain=max_consecutive_per_domain,
+    )
 
     audit_records: list[ConnectorAudit] = []
     for listing in listings:

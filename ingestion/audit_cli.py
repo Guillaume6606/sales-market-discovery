@@ -49,6 +49,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--html-only", action="store_true", help="Skip screenshots, judge from HTML only"
     )
+    parser.add_argument(
+        "--max-consecutive-per-domain",
+        type=int,
+        default=5,
+        help="Max consecutive requests per domain before cooling pause (default: 5)",
+    )
     return parser.parse_args()
 
 
@@ -327,7 +333,12 @@ async def main() -> None:
             logger.warning("No listings for connector %s", connector)
             continue
         logger.info("Auditing %d listings for %s", len(listings), connector)
-        records = await audit_listings(listings, audit_mode="cli", html_only=args.html_only)
+        records = await audit_listings(
+            listings,
+            audit_mode="cli",
+            html_only=args.html_only,
+            max_consecutive_per_domain=args.max_consecutive_per_domain,
+        )
 
         with _AuditSession() as db:
             for r in records:
