@@ -9,14 +9,16 @@ Market discovery and arbitrage detection platform for resale marketplaces (eBay,
 ## Commands
 
 ```bash
-make up          # docker-compose up -d --build (all services)
-make down        # docker-compose down -v
-make logs        # docker-compose logs -f --tail=100
-make sh          # shell into ingestion container
-make fmt         # uv run ruff check --fix . && uv run ruff format .
-make lint        # uv run ruff check .
-make test        # uv run pytest -q
-make audit       # run Vinted connector audit in Docker (html-only)
+make             # show all available commands
+make up          # start all services (build + run)
+make down        # stop all services + remove volumes
+make logs        # follow logs from all services
+make fmt         # ruff check --fix + ruff format
+make lint        # ruff check
+make test        # pytest unit tests
+make health      # check health of all services
+make audit       # run connector audit (all connectors, Docker)
+make ingest      # run full ingestion (Docker)
 ```
 
 Direct dev commands (outside Docker):
