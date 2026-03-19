@@ -37,6 +37,8 @@ class VintedAPIConnector:
         if limit <= 0:
             return []
 
+        logger.info("Searching Vinted API for: {}", keyword)
+
         from vinted_scraper import AsyncVintedScraper
 
         results: list[Listing] = []
