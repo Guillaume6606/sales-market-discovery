@@ -1,25 +1,33 @@
 SHELL := /bin/bash
+DC := docker-compose
 
-.PHONY: fmt lint test up down logs sh
+.PHONY: fmt lint test up down logs sh audit
 
 fmt:
-	ruff check --select I --fix .
-	black .
+	uv run ruff check --fix . && uv run ruff format .
 
 lint:
-	ruff check .
+	uv run ruff check .
 
 test:
-	pytest -q
+	uv run pytest -q
 
 up:
-	docker compose up -d --build
+	$(DC) up -d --build
 
 down:
-	docker compose down -v
+	$(DC) down -v
 
 logs:
-	docker compose logs -f --tail=100
+	$(DC) logs -f --tail=100
 
 sh:
-	docker compose exec backend bash
+	$(DC) exec ingestion bash
+
+audit:
+	$(DC) run --rm -T -e UV_CACHE_DIR=/tmp/uv-cache ingestion \
+		xvfb-run -a uv run python -m ingestion.audit_cli \
+		--connectors vinted \
+		--products-per-connector 2 \
+		--listings-per-product 5 \
+		--html-only
