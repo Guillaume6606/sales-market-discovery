@@ -1,10 +1,15 @@
 """Display helpers: colors, badges, relative times."""
 
+import math
 from datetime import UTC, datetime
 
 
+def _is_missing(v: float | None) -> bool:
+    return v is None or (isinstance(v, float) and math.isnan(v))
+
+
 def get_margin_color(delta_pct: float | None) -> str:
-    if delta_pct is None:
+    if _is_missing(delta_pct):
         return "gray"
     elif delta_pct <= -20:
         return "#00ff00"
@@ -17,14 +22,14 @@ def get_margin_color(delta_pct: float | None) -> str:
 
 
 def format_liquidity_stars(score: float | None) -> str:
-    if score is None:
+    if _is_missing(score):
         return "N/A"
     stars = int(score * 5)
     return "stars" * stars if stars > 0 else "---"
 
 
 def format_trend_indicator(score: float | None) -> str:
-    if score is None:
+    if _is_missing(score):
         return "---"
     elif score > 0.5:
         return "Hot"
@@ -36,7 +41,7 @@ def format_trend_indicator(score: float | None) -> str:
 
 def format_discount(delta_pct: float | None) -> str:
     """Convert negative delta_vs_pmn_pct to a human-friendly discount string."""
-    if delta_pct is None:
+    if _is_missing(delta_pct):
         return "N/A"
     discount = -delta_pct
     if discount > 0:
@@ -47,7 +52,7 @@ def format_discount(delta_pct: float | None) -> str:
 
 
 def confidence_badge(confidence: float | None) -> str:
-    if confidence is None:
+    if _is_missing(confidence):
         return "--- N/A"
     if confidence >= 0.7:
         return f"High ({confidence:.0%})"
