@@ -23,6 +23,19 @@ class VintedConnector:
     def __init__(self):
         self.scraping_utils = ScrapingUtils()
 
+    async def _warmup_session(self, session: ScrapingSession) -> None:
+        """Visit Vinted homepage to establish DataDome session before item requests."""
+        import asyncio
+
+        from libs.common.scraping import human_delay
+
+        try:
+            logger.info("Warming up Vinted session via homepage")
+            await session.get_html_with_playwright(self.BASE_URL)
+            await asyncio.sleep(human_delay(2.0, 5.0))
+        except Exception as exc:
+            logger.warning("Vinted warmup failed (non-fatal): {}", exc)
+
     def normalize_condition_vinted(self, condition_raw: str) -> str | None:
         """Normalize Vinted condition to standard categories"""
         if not condition_raw:
@@ -86,6 +99,8 @@ class VintedConnector:
 
         try:
             async with ScrapingSession(scraping_config) as session:
+                if session.config.use_playwright:
+                    await self._warmup_session(session)
                 # Get search results page (with fallback to HTTP if Playwright fails)
                 html_content = await session.get_html_with_fallback(search_url)
                 logger.debug(f"HTML Content: {html_content}")
@@ -138,6 +153,8 @@ class VintedConnector:
         """
         try:
             async with ScrapingSession(scraping_config) as session:
+                if session.config.use_playwright:
+                    await self._warmup_session(session)
                 html_content = await session.get_html_with_fallback(item_url)
 
                 # Parse detailed item information
@@ -660,6 +677,15 @@ class VintedConnector:
 
 # Convenience functions for backward compatibility
 async def fetch_vinted_listings(keyword: str, limit: int = 50) -> list[Listing]:
-    """Fetch current listings from Vinted"""
+    """Fetch current listings from Vinted (API-first, HTML scraping fallback)."""
+    from ingestion.connectors.vinted_api import fetch_vinted_api_listings
+
+    # Try API first (bypasses DataDome)
+    listings = await fetch_vinted_api_listings(keyword, limit)
+    if listings:
+        return listings
+
+    # Fallback to HTML scraping
+    logger.warning("Vinted API returned no results, falling back to HTML scraping")
     connector = VintedConnector()
     return await connector.search_items(keyword, limit=limit)

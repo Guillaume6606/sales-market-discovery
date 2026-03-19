@@ -3,18 +3,53 @@ Advanced web scraping utilities with anti-bot detection bypass
 """
 
 import asyncio
+import json
+import math
 import random
 import re
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-import cloudscraper
-import httpx
+from curl_cffi.requests import AsyncSession
 from fake_useragent import UserAgent
 from loguru import logger
 from patchright.async_api import BrowserContext, Page, PlaywrightContextManager, async_playwright
 from patchright.async_api import TimeoutError as PWTimeout
 
 from .settings import settings
+
+
+def human_delay(min_s: float, max_s: float) -> float:
+    """Log-normally distributed delay clamped to [min_s, max_s] (right-skewed, human-like)."""
+    if min_s <= 0:
+        raise ValueError(f"min_s must be > 0, got {min_s}")
+    if max_s <= 0:
+        raise ValueError(f"max_s must be > 0, got {max_s}")
+    mu = (math.log(min_s) + math.log(max_s)) / 2
+    sigma = (math.log(max_s) - math.log(min_s)) / 6
+    return min(max(random.lognormvariate(mu, sigma), min_s), max_s)  # noqa: S311
+
+
+# DataDome-specific detection for live scraping (challenge page interception).
+# audit.py has its own ANTIBOT_PATTERNS for post-hoc classification of captured HTML.
+DATADOME_PATTERNS: re.Pattern[str] = re.compile(
+    r"datadome|/dd\.js|geo\.captcha-delivery\.com|"
+    r"interstitial\?initialCid|captcha-delivery\.com",
+    re.IGNORECASE,
+)
+
+
+class DataDomeBlockError(RuntimeError):
+    """Raised when DataDome challenge page is detected after page load."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        super().__init__(f"DataDome block detected at {url}")
+
+
+VINTED_COOKIE_PATH: Path = Path("/tmp/pwuser/vinted-cookies.json")  # noqa: S108
+
 
 # Advanced browser fingerprinting patch from test-stealth.py
 STEALTH_PATCH = r"""
@@ -48,6 +83,15 @@ STEALTH_PATCH = r"""
         tryDefine(performance, 'memory', () => ({
         totalJSHeapSize: 3e8, usedJSHeapSize: 1.5e8, jsHeapSizeLimit: 6e8
         }));
+
+        // Navigator identity patches (Windows Chrome fingerprint)
+        tryNav('platform', () => 'Win32');
+        tryNav('hardwareConcurrency', () => 8);
+        tryNav('deviceMemory', () => 8);
+        tryNav('languages', () => ['fr-FR','fr','en-US','en']);
+
+        // Hide automation flag
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
     };
 
     const patchPlugins = () => {
@@ -74,7 +118,7 @@ STEALTH_PATCH = r"""
         Ctx.prototype.getParameter = function(p){
             try {
             if (p === 37445) return 'Google Inc.'; // UNMASKED_VENDOR_WEBGL
-            if (p === 37446) return 'ANGLE (Intel, Mesa Intel(R) UHD Graphics, OpenGL 4.6)';
+            if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)';
             } catch(_) {}
             return GP.call(this, p);
         };
@@ -84,14 +128,31 @@ STEALTH_PATCH = r"""
     };
 
     const patchCanvasAudio = () => {
+        // Canvas 2D getImageData noise (actual noise, not XOR-0 no-op)
         try {
         const gID = CanvasRenderingContext2D.prototype.getImageData;
         CanvasRenderingContext2D.prototype.getImageData = function(x,y,w,h){
             const d = gID.call(this,x,y,w,h);
-            for (let i=0;i<d.data.length;i+=4999) d.data[i]^=0;
+            for (let i=0;i<d.data.length;i+=4999) d.data[i] = (d.data[i] + 1) & 0xFF;
             return d;
         };
         } catch(_) {}
+        // Canvas toDataURL noise
+        try {
+        const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = function(...args){
+            try {
+            const ctx = this.getContext('2d');
+            if (ctx) {
+                const d = ctx.getImageData(0, 0, Math.min(this.width, 16), 1);
+                for (let i=0;i<d.data.length;i+=7) d.data[i] = (d.data[i] + 1) & 0xFF;
+                ctx.putImageData(d, 0, 0);
+            }
+            } catch(_) {}
+            return origToDataURL.apply(this, args);
+        };
+        } catch(_) {}
+        // Audio fingerprint noise
         try {
         const gCD = AudioBuffer.prototype.getChannelData;
         AudioBuffer.prototype.getChannelData = function(c){
@@ -107,17 +168,34 @@ STEALTH_PATCH = r"""
             const og = OC2D.getImageData;
             OC2D.getImageData = function(x,y,w,h){
             const d = og.call(this,x,y,w,h);
-            for (let i=0;i<d.data.length;i+=4999) d.data[i]^=0;
+            for (let i=0;i<d.data.length;i+=4999) d.data[i] = (d.data[i] + 1) & 0xFF;
             return d;
             };
         }
         } catch(_) {}
     };
 
+    const patchScreen = () => {
+        // Consistent screen dimensions for Windows desktop fingerprint
+        const screenProps = {
+        width: 1920, height: 1080,
+        availWidth: 1920, availHeight: 1040,
+        colorDepth: 24, pixelDepth: 24
+        };
+        for (const [k, v] of Object.entries(screenProps)) {
+        try { Object.defineProperty(screen, k, {get: () => v, configurable: true}); }
+        catch(_) {}
+        }
+    };
+
+    // Document focus patch (headless browsers report false)
+    Document.prototype.hasFocus = () => true;
+
     patchNav();
     patchPlugins();
     patchWebGL();
     patchCanvasAudio();
+    patchScreen();
     })();
 """
 
@@ -133,6 +211,18 @@ class ScrapingConfig:
         self.max_retries = 3
         self.timeout = 30.0
         self.use_playwright = settings.use_playwright
+        self.playwright_user_data_dir = "/tmp/pwuser"  # noqa: S108
+        self.cookie_path: Path = VINTED_COOKIE_PATH
+        self.user_agents: list[str] = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        ]
+        self.referers: list[str] = [
+            "https://www.google.com/",
+            "https://www.google.fr/",
+            "https://www.bing.com/",
+        ]
 
 
 class ScrapingSession:
@@ -156,21 +246,17 @@ class ScrapingSession:
 
     async def initialize(self):
         """Initialize scraping session"""
-        # Create cloudscraper session for basic anti-bot bypass
-        self.session = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "desktop": True}
-        )
-
-        # Set default headers
-        self.session.headers.update(
-            {
+        # Create curl_cffi session with Chrome TLS impersonation
+        self.session = AsyncSession(
+            impersonate="chrome",
+            headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
                 "Accept-Encoding": "gzip, deflate, br",
                 "DNT": "1",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1",
-            }
+            },
         )
 
         # Initialize Playwright with stealth configuration if needed
@@ -180,7 +266,7 @@ class ScrapingSession:
             # Use persistent context with stealth configuration (from test-stealth.py)
             self._playwright_context = (
                 await self._playwright_instance.chromium.launch_persistent_context(
-                    user_data_dir="/tmp/pwuser",
+                    user_data_dir=self.config.playwright_user_data_dir,
                     locale="fr-FR",
                     timezone_id="Europe/Paris",
                     geolocation={"latitude": 48.8566, "longitude": 2.3522},
@@ -188,6 +274,8 @@ class ScrapingSession:
                     no_viewport=True,  # use the OS window size
                     service_workers="block",
                     args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--window-size=1920,1080",
                         "--webrtc-ip-handling-policy=disable_non_proxied_udp",
                         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                         "--webrtc-stun-probe-trial=disabled",
@@ -201,15 +289,24 @@ class ScrapingSession:
             # Apply stealth patch
             await self._playwright_context.add_init_script(STEALTH_PATCH)
 
+            # Restore persisted DataDome cookies for Vinted
+            if self.config.cookie_path.exists():
+                try:
+                    cookies = json.loads(self.config.cookie_path.read_text())
+                    await self._playwright_context.add_cookies(cookies)
+                    logger.debug("Restored {} Vinted cookies", len(cookies))
+                except Exception:  # noqa: S110
+                    logger.warning("Failed to restore Vinted cookies — starting fresh")
+
     async def cleanup(self):
         """Cleanup resources"""
         if self.session:
-            self.session.close()
+            await self.session.close()
 
         if self._playwright_context:
             await self._playwright_context.close()
 
-        if self.config.use_playwright:
+        if self._playwright_instance:
             await self._playwright_instance.stop()
 
     def _get_random_user_agent(self) -> str:
@@ -217,7 +314,7 @@ class ScrapingSession:
         if random.random() < 0.3:  # 30% chance to use fake_useragent
             try:
                 return self.ua_generator.random
-            except:
+            except Exception:  # noqa: S110
                 pass
         return random.choice(self.config.user_agents)
 
@@ -254,26 +351,23 @@ class ScrapingSession:
 
         return headers
 
-    async def get_with_retry(self, url: str, **kwargs) -> httpx.Response:
-        """Make HTTP request with retry logic"""
+    async def get_with_retry(self, url: str, **kwargs) -> Any:
+        """Make HTTP request with retry logic and Chrome TLS impersonation."""
         last_exception = None
 
         for attempt in range(self.config.max_retries):
             try:
-                # Apply delay between attempts
                 if attempt > 0:
-                    delay = min(2**attempt, 10)  # Exponential backoff
+                    delay = min(2**attempt, 10)
                     await asyncio.sleep(delay)
 
-                # Update headers
-                self.session.headers.update(self._get_random_headers())
-
-                # Apply delay between requests
                 await self._apply_random_delay()
 
-                response = self.session.get(url, timeout=self.config.timeout, **kwargs)
+                headers = self._get_random_headers()
+                response = await self.session.get(
+                    url, headers=headers, timeout=self.config.timeout, **kwargs
+                )
 
-                # Check for bot detection
                 if self._is_bot_detected(response):
                     logger.warning(f"Bot detection detected for {url}, attempt {attempt + 1}")
                     if attempt == self.config.max_retries - 1:
@@ -289,7 +383,7 @@ class ScrapingSession:
 
         raise last_exception
 
-    def _is_bot_detected(self, response: httpx.Response) -> bool:
+    def _is_bot_detected(self, response: Any) -> bool:
         """Check if response indicates bot detection"""
         # Common bot detection indicators
         bot_indicators = [
@@ -318,7 +412,13 @@ class ScrapingSession:
 
         return False
 
-    async def get_html_with_playwright(self, url: str) -> str:
+    async def get_html_with_playwright(
+        self,
+        url: str,
+        *,
+        _capture_screenshot: bool = False,
+        referer: str | None = None,
+    ) -> str | tuple[str, bytes]:
         """Get HTML content using Playwright (handles JS + common consent banners)."""
         if not self._playwright_context:
             raise Exception("Playwright not available - falling back to HTTP request")
@@ -378,7 +478,17 @@ class ScrapingSession:
                 # Cookiebot
                 "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
             ]
-            await page.wait_for_function("window.didomi || window.Didomi", timeout=5000)
+            # Quick check: is any consent banner visible? Skip the 5s Didomi
+            # wait if no consent-related DOM element is present.
+            has_consent_element = await page.evaluate("""
+                !!(document.querySelector('#didomi-notice, #onetrust-banner-sdk, '
+                   + '#truste-consent-button, #CybotCookiebotDialog, '
+                   + '[class*="consent"], [class*="cookie-banner"]'))
+                || !!(window.didomi || window.Didomi)
+            """)
+            if not has_consent_element:
+                return False
+
             clicked = False
             didomi_wall = await page.evaluate("""
                 !!(document.body && document.body.classList.contains('didomi-popup-open'))
@@ -451,7 +561,13 @@ class ScrapingSession:
             await asyncio.sleep(random.uniform(0.5, 1.5))
 
             # Navigate
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            goto_kwargs: dict[str, Any] = {
+                "wait_until": "domcontentloaded",
+                "timeout": 30000,
+            }
+            if referer:
+                goto_kwargs["referer"] = referer
+            response = await page.goto(url, **goto_kwargs)
             if response and response.status in (403, 429):
                 raise Exception(f"Bot detection detected: {response.status}")
 
@@ -477,21 +593,67 @@ class ScrapingSession:
 
             # Return final HTML
             html_content = await page.content()
+
+            # Detect DataDome challenge page
+            if DATADOME_PATTERNS.search(html_content[:5000]):
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:  # noqa: S110
+                    pass
+                html_content = await page.content()
+                if DATADOME_PATTERNS.search(html_content[:5000]):
+                    cookie_path = self.config.cookie_path
+                    if cookie_path.exists():
+                        # Don't delete cookies — stale cookies + backoff is better
+                        # than a cold start from a flagged IP
+                        logger.warning(
+                            "DataDome block at {} — keeping cookies for next session", url
+                        )
+                    raise DataDomeBlockError(url)
+
+            # Persist Vinted cookies after successful load
+            if "vinted.fr" in url:
+                try:
+                    all_cookies = await self._playwright_context.cookies()
+                    vinted_cookies = [c for c in all_cookies if "vinted" in c.get("domain", "")]
+                    if vinted_cookies:
+                        cookie_path = self.config.cookie_path
+                        cookie_path.parent.mkdir(parents=True, exist_ok=True)
+                        cookie_path.write_text(json.dumps(vinted_cookies))
+                        logger.debug("Saved {} Vinted cookies", len(vinted_cookies))
+                except Exception:  # noqa: S110
+                    logger.warning("Failed to persist Vinted cookies")
+
+            if _capture_screenshot:
+                try:
+                    screenshot_bytes = await page.screenshot(full_page=True)
+                    return html_content, screenshot_bytes
+                except Exception:  # noqa: S110
+                    logger.warning("Screenshot failed for {}", url)
+
             return html_content
 
         finally:
             await page.close()
 
+    async def capture_page(
+        self, url: str, *, referer: str | None = None
+    ) -> tuple[str, bytes | None]:
+        """Navigate to URL with full stealth, return (html, screenshot_bytes | None)."""
+        result = await self.get_html_with_playwright(url, _capture_screenshot=True, referer=referer)
+        if isinstance(result, tuple):
+            return result
+        return result, None
+
     async def get_html_with_fallback(self, url: str) -> str:
         """Get HTML content with fallback from Playwright to HTTP"""
         try:
-            # Try Playwright first
             return await self.get_html_with_playwright(url)
         except Exception as e:
             logger.warning(f"Playwright failed: {e}, falling back to HTTP request")
-            # Fallback to HTTP request
             response = await self.get_with_retry(url)
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise RuntimeError(f"HTTP error: {response.status_code}") from None
             return response.text
 
 

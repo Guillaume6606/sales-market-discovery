@@ -41,8 +41,8 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcloud/application_default_credentials.json
     volumes:
       - ${HOME}/.config/gcloud:/tmp/gcloud:ro
+      - pwuser-data:/tmp/pwuser
     tmpfs:
-      - /tmp
       - /home/pwuser/.cache
 
   ui:
@@ -55,3 +55,4 @@ services:
 
 volumes:
   dbdata:
+  pwuser-data:

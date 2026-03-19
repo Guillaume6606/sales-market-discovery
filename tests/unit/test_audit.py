@@ -1,6 +1,8 @@
 """Tests for connector data quality audit logic."""
 
 from ingestion.audit import (
+    _get_domain,
+    _should_cool_down,
     compute_accuracy,
     detect_antibot,
     parse_llm_verdict,
@@ -85,3 +87,31 @@ class TestDetectAntibot:
 
     def test_empty_html(self):
         assert detect_antibot("") is False
+
+    def test_datadome_detected(self) -> None:
+        html = "<html><head><title>DataDome</title></head></html>"
+        assert detect_antibot(html) is True
+
+    def test_captcha_delivery_detected(self) -> None:
+        html = '<script src="https://geo.captcha-delivery.com/c.js"></script>'
+        assert detect_antibot(html) is True
+
+
+class TestDomainCooling:
+    def test_get_domain_vinted(self) -> None:
+        assert _get_domain("https://www.vinted.fr/items/123") == "www.vinted.fr"
+
+    def test_get_domain_leboncoin(self) -> None:
+        assert _get_domain("https://www.leboncoin.fr/ad/456") == "www.leboncoin.fr"
+
+    def test_get_domain_empty(self) -> None:
+        assert _get_domain("") == ""
+
+    def test_should_cool_at_threshold(self) -> None:
+        assert _should_cool_down(5, 5) is True
+
+    def test_should_not_cool_below_threshold(self) -> None:
+        assert _should_cool_down(4, 5) is False
+
+    def test_should_cool_above_threshold(self) -> None:
+        assert _should_cool_down(7, 5) is True
