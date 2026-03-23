@@ -163,6 +163,7 @@ if items:
 
     if search_query:
         df = df[df["title"].str.contains(search_query, case=False, na=False)]
+        st.caption("Note: title search filters the current page only.")
 
     df["Discount %"] = df["delta_vs_pmn_pct"].apply(
         lambda x: round(-x, 1) if x is not None else None
@@ -304,7 +305,7 @@ with tab_opportunities:
                 st.session_state.selected_product_id = df.iloc[selected_idx]["product_id"]
 
         # ---- Pagination ----
-        offset = paginator("discovery_page", total, PAGE_SIZE)
+        paginator("discovery_page", total, PAGE_SIZE)
 
         # ---- CSV export ----
         csv_bytes = display_df[cols_to_show].to_csv(index=False).encode()

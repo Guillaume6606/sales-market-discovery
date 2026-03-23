@@ -56,12 +56,15 @@ with qa1:
         st.caption("Browse arbitrage deals with advanced filters")
         st.page_link("pages/1_Discovery.py", label="Open Discovery", icon=":material/search:")
 
+# Pre-fetch alert events once (used by both Quick Actions count and Recent Alerts feed)
+_alert_events_data = fetch_alert_events(limit=5)
+_alert_events: list = _alert_events_data.get("events", []) if _alert_events_data else []
+_alert_total: int = _alert_events_data.get("total", 0) if _alert_events_data else 0
+
 with qa2:
     with st.container(border=True):
         st.markdown("**Review Alerts**")
-        events_data = fetch_alert_events(limit=1)
-        event_count = events_data.get("total", 0) if events_data else 0
-        st.caption(f"{event_count} alert events total")
+        st.caption(f"{_alert_total} alert events total")
         st.page_link(
             "pages/6_Alerts.py", label="Open Alerts", icon=":material/notifications_active:"
         )
@@ -84,8 +87,7 @@ col_alerts, col_connectors = st.columns([3, 2])
 
 with col_alerts:
     st.markdown("### Recent Alerts")
-    events_data = fetch_alert_events(limit=5)
-    events = events_data.get("events", []) if events_data else []
+    events = _alert_events
 
     if events:
         for evt in events:

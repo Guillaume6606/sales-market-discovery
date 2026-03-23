@@ -51,7 +51,7 @@ with cp1:
     )
 with cp2:
     max_price_filter = st.number_input(
-        "Max Price", min_value=0.0, value=1000.0, step=10.0, key="explorer_max_price"
+        "Max Price (0 = no limit)", min_value=0.0, value=0.0, step=10.0, key="explorer_max_price"
     )
 
 products = fetch_products()
@@ -82,7 +82,7 @@ if filter_search:
 
 if min_price_filter > 0:
     params["min_price"] = min_price_filter
-if max_price_filter < 1000:
+if max_price_filter > 0:
     params["max_price"] = max_price_filter
 
 if selected_product_filter != "All Products":
@@ -237,10 +237,10 @@ try:
                 s1, s2, s3, s4 = st.columns(4)
                 with s1:
                     avg = df["price"].mean() if "price" in df.columns else None
-                    st.metric("Average Price", f"{avg:.2f}" if avg else "N/A")
+                    st.metric("Average Price", f"{avg:.2f}" if pd.notna(avg) else "N/A")
                 with s2:
                     med = df["price"].median() if "price" in df.columns else None
-                    st.metric("Median Price", f"{med:.2f}" if med else "N/A")
+                    st.metric("Median Price", f"{med:.2f}" if pd.notna(med) else "N/A")
                 with s3:
                     st.metric(
                         "Sold Items",

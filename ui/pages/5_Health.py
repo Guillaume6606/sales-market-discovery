@@ -114,32 +114,35 @@ if timeline_runs:
 
         if not tl_df.empty:
             sources = sorted(tl_df["source"].dropna().unique().tolist())
+            source_to_y = {s: i for i, s in enumerate(sources)}
 
             fig_tl = go.Figure()
+            # One trace per (status, source) group instead of per row
             for run_status, color in status_color_map.items():
                 subset = tl_df[tl_df["status"] == run_status]
                 if subset.empty:
                     continue
-                for _, row in subset.iterrows():
-                    y_pos = sources.index(row["source"]) if row["source"] in sources else 0
+                for source in sources:
+                    src_subset = subset[subset["source"] == source]
+                    if src_subset.empty:
+                        continue
+                    y_pos = source_to_y[source]
+                    hover_texts = [
+                        f"<b>{source}</b><br>"
+                        f"Status: {run_status}<br>"
+                        f"Duration: {row['duration_s']:.0f}s<br>"
+                        f"Started: {row['started_at']}<extra></extra>"
+                        for _, row in src_subset.iterrows()
+                    ]
                     fig_tl.add_trace(
                         go.Scatter(
-                            x=[row["started_at"]],
-                            y=[y_pos],
+                            x=src_subset["started_at"].tolist(),
+                            y=[y_pos] * len(src_subset),
                             mode="markers",
-                            marker={
-                                "color": color,
-                                "size": 10,
-                                "symbol": "square",
-                            },
-                            name=run_status,
+                            marker={"color": color, "size": 10, "symbol": "square"},
+                            name=run_status.replace("_", " ").title(),
                             showlegend=False,
-                            hovertemplate=(
-                                f"<b>{row['source']}</b><br>"
-                                f"Status: {run_status}<br>"
-                                f"Duration: {row['duration_s']:.0f}s<br>"
-                                f"Started: {row['started_at']}<extra></extra>"
-                            ),
+                            hovertemplate=hover_texts,
                         )
                     )
 
