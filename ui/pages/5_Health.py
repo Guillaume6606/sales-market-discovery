@@ -1,6 +1,7 @@
 """Health & Observability: system status, connector health, ingestion runs."""
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from ui.lib.api import (
@@ -12,9 +13,12 @@ from ui.lib.api import (
     fetch_pmn_accuracy_aggregate,
     fetch_product_health,
 )
-from ui.lib.formatters import relative_time, status_dot
+from ui.lib.components import paginator
+from ui.lib.formatters import relative_time
+from ui.lib.theme import COLORS, PLOTLY_LAYOUT, status_badge
 
-st.header("Health & Observability")
+st.markdown("# Health & Observability")
+st.caption("System status, connector health, and PMN accuracy")
 
 # ---------------------------------------------------------------------------
 # System status banner
@@ -40,6 +44,7 @@ if st.button("Refresh", key="health_refresh"):
     fetch_computation_status.clear()
     fetch_pmn_accuracy_aggregate.clear()
     fetch_audit_results.clear()
+    fetch_ingestion_runs.clear()
     st.rerun()
 
 st.divider()
@@ -55,7 +60,6 @@ if ingestion_health:
     for i, conn in enumerate(ingestion_health):
         with cols[i]:
             source = conn.get("source", "?")
-            # Determine status from overview connectors
             conn_status = "gray"
             if overview and overview.get("connectors"):
                 for c in overview["connectors"]:
@@ -63,7 +67,10 @@ if ingestion_health:
                         conn_status = c.get("status", "gray")
                         break
 
-            st.markdown(f"### {status_dot(conn_status)} {source.title()}")
+            st.markdown(
+                f"### {source.title()} &nbsp; {status_badge(conn_status)}",
+                unsafe_allow_html=True,
+            )
 
             sr24 = conn.get("success_rate_24h")
             sr7 = conn.get("success_rate_7d")
@@ -84,6 +91,89 @@ if ingestion_health:
 else:
     st.info("No connector health data available")
 
+# ---------------------------------------------------------------------------
+# Connector success timeline chart
+# ---------------------------------------------------------------------------
+timeline_data = fetch_ingestion_runs(page_size=100)
+timeline_runs = timeline_data.get("runs", [])
+
+if timeline_runs:
+    status_color_map: dict[str, str] = {
+        "success": COLORS["success"],
+        "error": COLORS["danger"],
+        "running": COLORS["warning"],
+        "no_data": COLORS["muted"],
+    }
+
+    tl_df = pd.DataFrame(timeline_runs)
+    required_cols = {"source", "status", "started_at", "duration_s"}
+    if required_cols.issubset(tl_df.columns):
+        tl_df["started_at"] = pd.to_datetime(tl_df["started_at"], errors="coerce", utc=True)
+        tl_df["duration_s"] = pd.to_numeric(tl_df["duration_s"], errors="coerce").fillna(60)
+        tl_df = tl_df.dropna(subset=["started_at"])
+
+        if not tl_df.empty:
+            sources = sorted(tl_df["source"].dropna().unique().tolist())
+
+            fig_tl = go.Figure()
+            for run_status, color in status_color_map.items():
+                subset = tl_df[tl_df["status"] == run_status]
+                if subset.empty:
+                    continue
+                for _, row in subset.iterrows():
+                    y_pos = sources.index(row["source"]) if row["source"] in sources else 0
+                    fig_tl.add_trace(
+                        go.Scatter(
+                            x=[row["started_at"]],
+                            y=[y_pos],
+                            mode="markers",
+                            marker={
+                                "color": color,
+                                "size": 10,
+                                "symbol": "square",
+                            },
+                            name=run_status,
+                            showlegend=False,
+                            hovertemplate=(
+                                f"<b>{row['source']}</b><br>"
+                                f"Status: {run_status}<br>"
+                                f"Duration: {row['duration_s']:.0f}s<br>"
+                                f"Started: {row['started_at']}<extra></extra>"
+                            ),
+                        )
+                    )
+
+            # One legend entry per status
+            for run_status, color in status_color_map.items():
+                fig_tl.add_trace(
+                    go.Scatter(
+                        x=[None],
+                        y=[None],
+                        mode="markers",
+                        marker={"color": color, "size": 10, "symbol": "square"},
+                        name=run_status.replace("_", " ").title(),
+                        showlegend=True,
+                    )
+                )
+
+            layout_tl = dict(PLOTLY_LAYOUT)
+            layout_tl["yaxis"] = dict(
+                PLOTLY_LAYOUT.get("yaxis", {}),
+                tickvals=list(range(len(sources))),
+                ticktext=sources,
+                gridcolor=COLORS["border"],
+            )
+            layout_tl["xaxis"] = dict(
+                PLOTLY_LAYOUT.get("xaxis", {}),
+                title="Time",
+            )
+            layout_tl["title"] = "Ingestion Run Timeline"
+            layout_tl["height"] = 220 + 60 * len(sources)
+            fig_tl.update_layout(**layout_tl)
+
+            with st.expander("Connector Success Timeline", expanded=True):
+                st.plotly_chart(fig_tl, use_container_width=True)
+
 st.divider()
 
 # ---------------------------------------------------------------------------
@@ -96,16 +186,21 @@ if product_health:
     stale = [p for p in product_health if p.get("is_stale")]
     if stale:
         st.warning(f"{len(stale)} products have not been ingested in 24+ hours")
-        with st.expander("View stale products"):
-            stale_df = pd.DataFrame(stale)
-            stale_df["Hours Since"] = stale_df["hours_since_ingestion"].apply(
-                lambda x: f"{x:.1f}h" if x is not None else "Never"
-            )
-            st.dataframe(
-                stale_df[["name", "Hours Since"]],
-                hide_index=True,
-                use_container_width=True,
-            )
+        for p in stale:
+            hours = p.get("hours_since_ingestion")
+            hours_str = f"{hours:.1f}h" if hours is not None else "unknown"
+            name = p.get("name", "Unknown product")
+            if hours is not None and hours > 48:
+                color = COLORS["danger"]
+            else:
+                color = COLORS["warning"]
+            muted = COLORS["text_secondary"]
+            with st.container(border=True):
+                st.markdown(
+                    f'<span style="color:{color}; font-weight:600;">{name}</span>'
+                    f'<span style="color:{muted}"> — last seen {hours_str} ago</span>',
+                    unsafe_allow_html=True,
+                )
     else:
         st.success("All products are up to date")
 else:
@@ -117,9 +212,6 @@ st.divider()
 # Recent ingestion runs
 # ---------------------------------------------------------------------------
 st.subheader("Recent Ingestion Runs")
-
-if "health_runs_page" not in st.session_state:
-    st.session_state.health_runs_page = 1
 
 rc1, rc2 = st.columns(2)
 with rc1:
@@ -133,11 +225,18 @@ with rc2:
         key="health_run_status",
     )
 
+# Use paginator to get the current offset, then derive 1-based page for the API.
+# We render paginator after the data fetch but we need the offset first.
+# Read current page from session state directly so we can fetch before rendering.
+_current_run_page: int = st.session_state.get("health_runs_page", 0)
+_run_page_size = 20
+_run_api_page = _current_run_page + 1  # paginator is 0-based; API is 1-based
+
 runs_data = fetch_ingestion_runs(
     source=run_source_filter if run_source_filter != "All" else None,
     status=run_status_filter if run_status_filter != "All" else None,
-    page=st.session_state.health_runs_page,
-    page_size=20,
+    page=_run_api_page,
+    page_size=_run_page_size,
 )
 
 runs = runs_data.get("runs", [])
@@ -158,25 +257,9 @@ if runs:
         runs_df[display_cols],
         hide_index=True,
         use_container_width=True,
-        height=400,
     )
 
-    # Pagination
-    total_pages = max(1, (runs_total + 19) // 20)
-    current = st.session_state.health_runs_page
-    rp1, rp2, rp3 = st.columns([1, 2, 1])
-    with rp1:
-        if st.button("Prev", disabled=current <= 1, key="runs_prev"):
-            st.session_state.health_runs_page = current - 1
-            fetch_ingestion_runs.clear()
-            st.rerun()
-    with rp2:
-        st.caption(f"Page {current} of {total_pages} ({runs_total} total)")
-    with rp3:
-        if st.button("Next", disabled=current >= total_pages, key="runs_next"):
-            st.session_state.health_runs_page = current + 1
-            fetch_ingestion_runs.clear()
-            st.rerun()
+    paginator("health_runs_page", runs_total, _run_page_size)
 else:
     st.info("No ingestion runs found")
 
@@ -201,6 +284,42 @@ if comp:
         comp.get("products_with_today_metrics", 0),
     )
     st.caption(f"Last PMN computation: {relative_time(comp.get('latest_pmn_computation'))}")
+
+    # PMN coverage gauge
+    pmn_pct = float(comp.get("pmn_coverage_pct", 0))
+    fig_gauge = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=pmn_pct,
+            number={"suffix": "%", "font": {"color": COLORS["text"], "size": 28}},
+            title={"text": "PMN Coverage", "font": {"color": COLORS["text_secondary"], "size": 14}},
+            gauge={
+                "axis": {
+                    "range": [0, 100],
+                    "tickcolor": COLORS["text_secondary"],
+                    "tickfont": {"color": COLORS["text_secondary"]},
+                },
+                "bar": {"color": COLORS["primary"]},
+                "bgcolor": COLORS["surface"],
+                "bordercolor": COLORS["border"],
+                "steps": [
+                    {"range": [0, 50], "color": COLORS["danger_muted"]},
+                    {"range": [50, 80], "color": COLORS["warning_muted"]},
+                    {"range": [80, 100], "color": COLORS["success_muted"]},
+                ],
+                "threshold": {
+                    "line": {"color": COLORS["success"], "width": 2},
+                    "thickness": 0.75,
+                    "value": 80,
+                },
+            },
+        )
+    )
+    gauge_layout = dict(PLOTLY_LAYOUT)
+    gauge_layout["height"] = 260
+    gauge_layout["margin"] = {"l": 30, "r": 30, "t": 40, "b": 20}
+    fig_gauge.update_layout(**gauge_layout)
+    st.plotly_chart(fig_gauge, use_container_width=True)
 else:
     st.info("Computation status unavailable")
 
@@ -254,8 +373,8 @@ if audit:
     if failures:
         with st.expander(f"Recent failures ({len(failures)})"):
             fail_df = pd.DataFrame(failures)
-            display_cols = ["obs_id", "source", "accuracy", "audited_at", "notes"]
-            display_cols = [c for c in display_cols if c in fail_df.columns]
-            st.dataframe(fail_df[display_cols], hide_index=True, use_container_width=True)
+            display_cols_audit = ["obs_id", "source", "accuracy", "audited_at", "notes"]
+            display_cols_audit = [c for c in display_cols_audit if c in fail_df.columns]
+            st.dataframe(fail_df[display_cols_audit], hide_index=True, use_container_width=True)
 else:
     st.info("No audit results available")

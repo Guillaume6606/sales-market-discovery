@@ -12,8 +12,12 @@ from ui.lib.api import (
     fetch_ingestion_runs,
     fetch_products,
 )
+from ui.lib.components import kpi_row
 from ui.lib.config import SUPPORTED_PROVIDERS
 from ui.lib.formatters import relative_time
+
+st.markdown("# Product Setup")
+st.caption("Manage categories and configure products for tracking")
 
 # ---------------------------------------------------------------------------
 # Categories
@@ -32,7 +36,6 @@ with st.form("create_category", clear_on_submit=True):
             if r.status_code == 201:
                 st.success("Category created")
                 fetch_categories.clear()
-                fetch_category_names.clear()
                 st.rerun()
             else:
                 st.error(f"Creation failed: {r.text}")
@@ -40,15 +43,24 @@ with st.form("create_category", clear_on_submit=True):
             st.error(f"API error: {exc}")
 
 # ---------------------------------------------------------------------------
-# Products table
+# Products table + KPI row
 # ---------------------------------------------------------------------------
 st.divider()
 st.header("Manage Products")
 
 products = fetch_products()
 if products:
+    total_products = len(products)
+    active_products = sum(1 for p in products if p.get("is_active"))
+    kpi_row(
+        [
+            {"label": "Total Products", "value": total_products},
+            {"label": "Active Products", "value": active_products},
+            {"label": "Inactive Products", "value": total_products - active_products},
+        ]
+    )
+
     products_df = pd.DataFrame(products)
-    # Add relative time for last_ingested_at
     if "last_ingested_at" in products_df.columns:
         products_df["Last Ingested"] = products_df["last_ingested_at"].apply(relative_time)
     display_cols = ["name", "search_query", "brand", "providers", "is_active"]
@@ -59,7 +71,7 @@ else:
     st.info("No products configured yet.")
 
 # ---------------------------------------------------------------------------
-# Product form
+# Product form — uses session state + expanders (no st.form wrapper)
 # ---------------------------------------------------------------------------
 st.markdown("### Product Management")
 mode = st.radio(
@@ -72,7 +84,7 @@ mode = st.radio(
 if "selected_edit_product" not in st.session_state:
     st.session_state.selected_edit_product = None
 
-selected_product = None
+selected_product: dict | None = None
 if mode == "Edit Existing Product":
     if not products:
         st.warning("No products available to edit. Create one first!")
@@ -86,54 +98,64 @@ if mode == "Edit Existing Product":
         selected_product = product_options[selected_label]
         st.session_state.selected_edit_product = selected_product
 
+is_editing = selected_product is not None
+
 if mode == "Create New Product" or (mode == "Edit Existing Product" and selected_product):
-    with st.form("product_form", clear_on_submit=False):
-        default_name = selected_product["name"] if selected_product else ""
-        default_desc = selected_product.get("description", "") if selected_product else ""
-        default_query = selected_product["search_query"] if selected_product else ""
-        default_brand = selected_product.get("brand", "") if selected_product else ""
-        default_price_min = (
-            float(selected_product["price_min"])
-            if selected_product and selected_product.get("price_min")
-            else 0.0
-        )
-        default_price_max = (
-            float(selected_product["price_max"])
-            if selected_product and selected_product.get("price_max")
-            else 0.0
-        )
-        default_providers = (
-            selected_product.get("providers", SUPPORTED_PROVIDERS)
-            if selected_product
-            else SUPPORTED_PROVIDERS
-        )
-        default_active = selected_product.get("is_active", True) if selected_product else True
-        default_words = (
-            ", ".join(selected_product.get("words_to_avoid", [])) if selected_product else ""
-        )
-        default_llm = (
-            selected_product.get("enable_llm_validation", False) if selected_product else False
-        )
+    # Derive defaults from the selected product (or blank for create)
+    default_name = selected_product["name"] if selected_product else ""
+    default_desc = selected_product.get("description", "") if selected_product else ""
+    default_query = selected_product["search_query"] if selected_product else ""
+    default_brand = selected_product.get("brand", "") if selected_product else ""
+    default_price_min = (
+        float(selected_product["price_min"])
+        if selected_product and selected_product.get("price_min")
+        else 0.0
+    )
+    default_price_max = (
+        float(selected_product["price_max"])
+        if selected_product and selected_product.get("price_max")
+        else 0.0
+    )
+    default_providers = (
+        selected_product.get("providers", SUPPORTED_PROVIDERS)
+        if selected_product
+        else SUPPORTED_PROVIDERS
+    )
+    default_active = selected_product.get("is_active", True) if selected_product else True
+    default_words = (
+        ", ".join(selected_product.get("words_to_avoid", [])) if selected_product else ""
+    )
+    default_llm = (
+        selected_product.get("enable_llm_validation", False) if selected_product else False
+    )
+    default_category: str | None = None
+    if selected_product and selected_product.get("category"):
+        default_category = selected_product["category"]["name"]
 
-        default_category = None
-        if selected_product and selected_product.get("category"):
-            default_category = selected_product["category"]["name"]
+    # ---------------------------------------------------------------------------
+    # Required fields — always visible
+    # ---------------------------------------------------------------------------
+    category_names = categories_list if categories_list else []
+    default_cat_index = (
+        category_names.index(default_category)
+        if default_category and default_category in category_names
+        else 0
+    )
 
-        pf_name = st.text_input("Name *", value=default_name, key="pf_name")
-        pf_desc = st.text_area("Description", value=default_desc, key="pf_desc")
-        pf_query = st.text_input("Search Query *", value=default_query, key="pf_query")
+    pf_name = st.text_input("Name *", value=default_name, key="pf_name")
+    pf_desc = st.text_area("Description", value=default_desc, key="pf_desc")
+    pf_query = st.text_input("Search Query *", value=default_query, key="pf_query")
+    pf_category = st.selectbox(
+        "Category *",
+        options=category_names,
+        index=default_cat_index,
+        key="pf_category",
+    )
 
-        category_names = categories_list if categories_list else []
-        default_cat_index = (
-            category_names.index(default_category) if default_category in category_names else 0
-        )
-        pf_category = st.selectbox(
-            "Category *",
-            options=category_names,
-            index=default_cat_index,
-            key="pf_category",
-        )
-
+    # ---------------------------------------------------------------------------
+    # Pricing & Filters expander
+    # ---------------------------------------------------------------------------
+    with st.expander("Pricing & Filters", expanded=is_editing):
         pf_brand = st.text_input("Brand (optional)", value=default_brand, key="pf_brand")
 
         col1, col2 = st.columns(2)
@@ -156,18 +178,22 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
                 key="pf_price_max",
             )
 
-        pf_providers = st.multiselect(
-            "Providers",
-            options=SUPPORTED_PROVIDERS,
-            default=default_providers,
-            key="pf_providers",
-        )
-
         pf_words = st.text_area(
             "Words to Avoid (comma-separated)",
             value=default_words,
             key="pf_words",
             help="Listings with these words in the title will be rejected",
+        )
+
+    # ---------------------------------------------------------------------------
+    # Advanced Settings expander
+    # ---------------------------------------------------------------------------
+    with st.expander("Advanced Settings", expanded=is_editing):
+        pf_providers = st.multiselect(
+            "Providers",
+            options=SUPPORTED_PROVIDERS,
+            default=default_providers,
+            key="pf_providers",
         )
 
         pf_llm = st.checkbox(
@@ -178,70 +204,85 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
 
         pf_active = st.checkbox("Active", value=default_active, key="pf_active")
 
-        button_label = "Update Product" if selected_product else "Create Product"
-        if st.form_submit_button(button_label, type="primary"):
-            if not pf_name.strip() or not pf_query.strip() or not pf_category:
-                st.error("Name, search query, and category are required.")
-            else:
-                try:
-                    r = api_get("/categories", timeout=10.0)
-                    all_categories = r.json().get("categories", [])
-                    category_id = next(
-                        (
-                            cat["category_id"]
-                            for cat in all_categories
-                            if cat["name"] == pf_category
-                        ),
-                        None,
+    # ---------------------------------------------------------------------------
+    # Submit button (outside expanders — required when not using st.form)
+    # ---------------------------------------------------------------------------
+    button_label = "Update Product" if selected_product else "Create Product"
+    if st.button(button_label, type="primary"):
+        pf_name_val: str = st.session_state.get("pf_name", "")
+        pf_query_val: str = st.session_state.get("pf_query", "")
+        pf_category_val: str = st.session_state.get("pf_category", "")
+        pf_desc_val: str = st.session_state.get("pf_desc", "")
+        pf_brand_val: str = st.session_state.get("pf_brand", "")
+        pf_price_min_val: float = st.session_state.get("pf_price_min", 0.0)
+        pf_price_max_val: float = st.session_state.get("pf_price_max", 0.0)
+        pf_words_val: str = st.session_state.get("pf_words", "")
+        pf_providers_val: list[str] = st.session_state.get("pf_providers", SUPPORTED_PROVIDERS)
+        pf_llm_val: bool = st.session_state.get("pf_llm", False)
+        pf_active_val: bool = st.session_state.get("pf_active", True)
+
+        if not pf_name_val.strip() or not pf_query_val.strip() or not pf_category_val:
+            st.error("Name, search query, and category are required.")
+        else:
+            try:
+                r = api_get("/categories", timeout=10.0)
+                all_categories = r.json().get("categories", [])
+                category_id = next(
+                    (
+                        cat["category_id"]
+                        for cat in all_categories
+                        if cat["name"] == pf_category_val
+                    ),
+                    None,
+                )
+
+                if not category_id:
+                    st.error("Selected category not found")
+                else:
+                    words_list = (
+                        [w.strip() for w in pf_words_val.split(",") if w.strip()]
+                        if pf_words_val.strip()
+                        else []
                     )
+                    payload = {
+                        "name": pf_name_val.strip(),
+                        "description": (pf_desc_val.strip() if pf_desc_val.strip() else None),
+                        "search_query": pf_query_val.strip(),
+                        "category_id": category_id,
+                        "brand": (pf_brand_val.strip() if pf_brand_val.strip() else None),
+                        "price_min": pf_price_min_val if pf_price_min_val > 0 else None,
+                        "price_max": pf_price_max_val if pf_price_max_val > 0 else None,
+                        "providers": pf_providers_val,
+                        "words_to_avoid": words_list,
+                        "enable_llm_validation": pf_llm_val,
+                        "is_active": pf_active_val,
+                    }
 
-                    if not category_id:
-                        st.error("Selected category not found")
-                    else:
-                        words_list = (
-                            [w.strip() for w in pf_words.split(",") if w.strip()]
-                            if pf_words.strip()
-                            else []
+                    if selected_product:
+                        r = api_put(
+                            f"/products/{selected_product['product_id']}",
+                            json=payload,
+                            timeout=10.0,
                         )
-                        payload = {
-                            "name": pf_name.strip(),
-                            "description": (pf_desc.strip() if pf_desc.strip() else None),
-                            "search_query": pf_query.strip(),
-                            "category_id": category_id,
-                            "brand": (pf_brand.strip() if pf_brand.strip() else None),
-                            "price_min": pf_price_min if pf_price_min > 0 else None,
-                            "price_max": pf_price_max if pf_price_max > 0 else None,
-                            "providers": pf_providers,
-                            "words_to_avoid": words_list,
-                            "enable_llm_validation": pf_llm,
-                            "is_active": pf_active,
-                        }
-
-                        if selected_product:
-                            r = api_put(
-                                f"/products/{selected_product['product_id']}",
-                                json=payload,
-                                timeout=10.0,
-                            )
-                            if r.status_code == 200:
-                                st.success(f"Product '{pf_name}' updated!")
-                                fetch_products.clear()
-                                st.session_state.selected_edit_product = None
-                                st.rerun()
-                            else:
-                                st.error(f"Update failed: {r.text}")
+                        if r.status_code == 200:
+                            st.success(f"Product '{pf_name_val}' updated!")
+                            fetch_products.clear()
+                            st.session_state.selected_edit_product = None
+                            st.rerun()
                         else:
-                            r = api_post("/products", json=payload, timeout=10.0)
-                            if r.status_code == 201:
-                                st.success(f"Product '{pf_name}' created!")
-                                fetch_products.clear()
-                                st.rerun()
-                            else:
-                                st.error(f"Creation failed: {r.text}")
-                except ValueError:
-                    st.error("Invalid price values. Please enter valid numbers.")
-                except Exception as exc:
-                    st.error(f"API error: {exc}")
+                            st.error(f"Update failed: {r.text}")
+                    else:
+                        r = api_post("/products", json=payload, timeout=10.0)
+                        if r.status_code == 201:
+                            st.success(f"Product '{pf_name_val}' created!")
+                            fetch_products.clear()
+                            st.rerun()
+                        else:
+                            st.error(f"Creation failed: {r.text}")
+            except ValueError:
+                st.error("Invalid price values. Please enter valid numbers.")
+            except Exception as exc:
+                st.error(f"API error: {exc}")
 
 # ---------------------------------------------------------------------------
 # Recent ingestion history for selected product

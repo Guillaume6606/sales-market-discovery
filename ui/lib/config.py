@@ -5,6 +5,8 @@ import os
 import httpx
 import streamlit as st
 
+APP_VERSION = "0.2.0"
+
 SUPPORTED_PROVIDERS: list[str] = ["ebay", "leboncoin", "vinted"]
 DEFAULT_TIMEOUT: float = 15.0
 

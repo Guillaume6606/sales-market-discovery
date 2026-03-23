@@ -1,27 +1,38 @@
 """Import Data: trigger ingestion jobs and monitor status."""
 
+from collections import defaultdict
+from datetime import datetime
+
+import plotly.graph_objects as go
 import streamlit as st
 
 from ui.lib.api import (
     api_get,
     api_post,
+    fetch_ingestion_runs,
     fetch_ingestion_status,
     fetch_products,
     fetch_queue_status,
 )
+from ui.lib.components import kpi_row
 from ui.lib.config import SUPPORTED_PROVIDERS
+from ui.lib.theme import COLORS, PLOTLY_LAYOUT
 
-st.header("Import New Data")
+st.markdown("# Import Data")
+st.caption("Trigger ingestion jobs and monitor queue status")
 
-col1, col2 = st.columns([2, 1])
+# ---------------------------------------------------------------------------
+# Job trigger section
+# ---------------------------------------------------------------------------
+products = fetch_products()
+if not products:
+    st.warning("No products available. Configure them in Product Setup.")
+else:
+    col_main, col_status = st.columns([2, 1])
 
-with col1:
-    st.write("Select a configured product to launch ingestion jobs")
+    with col_main:
+        st.write("Select a configured product to launch ingestion jobs")
 
-    products = fetch_products()
-    if not products:
-        st.warning("No products available. Configure them in Product Setup.")
-    else:
         product_map = {f"{prod['name']} ({prod['product_id'][:8]})": prod for prod in products}
         selected_label = st.selectbox("Product", list(product_map.keys()), key="import_product")
         selected_product = product_map[selected_label]
@@ -128,34 +139,106 @@ with col1:
                 except Exception as exc:
                     st.error(f"Error: {exc}")
 
-with col2:
-    st.subheader("Status")
-    status = fetch_ingestion_status()
-    if status:
-        st.metric("Total Products", status.get("total_products", 0))
-        st.metric("Total Observations", status.get("total_observations", 0))
-        st.metric("Active Listings", status.get("active_listings", 0))
-        st.metric("Sold Items", status.get("sold_observations", 0))
+        # ---------------------------------------------------------------------------
+        # Ingestion activity bar chart — last 14 days, stacked by source
+        # ---------------------------------------------------------------------------
+        st.divider()
+        st.subheader("Ingestion Activity (last 14 days)")
 
-        sc1, sc2, sc3 = st.columns(3)
-        sc1.metric("eBay", status.get("ebay_observations", 0))
-        sc2.metric("LBC", status.get("leboncoin_observations", 0))
-        sc3.metric("Vinted", status.get("vinted_observations", 0))
-    else:
-        st.error("Could not fetch status")
+        runs_data = fetch_ingestion_runs(page_size=200)
+        runs = runs_data.get("runs", [])
 
-    # Queue status
-    st.divider()
-    st.subheader("Queue")
-    queue = fetch_queue_status()
-    if queue:
-        st.metric("Queued Jobs", queue.get("queued_jobs", 0))
-        st.caption(f"ARQ: {'Connected' if queue.get('arq_connected') else 'Disconnected'}")
-    else:
-        st.caption("Queue status unavailable")
+        if runs:
+            # Group by (date, source) and sum listings_persisted
+            daily_source: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+            for run in runs:
+                raw_date = run.get("started_at") or run.get("created_at") or ""
+                if not raw_date:
+                    continue
+                try:
+                    day = datetime.fromisoformat(raw_date[:10]).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+                source = run.get("source", "unknown")
+                persisted = run.get("listings_persisted") or 0
+                daily_source[day][source] += persisted
 
-    st.divider()
-    if st.button("Refresh Status"):
-        fetch_ingestion_status.clear()
-        fetch_queue_status.clear()
-        st.rerun()
+            # Collect all dates and sources present in data
+            all_dates = sorted(daily_source.keys())[-14:]
+            all_sources: list[str] = sorted(
+                {s for day_sources in daily_source.values() for s in day_sources}
+            )
+
+            source_colors = {
+                "ebay": COLORS["primary"],
+                "leboncoin": COLORS["success"],
+                "vinted": COLORS["cta"],
+            }
+
+            traces: list[go.Bar] = []
+            for source in all_sources:
+                y_values = [daily_source[day].get(source, 0) for day in all_dates]
+                traces.append(
+                    go.Bar(
+                        name=source,
+                        x=all_dates,
+                        y=y_values,
+                        marker_color=source_colors.get(source, COLORS["muted"]),
+                    )
+                )
+
+            layout = {
+                **PLOTLY_LAYOUT,
+                "barmode": "stack",
+                "xaxis": {**PLOTLY_LAYOUT.get("xaxis", {}), "title": "Date"},
+                "yaxis": {**PLOTLY_LAYOUT.get("yaxis", {}), "title": "Listings Persisted"},
+                "height": 280,
+            }
+            fig = go.Figure(data=traces, layout=layout)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("No ingestion run data available to display.")
+
+    # ---------------------------------------------------------------------------
+    # Status column
+    # ---------------------------------------------------------------------------
+    with col_status:
+        st.subheader("Status")
+        status = fetch_ingestion_status()
+        if status:
+            kpi_row(
+                [
+                    {"label": "Total Products", "value": status.get("total_products", 0)},
+                    {"label": "Total Observations", "value": status.get("total_observations", 0)},
+                ]
+            )
+            kpi_row(
+                [
+                    {"label": "Active Listings", "value": status.get("active_listings", 0)},
+                    {"label": "Sold Items", "value": status.get("sold_observations", 0)},
+                ]
+            )
+
+            st.divider()
+            sc1, sc2, sc3 = st.columns(3)
+            sc1.metric("eBay", status.get("ebay_observations", 0))
+            sc2.metric("LBC", status.get("leboncoin_observations", 0))
+            sc3.metric("Vinted", status.get("vinted_observations", 0))
+        else:
+            st.error("Could not fetch status")
+
+        # Queue status
+        st.divider()
+        st.subheader("Queue")
+        queue = fetch_queue_status()
+        if queue:
+            st.metric("Queued Jobs", queue.get("queued_jobs", 0))
+            st.caption(f"ARQ: {'Connected' if queue.get('arq_connected') else 'Disconnected'}")
+        else:
+            st.caption("Queue status unavailable")
+
+        st.divider()
+        if st.button("Refresh Status"):
+            fetch_ingestion_status.clear()
+            fetch_queue_status.clear()
+            st.rerun()

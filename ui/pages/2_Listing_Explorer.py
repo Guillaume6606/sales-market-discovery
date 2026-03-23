@@ -3,18 +3,15 @@
 from datetime import datetime
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from ui.lib.api import api_get, fetch_products
+from ui.lib.components import paginator
+from ui.lib.theme import COLORS, PLOTLY_LAYOUT
 
-st.header("Listing Database Explorer")
-st.write("Browse and filter all ingested listings from the database")
-
-# ---------------------------------------------------------------------------
-# Session state for pagination
-# ---------------------------------------------------------------------------
-if "explorer_page" not in st.session_state:
-    st.session_state.explorer_page = 0
+st.markdown("# Listing Explorer")
+st.caption("Browse and filter all ingested listings")
 
 PAGE_SIZE = 100
 
@@ -61,16 +58,15 @@ products = fetch_products()
 product_options = ["All Products"] + [f"{p['name']} ({p['brand'] or 'No brand'})" for p in products]
 selected_product_filter = st.selectbox("Filter by Product", product_options, key="explorer_product")
 
-# Show all columns toggle
 show_all_columns = st.toggle("Show all columns", value=False, key="explorer_all_cols")
-
-# LLM validated filter
 llm_filter = st.toggle("LLM Validated Only", value=False, key="explorer_llm")
 
 # ---------------------------------------------------------------------------
-# Build query
+# Build query — offset driven by paginator session state
 # ---------------------------------------------------------------------------
-offset = st.session_state.explorer_page * PAGE_SIZE
+_current_page: int = st.session_state.get("explorer_page", 0)
+offset = _current_page * PAGE_SIZE
+
 params: dict = {"limit": PAGE_SIZE, "offset": offset}
 
 if filter_source != "All":
@@ -97,7 +93,7 @@ if selected_product_filter != "All Products":
 if llm_filter:
     params["llm_validated"] = True
 
-sort_map = {
+sort_map: dict[str, tuple[str, str]] = {
     "Recent First": ("observed_at", "desc"),
     "Oldest First": ("observed_at", "asc"),
     "Price (Low to High)": ("price", "asc"),
@@ -125,10 +121,8 @@ try:
         df = pd.DataFrame(listings)
 
         if not df.empty:
-            # LLM validation badge
             df["LLM"] = df["llm_validated"].apply(lambda x: "Validated" if x else "---")
 
-            # Default columns
             default_cols = [
                 "product_name",
                 "title",
@@ -169,7 +163,7 @@ try:
             )
             display_df["Status"] = display_df["Status"].apply(lambda x: "Sold" if x else "Active")
 
-            col_config = {
+            col_config: dict = {
                 "Title": st.column_config.TextColumn("Title", width="large"),
                 "Price": st.column_config.NumberColumn("Price", format="%.2f"),
                 "Source": st.column_config.TextColumn("Source", width="small"),
@@ -179,11 +173,9 @@ try:
                     "Link", width="small", display_text="View"
                 )
 
-            # Clickable table
             event = st.dataframe(
                 display_df,
                 use_container_width=True,
-                height=600,
                 hide_index=True,
                 column_config=col_config,
                 on_select="rerun",
@@ -191,7 +183,6 @@ try:
                 key="explorer_table",
             )
 
-            # Cross-page navigation to Discovery
             if event and event.selection and event.selection.rows:
                 sel_idx = event.selection.rows[0]
                 if sel_idx < len(df):
@@ -200,52 +191,95 @@ try:
                         st.session_state.selected_product_id = pid
                         st.switch_page("pages/1_Discovery.py")
 
-            # Pagination
-            total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-            current_page = st.session_state.explorer_page
-            start_item = offset + 1
-            end_item = min(offset + len(listings), total)
+            paginator("explorer_page", total, PAGE_SIZE)
 
-            p1, p2, p3 = st.columns([1, 2, 1])
-            with p1:
-                if st.button("Previous", disabled=current_page == 0, key="exp_prev"):
-                    st.session_state.explorer_page = current_page - 1
-                    st.rerun()
-            with p2:
-                st.caption(
-                    f"Page {current_page + 1} of {total_pages} ({start_item}-{end_item} of {total})"
-                )
-            with p3:
-                if st.button(
-                    "Next",
-                    disabled=current_page >= total_pages - 1,
-                    key="exp_next",
-                ):
-                    st.session_state.explorer_page = current_page + 1
-                    st.rerun()
-
-            # Export
             st.download_button(
                 label="Download as CSV",
                 data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"listings_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                file_name=(f"listings_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"),
                 mime="text/csv",
             )
 
-            # Statistics
+            # ---------------------------------------------------------------
+            # Price distribution chart
+            # ---------------------------------------------------------------
+            with st.expander("Price Distribution"):
+                prices = pd.to_numeric(df.get("price", pd.Series(dtype=float)), errors="coerce")
+                prices = prices.dropna()
+                if not prices.empty:
+                    fig_hist = go.Figure(
+                        go.Histogram(
+                            x=prices,
+                            nbinsx=30,
+                            marker_color=COLORS["primary"],
+                            opacity=0.85,
+                            hovertemplate="Price: %{x:.2f}<br>Count: %{y}<extra></extra>",
+                        )
+                    )
+                    hist_layout = dict(PLOTLY_LAYOUT)
+                    hist_layout["xaxis"] = dict(PLOTLY_LAYOUT.get("xaxis", {}), title="Price")
+                    hist_layout["yaxis"] = dict(PLOTLY_LAYOUT.get("yaxis", {}), title="Listings")
+                    hist_layout["title"] = f"Price Distribution — {len(prices)} listings"
+                    fig_hist.update_layout(**hist_layout)
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                else:
+                    st.info("No price data available for the current page.")
+
+            # ---------------------------------------------------------------
+            # Statistics + source donut
+            # ---------------------------------------------------------------
             st.divider()
             st.subheader("Statistics")
-            s1, s2, s3, s4 = st.columns(4)
-            with s1:
-                avg = df["price"].mean()
-                st.metric("Average Price", f"{avg:.2f}" if avg else "N/A")
-            with s2:
-                med = df["price"].median()
-                st.metric("Median Price", f"{med:.2f}" if med else "N/A")
-            with s3:
-                st.metric("Sold Items", int(df["is_sold"].sum()))
-            with s4:
-                st.metric("Active Listings", int((~df["is_sold"]).sum()))
+
+            stat_cols, donut_col = st.columns([3, 2])
+
+            with stat_cols:
+                s1, s2, s3, s4 = st.columns(4)
+                with s1:
+                    avg = df["price"].mean() if "price" in df.columns else None
+                    st.metric("Average Price", f"{avg:.2f}" if avg else "N/A")
+                with s2:
+                    med = df["price"].median() if "price" in df.columns else None
+                    st.metric("Median Price", f"{med:.2f}" if med else "N/A")
+                with s3:
+                    st.metric(
+                        "Sold Items",
+                        int(df["is_sold"].sum()) if "is_sold" in df.columns else 0,
+                    )
+                with s4:
+                    st.metric(
+                        "Active Listings",
+                        int((~df["is_sold"]).sum()) if "is_sold" in df.columns else 0,
+                    )
+
+            with donut_col:
+                if "source" in df.columns:
+                    source_counts = df["source"].value_counts()
+                    source_colors = [
+                        COLORS["primary"],
+                        COLORS["success"],
+                        COLORS["warning"],
+                        COLORS["danger"],
+                        COLORS["muted"],
+                    ]
+                    fig_donut = go.Figure(
+                        go.Pie(
+                            labels=source_counts.index.tolist(),
+                            values=source_counts.values.tolist(),
+                            hole=0.55,
+                            marker={"colors": source_colors[: len(source_counts)]},
+                            textinfo="label+percent",
+                            hovertemplate="%{label}: %{value}<extra></extra>",
+                            textfont={"color": COLORS["text"], "size": 11},
+                        )
+                    )
+                    donut_layout = dict(PLOTLY_LAYOUT)
+                    donut_layout["title"] = "By Source"
+                    donut_layout["height"] = 240
+                    donut_layout["margin"] = {"l": 10, "r": 10, "t": 40, "b": 10}
+                    donut_layout["showlegend"] = False
+                    fig_donut.update_layout(**donut_layout)
+                    st.plotly_chart(fig_donut, use_container_width=True)
 
 except Exception as exc:
     st.error(f"Failed to load listings: {exc}")
