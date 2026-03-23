@@ -35,7 +35,6 @@ USER root
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN uv sync --frozen --no-dev --no-install-project
 RUN uv run patchright install chromium
-RUN mkdir -p /home/pwuser/.cache/uv && chown -R pwuser:pwuser /home/pwuser
 
 # Copy application code
 COPY --chown=pwuser:pwuser ingestion ./ingestion
@@ -46,8 +45,16 @@ COPY --chown=pwuser:pwuser infra/docker/start-ingestion.sh /start-ingestion.sh
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TZ=Europe/Paris
 RUN chmod +x /start-ingestion.sh
 
+# Fix permissions: uv sync ran as root, so .venv is root-owned.
+# pwuser needs write access at runtime (uv run).
+RUN chown -R pwuser:pwuser /app/.venv
+
 USER pwuser
 
+# Redirect uv cache to a pwuser-writable location.
+# /home/pwuser/.cache is mounted as tmpfs (root-owned) by docker-compose,
+# so the Dockerfile chown has no effect there. Use /tmp instead.
+ENV UV_CACHE_DIR="/tmp/uv-cache"
 ENV PYTHONPATH="/app"
 
 CMD ["/start-ingestion.sh"]
