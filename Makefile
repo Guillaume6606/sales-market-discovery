@@ -64,6 +64,13 @@ test: ## Run unit tests
 test-v: ## Run unit tests (verbose)
 	uv run pytest tests/unit/ -v
 
+test-smoke: ## Run smoke tests inside Docker (real APIs + container health)
+	docker-compose run --rm \
+		-v $(PWD)/tests:/app/tests \
+		ingestion \
+		uv run --with pytest --with pytest-asyncio --with httpx \
+		pytest tests/smoke/ -v --tb=short -x
+
 # =============================================================================
 # Docker Compose
 # =============================================================================
