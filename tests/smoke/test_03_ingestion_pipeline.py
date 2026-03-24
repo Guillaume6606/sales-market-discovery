@@ -43,7 +43,11 @@ def test_full_ingestion_success(ingestion_result: dict[str, Any]) -> None:
     )
 
 
-def test_ingestion_run_tracking(db_session: Session, known_product_id: str) -> None:
+def test_ingestion_run_tracking(
+    db_session: Session,
+    known_product_id: str,
+    ingestion_result: dict[str, Any],  # noqa: ARG001
+) -> None:
     """A successful IngestionRun record must be present in the database.
 
     The record must have been created within the last 5 minutes (i.e. by the

@@ -85,21 +85,9 @@ def test_pmn_stored_in_db(
 ) -> None:
     """A MarketPriceNormal record for the known product must exist and be internally consistent.
 
-    PMN may already exist from a prior run — this test does not require a fresh computation.
-    If the record is missing, compute it first so the test is self-contained.
+    Relies on ``test_pmn_computation_runs`` having triggered computation already.
     """
-    try:
-        compute_pmn_for_product = _import_compute_pmn()
-    except ImportError:
-        pytest.skip("PMN compute function not found at expected path")
-
-    # Ensure a PMN record exists (idempotent — safe to call even if record already exists)
-    result: dict[str, Any] = compute_pmn_for_product(known_product_id, db_session)
-
-    if result.get("status") == "insufficient_data":
-        pytest.skip(f"Not enough observations to compute PMN for product {known_product_id}")
-
-    # Refresh session to pick up any writes performed by compute_pmn_for_product
+    # Refresh session to pick up writes from the prior test
     db_session.expire_all()
 
     record: MarketPriceNormal | None = (

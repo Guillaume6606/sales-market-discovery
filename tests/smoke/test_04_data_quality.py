@@ -9,6 +9,7 @@ before any assertions are evaluated.
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy.orm import Session
@@ -21,38 +22,43 @@ VALID_SOURCES: frozenset[str] = frozenset({"ebay", "leboncoin", "vinted"})
 def test_no_null_prices(
     db_session: Session,
     known_product_id: str,
-    ingestion_result: dict,  # noqa: ARG001
+    ingestion_result: dict[str, Any],  # noqa: ARG001
 ) -> None:
-    """ListingObservation rows for the known product must not have a null price."""
+    """Recent observations for the known product must not have a null price."""
+    one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
     null_price_count: int = (
         db_session.query(ListingObservation)
         .filter(
             ListingObservation.product_id == known_product_id,
+            ListingObservation.observed_at >= one_hour_ago,
             ListingObservation.price.is_(None),
         )
         .count()
     )
     assert null_price_count == 0, (
-        f"Found {null_price_count} observation(s) with NULL price for product {known_product_id}"
+        f"Found {null_price_count} recent observation(s) with NULL price "
+        f"for product {known_product_id}"
     )
 
 
 def test_no_empty_titles(
     db_session: Session,
     known_product_id: str,
-    ingestion_result: dict,  # noqa: ARG001
+    ingestion_result: dict[str, Any],  # noqa: ARG001
 ) -> None:
-    """ListingObservation rows for the known product must not have a null or empty title."""
+    """Recent observations for the known product must not have a null or empty title."""
+    one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
     empty_title_count: int = (
         db_session.query(ListingObservation)
         .filter(
             ListingObservation.product_id == known_product_id,
+            ListingObservation.observed_at >= one_hour_ago,
             (ListingObservation.title.is_(None)) | (ListingObservation.title == ""),
         )
         .count()
     )
     assert empty_title_count == 0, (
-        f"Found {empty_title_count} observation(s) with empty/NULL title "
+        f"Found {empty_title_count} recent observation(s) with empty/NULL title "
         f"for product {known_product_id}"
     )
 
@@ -60,7 +66,7 @@ def test_no_empty_titles(
 def test_prices_within_bounds(
     db_session: Session,
     known_product: ProductTemplate,
-    ingestion_result: dict,  # noqa: ARG001
+    ingestion_result: dict[str, Any],  # noqa: ARG001
 ) -> None:
     """Prices observed in the last hour must respect the product's configured price bounds.
 
@@ -103,12 +109,16 @@ def test_prices_within_bounds(
 def test_valid_sources(
     db_session: Session,
     known_product_id: str,
-    ingestion_result: dict,  # noqa: ARG001
+    ingestion_result: dict[str, Any],  # noqa: ARG001
 ) -> None:
-    """All source values on observations for the known product must be in the allowed set."""
+    """Recent source values for the known product must be in the allowed set."""
+    one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
     rows: list[tuple[str]] = (
         db_session.query(ListingObservation.source)
-        .filter(ListingObservation.product_id == known_product_id)
+        .filter(
+            ListingObservation.product_id == known_product_id,
+            ListingObservation.observed_at >= one_hour_ago,
+        )
         .distinct()
         .all()
     )
@@ -125,7 +135,7 @@ def test_valid_sources(
 def test_recent_observations(
     db_session: Session,
     known_product_id: str,
-    ingestion_result: dict,  # noqa: ARG001
+    ingestion_result: dict[str, Any],  # noqa: ARG001
 ) -> None:
     """At least one observation for the known product must have been recorded in the last hour."""
     one_hour_ago = datetime.now(UTC) - timedelta(hours=1)

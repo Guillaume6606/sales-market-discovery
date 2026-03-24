@@ -33,7 +33,7 @@ def _validate_listings(listings: list[Any], expected_source: str) -> None:
             f"Each element must be a Listing instance; got {type(item).__name__}"
         )
         assert item.title, f"Listing {item.listing_id!r} has an empty title"
-        assert item.price is None or item.price > 0, (
+        assert item.price is not None and item.price > 0, (
             f"Listing {item.listing_id!r} has invalid price {item.price!r}"
         )
         assert item.source == expected_source, (
