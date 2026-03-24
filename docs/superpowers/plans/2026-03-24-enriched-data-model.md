@@ -582,7 +582,7 @@ git commit -m "feat(settings): add enrichment pipeline and scoring configuration
 # tests/smoke/test_06_detail_fetch.py
 """Smoke tests: detail fetch per connector (real API calls)."""
 import pytest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class TestEbayDetailFetch:
@@ -636,7 +636,7 @@ class TestEbayDetailFetch:
 
         assert detail is not None
         assert detail.original_posted_at is not None
-        assert detail.original_posted_at < datetime.now(timezone.utc)
+        assert detail.original_posted_at < datetime.now(UTC)
 
     def test_fetch_detail_has_engagement_data(self, ebay_listings):
         from ingestion.connectors.ebay import fetch_detail
@@ -688,7 +688,7 @@ def fetch_detail(listing_id: str, obs_id: int) -> ListingDetail | None:
     }
 
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        resp = httpx.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
     except Exception:
@@ -728,7 +728,7 @@ def fetch_detail(listing_id: str, obs_id: int) -> ListingDetail | None:
     if registration_date:
         try:
             reg_dt = datetime.fromisoformat(registration_date.replace("Z", "+00:00"))
-            seller_account_age_days = (datetime.now(timezone.utc) - reg_dt).days
+            seller_account_age_days = (datetime.now(UTC) - reg_dt).days
         except (ValueError, AttributeError):
             pass
 
@@ -764,7 +764,7 @@ Also add necessary imports at the top of the file:
 
 ```python
 from libs.common.models import ListingDetail
-from datetime import timezone
+from datetime import UTC
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -796,11 +796,11 @@ class TestLeboncoinDetailFetch:
     """Test LeBonCoin detail fetch against live API."""
 
     @pytest.fixture
-    def lbc_listings(self):
+    async def lbc_listings(self):
         from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
 
         connector = LeBonCoinAPIConnector()
-        listings = connector.search_items(keyword="iPhone 15", limit=3)
+        listings = await connector.search_items(keyword="iPhone 15", limit=3)
         assert len(listings) > 0, "LeBonCoin returned no listings"
         return listings
 
@@ -845,7 +845,7 @@ class TestLeboncoinDetailFetch:
 
         assert detail is not None
         assert detail.original_posted_at is not None
-        assert detail.original_posted_at < datetime.now(timezone.utc)
+        assert detail.original_posted_at < datetime.now(UTC)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -966,57 +966,52 @@ class TestVintedDetailFetch:
     """Test Vinted detail fetch against live API."""
 
     @pytest.fixture
-    def vinted_listings(self):
-        import asyncio
+    async def vinted_listings(self):
         from ingestion.connectors.vinted_api import VintedAPIConnector
 
         connector = VintedAPIConnector()
-        listings = asyncio.run(connector.search_items("iPhone 15", limit=3))
+        listings = await connector.search_items("iPhone 15", limit=3)
         assert len(listings) > 0, "Vinted returned no listings"
         return listings
 
-    def test_fetch_detail_returns_listing_detail(self, vinted_listings):
-        import asyncio
+    async def test_fetch_detail_returns_listing_detail(self, vinted_listings):
         from ingestion.connectors.vinted_api import VintedAPIConnector
 
         connector = VintedAPIConnector()
         listing = vinted_listings[0]
-        detail = asyncio.run(connector.fetch_detail(listing.listing_id, obs_id=1))
+        detail = await connector.fetch_detail(listing.listing_id, obs_id=1)
 
         assert detail is not None
         assert detail.obs_id == 1
 
-    def test_fetch_detail_has_description(self, vinted_listings):
-        import asyncio
+    async def test_fetch_detail_has_description(self, vinted_listings):
         from ingestion.connectors.vinted_api import VintedAPIConnector
 
         connector = VintedAPIConnector()
         listing = vinted_listings[0]
-        detail = asyncio.run(connector.fetch_detail(listing.listing_id, obs_id=1))
+        detail = await connector.fetch_detail(listing.listing_id, obs_id=1)
 
         assert detail is not None
         assert detail.description is not None
         assert len(detail.description) > 0
 
-    def test_fetch_detail_has_photos(self, vinted_listings):
-        import asyncio
+    async def test_fetch_detail_has_photos(self, vinted_listings):
         from ingestion.connectors.vinted_api import VintedAPIConnector
 
         connector = VintedAPIConnector()
         listing = vinted_listings[0]
-        detail = asyncio.run(connector.fetch_detail(listing.listing_id, obs_id=1))
+        detail = await connector.fetch_detail(listing.listing_id, obs_id=1)
 
         assert detail is not None
         assert len(detail.photo_urls) > 0
         assert detail.photo_count == len(detail.photo_urls)
 
-    def test_fetch_detail_has_engagement_data(self, vinted_listings):
-        import asyncio
+    async def test_fetch_detail_has_engagement_data(self, vinted_listings):
         from ingestion.connectors.vinted_api import VintedAPIConnector
 
         connector = VintedAPIConnector()
         listing = vinted_listings[0]
-        detail = asyncio.run(connector.fetch_detail(listing.listing_id, obs_id=1))
+        detail = await connector.fetch_detail(listing.listing_id, obs_id=1)
 
         assert detail is not None
         # Vinted provides favourite count
@@ -1241,7 +1236,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy.dialects.postgresql import insert
@@ -1308,7 +1303,7 @@ def persist_listing_detail(
         "seller_transaction_count": detail.seller_transaction_count,
         "view_count": detail.view_count,
         "favorite_count": detail.favorite_count,
-        "fetched_at": datetime.now(timezone.utc),
+        "fetched_at": datetime.now(UTC),
     }
 
     stmt = insert(ListingDetailORM).values(**values)
@@ -1724,10 +1719,9 @@ git commit -m "feat(enrichment): add LLM prompt template and response parsing"
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-
-import google.generativeai as genai
+from typing import Any
 from sqlalchemy import and_, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -1737,6 +1731,7 @@ from ingestion.enrichment_prompt import (
     parse_enrichment_response,
 )
 from libs.common.db import SessionLocal
+from libs.common.llm_service import get_genai_client
 from libs.common.models import (
     ListingDetailORM,
     ListingEnrichment,
@@ -1751,7 +1746,7 @@ logger = logging.getLogger(__name__)
 
 def _get_unenriched_listings(db: Session, limit: int) -> list[tuple]:
     """Get listings with detail data but no enrichment, prioritized by price/PMN ratio."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.enrichment_re_enrichment_age_days)
+    cutoff = datetime.now(UTC) - timedelta(days=settings.enrichment_re_enrichment_age_days)
 
     # Fresh enrichment candidates: have detail, no enrichment
     fresh = (
@@ -1816,14 +1811,17 @@ def _enrich_single_listing(
     detail: ListingDetailORM,
     pmn_row: MarketPriceNormal | None,
     product: ProductTemplate,
-    model: genai.GenerativeModel,
+    client: Any,
 ) -> dict | None:
-    """Call LLM to enrich a single listing. Returns parsed result or None."""
+    """Call LLM to enrich a single listing. Returns parsed result or None.
+
+    Uses the google-genai SDK via get_genai_client() from libs/common/llm_service.py.
+    """
     pmn_value = float(pmn_row.pmn) if pmn_row and pmn_row.pmn else None
 
     days_since = None
     if detail.original_posted_at:
-        days_since = (datetime.now(timezone.utc) - detail.original_posted_at).days
+        days_since = (datetime.now(UTC) - detail.original_posted_at).days
 
     prompt = build_enrichment_prompt(
         title=obs.title or "",
@@ -1839,9 +1837,23 @@ def _enrich_single_listing(
     )
 
     try:
-        response = model.generate_content(prompt)
-        raw_text = response.text
-        tokens = response.usage_metadata.total_token_count if response.usage_metadata else None
+        # Build content parts (text + optional photos)
+        content_parts: list[Any] = [prompt]
+
+        response = client.models.generate_content(
+            model=settings.enrichment_llm_model,
+            contents=content_parts,
+            config={
+                "temperature": 0.1,
+                "response_mime_type": "application/json",
+            },
+        )
+        raw_text = response.text.strip()
+        # google-genai SDK does not expose token counts directly;
+        # estimate from response length or leave as None
+        tokens = None
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            tokens = getattr(response.usage_metadata, "total_token_count", None)
     except Exception:
         logger.exception("LLM call failed for obs_id=%s", obs.obs_id)
         return None
@@ -1870,7 +1882,7 @@ def _persist_enrichment(db: Session, obs_id: int, result: dict) -> bool:
         "seller_motivation_score": result.get("seller_motivation_score"),
         "llm_model": settings.enrichment_llm_model,
         "llm_raw_response": result.get("_raw_response"),
-        "enriched_at": datetime.now(timezone.utc),
+        "enriched_at": datetime.now(UTC),
         "cost_tokens": result.get("_tokens"),
     }
 
@@ -1896,8 +1908,10 @@ async def run_enrichment_batch(ctx: dict | None = None) -> dict:
         logger.info("Enrichment disabled, skipping batch")
         return {"status": "disabled"}
 
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel(settings.enrichment_llm_model)
+    client = get_genai_client()
+    if not client:
+        logger.warning("Gemini client not available, skipping enrichment")
+        return {"status": "no_client"}
 
     db = SessionLocal()
     try:
@@ -1909,7 +1923,7 @@ async def run_enrichment_batch(ctx: dict | None = None) -> dict:
         total_tokens = 0
 
         for obs, detail, pmn_row, product in candidates:
-            result = _enrich_single_listing(obs, detail, pmn_row, product, model)
+            result = _enrich_single_listing(obs, detail, pmn_row, product, client)
             if result:
                 if _persist_enrichment(db, obs.obs_id, result):
                     enriched += 1
@@ -2056,11 +2070,11 @@ class TestEnrichmentGoldenSet:
     def test_boolean_accuracy_above_90pct(self, golden_set):
         """has_original_box and has_receipt match ground truth >= 90%."""
         from ingestion.enrichment_prompt import build_enrichment_prompt, parse_enrichment_response
-        import google.generativeai as genai
+        from libs.common.llm_service import get_genai_client
         from libs.common.settings import settings
 
-        genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.enrichment_llm_model)
+        client = get_genai_client()
+        assert client is not None, "Gemini client not available"
 
         correct_box = 0
         correct_receipt = 0
@@ -2068,7 +2082,11 @@ class TestEnrichmentGoldenSet:
 
         for item in golden_set:
             prompt = build_enrichment_prompt(**item["input"])
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model=settings.enrichment_llm_model,
+                contents=[prompt],
+                config={"temperature": 0.1, "response_mime_type": "application/json"},
+            )
             result = parse_enrichment_response(response.text)
             if result is None:
                 continue
@@ -2086,17 +2104,21 @@ class TestEnrichmentGoldenSet:
     def test_urgency_score_direction(self, golden_set):
         """Known-urgent items should score > 0.7, non-urgent < 0.3."""
         from ingestion.enrichment_prompt import build_enrichment_prompt, parse_enrichment_response
-        import google.generativeai as genai
+        from libs.common.llm_service import get_genai_client
         from libs.common.settings import settings
 
-        genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.enrichment_llm_model)
+        client = get_genai_client()
+        assert client is not None, "Gemini client not available"
 
         for item in golden_set:
             if "urgency_expected" not in item["expected"]:
                 continue
             prompt = build_enrichment_prompt(**item["input"])
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model=settings.enrichment_llm_model,
+                contents=[prompt],
+                config={"temperature": 0.1, "response_mime_type": "application/json"},
+            )
             result = parse_enrichment_response(response.text)
             if result is None:
                 continue
@@ -2339,7 +2361,7 @@ Expected: FAIL — `ModuleNotFoundError`
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -2557,9 +2579,9 @@ def compute_all_scores(
     # Days on market
     dom = None
     if detail and detail.original_posted_at:
-        dom = (datetime.now(timezone.utc) - detail.original_posted_at).days
+        dom = (datetime.now(UTC) - detail.original_posted_at).days
     elif obs.observed_at:
-        dom = (datetime.now(timezone.utc) - obs.observed_at).days
+        dom = (datetime.now(UTC) - obs.observed_at).days
 
     # Risk-adjusted confidence
     seller_trust = 0.5  # default
@@ -2627,7 +2649,7 @@ def compute_all_scores(
         "estimated_sell_shipping_eur": sell_shipping,
         "days_on_market": dom,
         "score_breakdown": breakdown,
-        "scored_at": datetime.now(timezone.utc),
+        "scored_at": datetime.now(UTC),
     }
 ```
 
@@ -2781,7 +2803,7 @@ async def enrichment_health(db: Session = Depends(get_db)):
     from datetime import timedelta
     from libs.common.models import ListingDetailORM, ListingEnrichment, ListingScore
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     one_hour_ago = now - timedelta(hours=1)
     two_hours_ago = now - timedelta(hours=2)
 
