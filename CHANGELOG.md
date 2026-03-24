@@ -6,6 +6,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Multi-page Streamlit UI**: converted monolithic 1041-line `ui/app.py` into 6-page multi-page app with auto sidebar navigation
+- **Health & Observability page** (`5_Health.py`): system status banner, per-connector health cards, stale product warnings, ingestion run history with pagination, PMN computation status, aggregate PMN accuracy (worst/best products), connector audit quality
+- **Alert Management page** (`6_Alerts.py`): alert precision dashboard, alert rules CRUD, rule testing, alert events timeline with pagination, one-click feedback buttons (interested/not interested/purchased)
+- **Shared UI library** (`ui/lib/`): centralized API client with Docker/localhost auto-fallback, 20+ fetch functions covering all backend endpoints, display formatters (confidence badges, relative times, discount formatting)
+- PMN confidence column in Discovery table (ProgressColumn)
+- PMN accuracy section in product detail panel (hit rate, MAE, matched sales count)
+- Pagination on Discovery, Listing Explorer, and Alert Events pages
+- `st.dataframe` with `column_config` for Discovery table (replaces row-by-row rendering)
+- Loading spinners on all data fetches
+- Cross-page navigation from Listing Explorer to Discovery (select product → view in Discovery)
+- LLM validation badge and filter toggle in Listing Explorer
+- Smart column toggle in Listing Explorer (default 7 columns, toggle for all 12)
+- `words_to_avoid` and `enable_llm_validation` fields in Product Setup form
+- `st.number_input` for price fields in Product Setup (replaces text inputs)
+- Per-product ingestion history expander in Product Setup
+- Job ID display and status check in Import Data page
+- Queue status section in Import Data page
+
+### Changed
+- **UI architecture**: `ui/app.py` stripped to ~24-line entry point; all page logic moved to `ui/pages/` directory
+- **API URL resolution**: auto-probes Docker hostname then falls back to localhost, works in both Docker and local dev without manual config
+- **Discovery filters**: "Delta vs PMN" slider (negative %) replaced with "Minimum Discount %" (positive = better deal)
+- **Listing Explorer `is_sold`**: now sends Python booleans instead of string `"false"`/`"true"`
+
+### Removed
+- Monolithic tab-based navigation in `ui/app.py`
+- Row-by-row rendering loop in Discovery tab
+
+---
+
 - URL slug title fallback for Vinted connector — extracts title from `/items/{id}-{slug}` when CSS selectors fail
 - Per-connector field exclusions in audit (`CONNECTOR_FIELD_EXCLUSIONS`) for known API limitations (e.g. LeBonCoin condition)
 - Verifiable listing count in audit reports to distinguish auditable vs unverifiable listings
