@@ -22,16 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Switch to pwuser for all subsequent operations
-USER pwuser
-
 # Set work directory
 WORKDIR /app
 
-# Copy and install Python dependencies
+# Copy and install Python dependencies (--chown ensures pwuser ownership)
 COPY --chown=pwuser:pwuser pyproject.toml uv.lock ./
-
-USER root
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN uv sync --frozen --no-dev --no-install-project
 RUN uv run patchright install chromium
