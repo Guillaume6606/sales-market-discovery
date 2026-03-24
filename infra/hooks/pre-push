@@ -1,0 +1,28 @@
+#!/bin/bash
+# Pre-push hook: run smoke tests inside Docker before pushing.
+# Install: cp infra/hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+
+set -e
+
+echo "Running smoke tests before push..."
+
+# Detect docker compose command (v2 "docker compose" or v1 "docker-compose")
+if docker compose version >/dev/null 2>&1; then
+    DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    DC="docker-compose"
+else
+    echo "WARNING: Neither 'docker compose' nor 'docker-compose' found. Skipping smoke tests."
+    exit 0
+fi
+
+# Check if ingestion container is running
+if ! $DC ps ingestion 2>/dev/null | grep -q "Up\|running"; then
+    echo "WARNING: Ingestion container is not running. Skipping smoke tests."
+    echo "  Run 'make up' to start services, then 'make test-smoke' manually."
+    exit 0
+fi
+
+make test-smoke
+
+echo "Smoke tests passed."
