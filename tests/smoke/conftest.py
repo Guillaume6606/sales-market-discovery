@@ -62,3 +62,15 @@ def ingestion_result(known_product_id: str) -> dict[str, Any]:
             },
         )
     )
+
+
+@pytest.fixture(scope="session")
+def pmn_result(
+    db_session: Session,
+    known_product_id: str,
+    ingestion_result: dict[str, Any],  # noqa: ARG001
+) -> dict[str, Any]:
+    """Compute PMN once for the session, shared across PMN tests."""
+    from ingestion.computation import compute_pmn_for_product
+
+    return compute_pmn_for_product(known_product_id, db_session)

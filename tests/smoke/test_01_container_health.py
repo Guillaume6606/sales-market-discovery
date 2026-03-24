@@ -4,6 +4,7 @@ Verifies that every infrastructure dependency reachable from the test runner is
 up, accepting connections, and at the expected schema revision.
 """
 
+import os
 import subprocess
 
 import httpx
@@ -43,10 +44,13 @@ def test_alembic_migrations_current() -> None:
     """Alembic migrations must be up to date (no pending heads).
 
     Runs ``alembic check`` which exits 0 when the database is at the latest
-    revision and non-zero when migrations are pending.  If the installed
-    version of Alembic does not support ``check``, the test is skipped with an
-    informative message.
+    revision and non-zero when migrations are pending.  Skips if alembic.ini
+    is not present in the container or if the Alembic version does not
+    support the ``check`` subcommand.
     """
+    if not os.path.exists("alembic.ini"):
+        pytest.skip("alembic.ini not found in container")
+
     result = subprocess.run(
         ["uv", "run", "alembic", "check"],
         capture_output=True,
@@ -55,8 +59,6 @@ def test_alembic_migrations_current() -> None:
     output = (result.stdout or "") + (result.stderr or "")
     if "No such command" in output:
         pytest.skip("alembic check not available in this Alembic version")
-    if "script_location" in output or "No such file" in output:
-        pytest.skip("alembic.ini not available in this container")
     assert result.returncode == 0, (
         f"Alembic migrations are not up to date.\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )

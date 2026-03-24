@@ -13,7 +13,7 @@ import pytest
 
 from ingestion.connectors.ebay import fetch_ebay_listings
 from ingestion.connectors.leboncoin_api import fetch_leboncoin_api_listings
-from ingestion.connectors.vinted_api import fetch_vinted_api_listings
+from ingestion.connectors.vinted import fetch_vinted_listings
 from libs.common.models import Listing, ProductTemplate
 
 
@@ -59,5 +59,5 @@ async def test_leboncoin_connector(known_product: ProductTemplate) -> None:
 @pytest.mark.asyncio
 async def test_vinted_connector(known_product: ProductTemplate) -> None:
     """Vinted connector must return a list; each element must satisfy the Listing contract."""
-    listings = await fetch_vinted_api_listings(known_product.search_query, limit=5)
+    listings = await fetch_vinted_listings(known_product.search_query, limit=5)
     _validate_listings(listings, "vinted")
