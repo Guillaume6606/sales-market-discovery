@@ -95,6 +95,71 @@ def empty_state(
         st.page_link(action_page, label=action_label, icon=":material/arrow_forward:")
 
 
+def photo_gallery(
+    urls: list[str] | None,
+    *,
+    max_cols: int = 3,
+    max_photos: int = 6,
+) -> None:
+    """Render a grid of listing photos.
+
+    Shows images in a column grid layout. Falls back to info message if no photos.
+
+    Args:
+        urls: List of image URLs to display.
+        max_cols: Number of columns per row.
+        max_photos: Maximum number of photos to show.
+    """
+    if not urls:
+        st.info("No photos available for this listing.")
+        return
+
+    display_urls = urls[:max_photos]
+    for row_start in range(0, len(display_urls), max_cols):
+        row_urls = display_urls[row_start : row_start + max_cols]
+        cols = st.columns(max_cols)
+        for col, url in zip(cols, row_urls, strict=False):
+            with col:
+                st.image(url, use_container_width=True)
+
+    if len(urls) > max_photos:
+        st.caption(f"Showing {max_photos} of {len(urls)} photos")
+
+
+def listing_header(
+    obs: dict,
+    score: dict | None = None,
+) -> None:
+    """Render the listing detail header with title, price, badges, and action buttons.
+
+    Args:
+        obs: Listing observation dict with keys: title, price, source, is_sold,
+             condition, url.
+        score: Optional scoring dict (reserved for future badge display).
+    """
+    # Title row
+    st.markdown(f"### {obs.get('title', 'Untitled Listing')}")
+
+    # Badges row
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        price = obs.get("price")
+        st.metric("Price", f"€{price:.2f}" if price else "N/A")
+    with col2:
+        st.metric("Source", obs.get("source", "---").title())
+    with col3:
+        status = "Sold" if obs.get("is_sold") else "Active"
+        st.metric("Status", status)
+    with col4:
+        condition = obs.get("condition") or "---"
+        st.metric("Condition", condition[:20])
+
+    # Action buttons
+    url = obs.get("url")
+    if url:
+        st.link_button("Open on Marketplace", url, use_container_width=False)
+
+
 def confirm_action(
     key: str,
     label: str,

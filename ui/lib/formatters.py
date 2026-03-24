@@ -68,6 +68,29 @@ def confidence_badge(confidence: float | None) -> str:
         return f'<span class="badge badge-red">Low ({pct})</span>'
 
 
+def format_spread(spread_eur: float | None) -> str:
+    """Format arbitrage spread as colored string."""
+    if spread_eur is None:
+        return "---"
+    if spread_eur >= 0:
+        return f"+€{spread_eur:.2f}"
+    return f"-€{abs(spread_eur):.2f}"
+
+
+def format_roi(roi_pct: float | None) -> str:
+    """Format ROI percentage."""
+    if roi_pct is None:
+        return "---"
+    return f"{roi_pct:.1f}%"
+
+
+def format_score_badge(value: float | None, max_val: float = 100.0) -> str:
+    """Format a 0-max_val score as a display string."""
+    if value is None:
+        return "---"
+    return f"{value:.0f}/{max_val:.0f}"
+
+
 def relative_time(iso_str: str | None) -> str:
     if not iso_str:
         return "Never"
