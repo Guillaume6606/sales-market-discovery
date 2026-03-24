@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import (
     ARRAY,
     JSON,
@@ -86,6 +86,9 @@ class ListingObservation(Base):
     screenshot_path = Column(Text)
 
     product = relationship("ProductTemplate", back_populates="observations")
+    detail = relationship("ListingDetailORM", back_populates="observation", uselist=False)
+    enrichment = relationship("ListingEnrichment", back_populates="observation", uselist=False)
+    score = relationship("ListingScore", back_populates="observation", uselist=False)
 
 
 class ProductDailyMetrics(Base):
@@ -241,6 +244,87 @@ class ConnectorAudit(Base):
     ingestion_run = relationship("IngestionRun")
 
 
+class ListingDetailORM(Base):
+    __tablename__ = "listing_detail"
+
+    detail_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    obs_id = Column(
+        BigInteger,
+        ForeignKey("listing_observation.obs_id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    description = Column(Text)
+    description_length = Column(Integer)
+    photo_urls = Column(ARRAY(Text))
+    photo_count = Column(Integer)
+    local_pickup_only = Column(Boolean)
+    negotiation_enabled = Column(Boolean)
+    original_posted_at = Column(TIMESTAMP(timezone=True))
+    seller_account_age_days = Column(Integer)
+    seller_transaction_count = Column(Integer)
+    view_count = Column(Integer)
+    favorite_count = Column(Integer)
+    fetched_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    observation = relationship("ListingObservation", back_populates="detail")
+
+
+class ListingEnrichment(Base):
+    __tablename__ = "listing_enrichment"
+
+    enrichment_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    obs_id = Column(
+        BigInteger,
+        ForeignKey("listing_observation.obs_id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    urgency_score = Column(Numeric(3, 2))
+    urgency_keywords = Column(ARRAY(Text))
+    has_original_box = Column(Boolean)
+    has_receipt_or_invoice = Column(Boolean)
+    accessories_included = Column(ARRAY(Text))
+    accessories_completeness = Column(Numeric(3, 2))
+    photo_quality_score = Column(Numeric(3, 2))
+    listing_quality_score = Column(Numeric(3, 2))
+    condition_confidence = Column(Numeric(3, 2))
+    fakeness_probability = Column(Numeric(3, 2))
+    seller_motivation_score = Column(Numeric(3, 2))
+    llm_model = Column(Text)
+    llm_raw_response = Column(JSONB)
+    enriched_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    cost_tokens = Column(Integer)
+
+    observation = relationship("ListingObservation", back_populates="enrichment")
+
+
+class ListingScore(Base):
+    __tablename__ = "listing_score"
+
+    score_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    obs_id = Column(
+        BigInteger,
+        ForeignKey("listing_observation.obs_id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    product_id = Column(UUID, ForeignKey("product_template.product_id"), nullable=False)
+    arbitrage_spread_eur = Column(Numeric)
+    net_roi_pct = Column(Numeric)
+    risk_adjusted_confidence = Column(Numeric(5, 2))
+    acquisition_cost_eur = Column(Numeric)
+    estimated_sale_price_eur = Column(Numeric)
+    estimated_sell_fees_eur = Column(Numeric)
+    estimated_sell_shipping_eur = Column(Numeric)
+    days_on_market = Column(Integer)
+    score_breakdown = Column(JSONB)
+    scored_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    observation = relationship("ListingObservation", back_populates="score")
+    product = relationship("ProductTemplate")
+
+
 Category.products = relationship("ProductTemplate", back_populates="category")
 ProductTemplate.observations = relationship("ListingObservation", back_populates="product")
 ProductTemplate.daily_metrics = relationship("ProductDailyMetrics", back_populates="product")
@@ -266,3 +350,25 @@ class Listing(BaseModel):
     brand: str | None = None
     size: str | None = None
     color: str | None = None
+
+
+class ListingDetail(BaseModel):
+    """Detail data returned by connector fetch_detail() calls."""
+
+    obs_id: int
+    description: str | None = None
+    photo_urls: list[str] = []
+    photo_count: int | None = None
+    local_pickup_only: bool | None = None
+    negotiation_enabled: bool | None = None
+    original_posted_at: datetime | None = None
+    seller_account_age_days: int | None = None
+    seller_transaction_count: int | None = None
+    view_count: int | None = None
+    favorite_count: int | None = None
+
+    @model_validator(mode="after")
+    def set_photo_count(self) -> "ListingDetail":
+        if self.photo_count is None and self.photo_urls:
+            self.photo_count = len(self.photo_urls)
+        return self

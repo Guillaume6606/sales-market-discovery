@@ -7,11 +7,13 @@ from sqlalchemy import and_, update
 from sqlalchemy.orm.session import make_transient
 
 from ingestion.alert_engine import trigger_alerts
+from ingestion.composite_scoring import run_scoring_batch
 from ingestion.computation import (
     compute_all_product_metrics,
     compute_liquidity_score,
     compute_pmn_for_product,
 )
+from ingestion.enrichment import run_enrichment_batch
 from ingestion.ingestion import (
     ingest_ebay_listings,
     ingest_ebay_sold,
@@ -766,6 +768,10 @@ class WorkerSettings:
         # Audit tasks
         audit_ingestion_sample,
         run_on_demand_audit,
+        # Enrichment tasks
+        run_enrichment_batch,
+        # Scoring tasks
+        run_scoring_batch,
     ]
     cron_jobs = [
         cron(ping, minute=0),  # Run ping every hour
@@ -779,4 +785,6 @@ class WorkerSettings:
             hour={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22},
             minute=30,
         ),  # Check system health every 2 hours
+        cron(run_enrichment_batch, hour=None, minute=30),  # Enrich listings every hour at :30
+        cron(run_scoring_batch, hour=None, minute=45),  # Score listings every hour at :45
     ]

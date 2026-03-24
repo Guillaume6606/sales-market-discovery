@@ -4,6 +4,7 @@ from ingestion.connectors.ebay import parse_ebay_response
 from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
 from ingestion.connectors.vinted import VintedConnector
 from ingestion.connectors.vinted_api import VintedAPIConnector
+from libs.common.condition import normalize_condition
 
 # =========================================================================== #
 # eBay tests
@@ -200,11 +201,11 @@ class TestLeBonCoinAPIParsing:
         assert "75001" in listing.location
 
     def test_condition_normalization(self):
-        assert self.connector.normalize_condition_leboncoin("Neuf") == "new"
-        assert self.connector.normalize_condition_leboncoin("Très bon état") == "like_new"
-        assert self.connector.normalize_condition_leboncoin("Bon état") == "good"
-        assert self.connector.normalize_condition_leboncoin("Satisfaisant") == "fair"
-        assert self.connector.normalize_condition_leboncoin("") is None
+        assert normalize_condition("Neuf") == "new"
+        assert normalize_condition("Très bon état") == "like_new"
+        assert normalize_condition("Bon état") == "good"
+        assert normalize_condition("Satisfaisant") == "fair"
+        assert normalize_condition("") is None
 
     def test_missing_listing_id_returns_none(self):
         ad = {
@@ -248,12 +249,12 @@ class TestVintedParsing:
         assert listing_id == ""
 
     def test_condition_normalization(self):
-        assert self.connector.normalize_condition_vinted("neuf") == "new"
-        assert self.connector.normalize_condition_vinted("Neuf avec étiquette") == "new"
-        assert self.connector.normalize_condition_vinted("très bon état") == "like_new"
-        assert self.connector.normalize_condition_vinted("bon état") == "good"
-        assert self.connector.normalize_condition_vinted("satisfaisant") == "fair"
-        assert self.connector.normalize_condition_vinted("") is None
+        assert normalize_condition("neuf") == "new"
+        assert normalize_condition("Neuf avec étiquette") == "new"
+        assert normalize_condition("très bon état") == "like_new"
+        assert normalize_condition("bon état") == "good"
+        assert normalize_condition("satisfaisant") == "fair"
+        assert normalize_condition("") is None
 
     def test_validate_item_data_valid(self):
         item = {
@@ -370,11 +371,11 @@ class TestVintedAPIConnector:
         assert listing.is_sold is True
 
     def test_condition_normalization(self) -> None:
-        assert self.connector.normalize_condition_vinted("neuf") == "new"
-        assert self.connector.normalize_condition_vinted("très bon état") == "like_new"
-        assert self.connector.normalize_condition_vinted("bon état") == "good"
-        assert self.connector.normalize_condition_vinted("satisfaisant") == "fair"
-        assert self.connector.normalize_condition_vinted("") is None
+        assert normalize_condition("neuf") == "new"
+        assert normalize_condition("très bon état") == "like_new"
+        assert normalize_condition("bon état") == "good"
+        assert normalize_condition("satisfaisant") == "fair"
+        assert normalize_condition("") is None
 
     def test_map_item_to_listing_price_as_int(self) -> None:
         item_data = {"id": 100, "title": "Int Price Item", "price": 30}

@@ -5,14 +5,18 @@ Vinted connector using advanced web scraping
 import json
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingSession, ScrapingUtils, scraping_config
+
+if TYPE_CHECKING:
+    from libs.common.models import ListingDetail
 
 
 class VintedConnector:
@@ -35,40 +39,6 @@ class VintedConnector:
             await asyncio.sleep(human_delay(2.0, 5.0))
         except Exception as exc:
             logger.warning("Vinted warmup failed (non-fatal): {}", exc)
-
-    def normalize_condition_vinted(self, condition_raw: str) -> str | None:
-        """Normalize Vinted condition to standard categories"""
-        if not condition_raw:
-            return None
-
-        condition_lower = condition_raw.lower()
-
-        # Vinted condition mappings
-        if any(
-            word in condition_lower
-            for word in [
-                "Neuf avec étiquette",
-                "Neuf sans étiquette",
-                "neuf",
-                "new",
-                "nouveau",
-                "brand new",
-            ]
-        ):
-            return "new"
-        elif any(
-            word in condition_lower
-            for word in ["très bon état", "very good", "excellent", "comme neuf", "like new"]
-        ):
-            return "like_new"
-        elif any(word in condition_lower for word in ["bon état", "good", "bien", "used"]):
-            return "good"
-        elif any(
-            word in condition_lower for word in ["satisfaisant", "fair", "acceptable", "worn"]
-        ):
-            return "fair"
-
-        return None
 
     async def search_items(
         self, keyword: str, category: str = "", limit: int = 50
@@ -117,9 +87,7 @@ class VintedConnector:
                         price=item_dict.get("price"),
                         currency=item_dict.get("currency", "EUR"),
                         condition_raw=item_dict.get("condition"),
-                        condition_norm=self.normalize_condition_vinted(
-                            item_dict.get("condition", "")
-                        ),
+                        condition_norm=normalize_condition(item_dict.get("condition", "")),
                         location=item_dict.get("location"),
                         seller_rating=None,  # Vinted doesn't show public ratings
                         shipping_cost=item_dict.get("shipping_cost"),
@@ -140,6 +108,22 @@ class VintedConnector:
             logger.error(f"Error searching Vinted for {keyword}: {e}")
 
         return items
+
+    async def fetch_detail(self, listing_id: str, obs_id: int) -> "ListingDetail | None":
+        """Delegate detail fetching to the API connector.
+
+        Args:
+            listing_id: The Vinted item ID.
+            obs_id: The observation ID to associate with the detail record.
+
+        Returns:
+            A populated ``ListingDetail`` or ``None`` if the fetch fails.
+        """
+        from ingestion.connectors.vinted_api import VintedAPIConnector
+        from libs.common.models import ListingDetail  # noqa: F401 — ensure type is resolvable
+
+        api = VintedAPIConnector()
+        return await api.fetch_detail(listing_id, obs_id)
 
     async def get_item_details(self, item_url: str) -> Listing | None:
         """
@@ -168,9 +152,7 @@ class VintedConnector:
                         price=item_details.get("price"),
                         currency=item_details.get("currency", "EUR"),
                         condition_raw=item_details.get("condition"),
-                        condition_norm=self.normalize_condition_vinted(
-                            item_details.get("condition", "")
-                        ),
+                        condition_norm=normalize_condition(item_details.get("condition", "")),
                         location=item_details.get("location"),
                         seller_rating=None,
                         shipping_cost=item_details.get("shipping_cost"),

@@ -5,14 +5,18 @@ LeBonCoin connector using advanced web scraping
 import json
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingSession, ScrapingUtils, scraping_config
+
+if TYPE_CHECKING:
+    from libs.common.models import ListingDetail
 
 
 class LeBonCoinConnector:
@@ -22,28 +26,6 @@ class LeBonCoinConnector:
 
     def __init__(self):
         self.scraping_utils = ScrapingUtils()
-
-    def normalize_condition_leboncoin(self, condition_raw: str) -> str | None:
-        """Normalize LeBonCoin condition to standard categories"""
-        if not condition_raw:
-            return None
-
-        condition_lower = condition_raw.lower()
-
-        # LeBonCoin condition mappings (French)
-        if any(word in condition_lower for word in ["neuf", "new", "nouveau"]):
-            return "new"
-        elif any(
-            word in condition_lower
-            for word in ["Très bon état", "comme neuf", "like new", "excellent"]
-        ):
-            return "like_new"
-        elif any(word in condition_lower for word in ["bon état", "good", "bien"]):
-            return "good"
-        elif any(word in condition_lower for word in ["satisfaisant", "fair", "acceptable"]):
-            return "fair"
-
-        return None
 
     async def search_items(
         self, keyword: str, category: str = "", limit: int = 50
@@ -94,9 +76,7 @@ class LeBonCoinConnector:
                         price=item_dict.get("price"),
                         currency=item_dict.get("currency", "EUR"),
                         condition_raw=item_dict.get("condition"),
-                        condition_norm=self.normalize_condition_leboncoin(
-                            item_dict.get("condition", "")
-                        ),
+                        condition_norm=normalize_condition(item_dict.get("condition", "")),
                         location=item_dict.get("location"),
                         seller_rating=1.0 if item_dict.get("is_pro") else 0.0,
                         shipping_cost=item_dict.get("shipping_cost"),
@@ -114,6 +94,22 @@ class LeBonCoinConnector:
             logger.error(f"Error searching LeBonCoin for {keyword}: {e}")
 
         return items
+
+    def fetch_detail(self, listing_id: str, obs_id: int) -> "ListingDetail | None":
+        """Delegate detail fetching to the API connector.
+
+        Args:
+            listing_id: The LeBonCoin ad ID.
+            obs_id: The observation ID to associate with the detail record.
+
+        Returns:
+            A populated ``ListingDetail`` or ``None`` if the fetch fails.
+        """
+        from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
+        from libs.common.models import ListingDetail  # noqa: F401 — ensure type is resolvable
+
+        api = LeBonCoinAPIConnector()
+        return api.fetch_detail(listing_id, obs_id)
 
     async def get_item_details(self, item_url: str) -> dict[str, Any] | None:
         """

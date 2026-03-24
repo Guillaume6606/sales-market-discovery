@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingUtils
+
+if TYPE_CHECKING:
+    from libs.common.models import ListingDetail
 
 
 class VintedAPIConnector:
@@ -69,6 +73,94 @@ class VintedAPIConnector:
 
         return results
 
+    async def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | None:
+        """Fetch detailed data for a single Vinted listing.
+
+        Uses ``AsyncVintedScraper.item()`` with cookie-based authentication.
+        Vinted items are always shipped (``local_pickup_only=False``) and
+        offers are always enabled (``negotiation_enabled=True``).
+
+        Args:
+            listing_id: The Vinted item ID (numeric string).
+            obs_id: The observation ID to associate with the detail record.
+
+        Returns:
+            A populated ``ListingDetail`` or ``None`` if the fetch fails.
+
+        Note:
+            The ``/api/v2/items/:id`` endpoint may return 403 after a few
+            requests due to DataDome rate limiting.  Failures are logged and
+            ``None`` is returned rather than raising.
+        """
+        from vinted_scraper import AsyncVintedScraper
+
+        from libs.common.models import ListingDetail
+
+        try:
+            scraper = await AsyncVintedScraper.create(self.BASE_URL)
+            async with scraper:
+                item = await scraper.item(listing_id)
+        except Exception:
+            logger.exception("Vinted item fetch failed for %s", listing_id)
+            return None
+
+        if item is None:
+            return None
+
+        description: str | None = item.description or None
+
+        # Collect photo URLs from the photos list (prefer full_size_url, fall back to url)
+        photo_urls: list[str] = []
+        for photo in item.photos or []:
+            url = photo.full_size_url or photo.url
+            if url:
+                photo_urls.append(url)
+
+        # original_posted_at — not directly on VintedItem; fall back to json_data
+        original_posted_at: datetime | None = None
+        raw_created = (item.json_data or {}).get("created_at_ts") or (item.json_data or {}).get(
+            "created_at"
+        )
+        if raw_created:
+            try:
+                if isinstance(raw_created, (int, float)):
+                    original_posted_at = datetime.fromtimestamp(raw_created, tz=UTC)
+                else:
+                    original_posted_at = datetime.fromisoformat(
+                        str(raw_created).replace("Z", "+00:00")
+                    )
+            except (ValueError, TypeError, OSError):
+                pass
+
+        # Seller info from VintedUser
+        seller_account_age_days: int | None = None
+        seller_transaction_count: int | None = None
+        user = item.user
+        if user is not None:
+            # last_loged_on_ts / last_logged_on_ts available but not registration date
+            # Use item_count as a proxy for transaction count if available
+            if user.item_count is not None:
+                seller_transaction_count = int(user.item_count)
+            # feedback_count is a closer proxy for completed transactions
+            if user.feedback_count is not None:
+                seller_transaction_count = int(user.feedback_count)
+
+        favourite_count = item.favourite_count
+        view_count = item.view_count
+
+        return ListingDetail(
+            obs_id=obs_id,
+            description=description,
+            photo_urls=photo_urls,
+            original_posted_at=original_posted_at,
+            seller_account_age_days=seller_account_age_days,
+            seller_transaction_count=seller_transaction_count,
+            view_count=view_count,
+            favorite_count=favourite_count,
+            local_pickup_only=False,  # Vinted is always shipped
+            negotiation_enabled=True,  # Vinted always allows offers
+        )
+
     def _map_item_to_listing(self, data: dict[str, Any]) -> Listing | None:
         """Map a raw Vinted API item dict to a project ``Listing``.
 
@@ -99,7 +191,7 @@ class VintedAPIConnector:
             price=price_value,
             currency=currency,
             condition_raw=condition_raw,
-            condition_norm=self.normalize_condition_vinted(condition_raw or ""),
+            condition_norm=normalize_condition(condition_raw or ""),
             location=location,
             seller_rating=None,
             shipping_cost=None,
@@ -148,42 +240,6 @@ class VintedAPIConnector:
         if raw_url.startswith("http"):
             return raw_url
         return f"{self.BASE_URL}{raw_url}"
-
-    @staticmethod
-    def normalize_condition_vinted(condition_raw: str) -> str | None:
-        """Normalize Vinted condition strings to standard categories.
-
-        Mirrors ``VintedConnector.normalize_condition_vinted`` so both code-paths
-        produce identical condition_norm values.
-        """
-        if not condition_raw:
-            return None
-
-        condition_lower = condition_raw.lower()
-
-        if any(
-            word in condition_lower
-            for word in [
-                "neuf avec étiquette",
-                "neuf sans étiquette",
-                "neuf",
-                "new",
-                "nouveau",
-                "brand new",
-            ]
-        ):
-            return "new"
-        if any(
-            word in condition_lower
-            for word in ["très bon état", "very good", "excellent", "comme neuf", "like new"]
-        ):
-            return "like_new"
-        if any(word in condition_lower for word in ["bon état", "good", "bien", "used"]):
-            return "good"
-        if any(word in condition_lower for word in ["satisfaisant", "fair", "acceptable", "worn"]):
-            return "fair"
-
-        return None
 
 
 async def fetch_vinted_api_listings(keyword: str, limit: int = 50) -> list[Listing]:
