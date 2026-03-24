@@ -18,7 +18,12 @@ import json
 
 import pytest
 
-from ingestion.enrichment_prompt import ALL_REQUIRED_KEYS, parse_enrichment_response
+enrichment_prompt = pytest.importorskip(
+    "ingestion.enrichment_prompt",
+    reason="ingestion package not installed (running in Docker with mounted tests only)",
+)
+parse_enrichment_response = enrichment_prompt.parse_enrichment_response
+ALL_REQUIRED_KEYS = enrichment_prompt.ALL_REQUIRED_KEYS
 
 # ---------------------------------------------------------------------------
 # Helpers
