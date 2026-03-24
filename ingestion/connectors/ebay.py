@@ -4,6 +4,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.settings import settings
 
@@ -121,26 +122,6 @@ async def fetch_ebay_listings(keyword: str, limit: int = 50) -> list[Listing]:
     except Exception as e:
         logger.error(f"Unexpected error fetching eBay listings for '{keyword}': {e}", exc_info=True)
         return []
-
-
-def normalize_condition(condition_raw: str) -> str | None:
-    """Normalize eBay condition to standard categories"""
-    if not condition_raw:
-        return None
-
-    condition_lower = condition_raw.lower()
-
-    # eBay condition mappings — check more specific strings before generic ones
-    if any(word in condition_lower for word in ["like new", "excellent", "mint"]):
-        return "like_new"
-    elif any(word in condition_lower for word in ["brand new", "new", "nib"]):
-        return "new"
-    elif any(word in condition_lower for word in ["very good", "good"]):
-        return "good"
-    elif any(word in condition_lower for word in ["acceptable", "fair", "poor"]):
-        return "fair"
-
-    return None
 
 
 def _safe_extract(data: Any, default: Any = None) -> Any:

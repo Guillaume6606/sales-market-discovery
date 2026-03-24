@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 from loguru import logger
 
+from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingSession, ScrapingUtils, scraping_config
 
@@ -22,28 +23,6 @@ class LeBonCoinConnector:
 
     def __init__(self):
         self.scraping_utils = ScrapingUtils()
-
-    def normalize_condition_leboncoin(self, condition_raw: str) -> str | None:
-        """Normalize LeBonCoin condition to standard categories"""
-        if not condition_raw:
-            return None
-
-        condition_lower = condition_raw.lower()
-
-        # LeBonCoin condition mappings (French)
-        if any(word in condition_lower for word in ["neuf", "new", "nouveau"]):
-            return "new"
-        elif any(
-            word in condition_lower
-            for word in ["Très bon état", "comme neuf", "like new", "excellent"]
-        ):
-            return "like_new"
-        elif any(word in condition_lower for word in ["bon état", "good", "bien"]):
-            return "good"
-        elif any(word in condition_lower for word in ["satisfaisant", "fair", "acceptable"]):
-            return "fair"
-
-        return None
 
     async def search_items(
         self, keyword: str, category: str = "", limit: int = 50
@@ -94,9 +73,7 @@ class LeBonCoinConnector:
                         price=item_dict.get("price"),
                         currency=item_dict.get("currency", "EUR"),
                         condition_raw=item_dict.get("condition"),
-                        condition_norm=self.normalize_condition_leboncoin(
-                            item_dict.get("condition", "")
-                        ),
+                        condition_norm=normalize_condition(item_dict.get("condition", "")),
                         location=item_dict.get("location"),
                         seller_rating=1.0 if item_dict.get("is_pro") else 0.0,
                         shipping_cost=item_dict.get("shipping_cost"),

@@ -7,6 +7,7 @@ from typing import Any
 
 from loguru import logger
 
+from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingUtils
 
@@ -99,7 +100,7 @@ class VintedAPIConnector:
             price=price_value,
             currency=currency,
             condition_raw=condition_raw,
-            condition_norm=self.normalize_condition_vinted(condition_raw or ""),
+            condition_norm=normalize_condition(condition_raw or ""),
             location=location,
             seller_rating=None,
             shipping_cost=None,
@@ -148,42 +149,6 @@ class VintedAPIConnector:
         if raw_url.startswith("http"):
             return raw_url
         return f"{self.BASE_URL}{raw_url}"
-
-    @staticmethod
-    def normalize_condition_vinted(condition_raw: str) -> str | None:
-        """Normalize Vinted condition strings to standard categories.
-
-        Mirrors ``VintedConnector.normalize_condition_vinted`` so both code-paths
-        produce identical condition_norm values.
-        """
-        if not condition_raw:
-            return None
-
-        condition_lower = condition_raw.lower()
-
-        if any(
-            word in condition_lower
-            for word in [
-                "neuf avec étiquette",
-                "neuf sans étiquette",
-                "neuf",
-                "new",
-                "nouveau",
-                "brand new",
-            ]
-        ):
-            return "new"
-        if any(
-            word in condition_lower
-            for word in ["très bon état", "very good", "excellent", "comme neuf", "like new"]
-        ):
-            return "like_new"
-        if any(word in condition_lower for word in ["bon état", "good", "bien", "used"]):
-            return "good"
-        if any(word in condition_lower for word in ["satisfaisant", "fair", "acceptable", "worn"]):
-            return "fair"
-
-        return None
 
 
 async def fetch_vinted_api_listings(keyword: str, limit: int = 50) -> list[Listing]:

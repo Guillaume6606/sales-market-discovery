@@ -10,6 +10,7 @@ from typing import Any
 import lbc
 from loguru import logger
 
+from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingUtils
 
@@ -140,7 +141,7 @@ class LeBonCoinAPIConnector:
             price=price_value,
             currency=currency or "EUR",
             condition_raw=condition_raw,
-            condition_norm=self.normalize_condition_leboncoin(condition_raw or ""),
+            condition_norm=normalize_condition(condition_raw or ""),
             location=location,
             seller_rating=None,
             shipping_cost=shipping_cost,
@@ -151,29 +152,6 @@ class LeBonCoinAPIConnector:
             size=None,
             color=None,
         )
-
-    @staticmethod
-    def normalize_condition_leboncoin(condition_raw: str) -> str | None:
-        if not condition_raw:
-            return None
-
-        condition_lower = condition_raw.lower()
-        normalized = (
-            condition_lower.replace("é", "e").replace("è", "e").replace("ê", "e").replace("à", "a")
-        )
-
-        if any(word in normalized for word in ["neuf", "new", "nouveau"]):
-            return "new"
-        if any(
-            word in normalized for word in ["tres bon etat", "comme neuf", "like new", "excellent"]
-        ):
-            return "like_new"
-        if any(word in normalized for word in ["bon etat", "good", "bien"]):
-            return "good"
-        if any(word in normalized for word in ["satisfaisant", "fair", "acceptable"]):
-            return "fair"
-
-        return None
 
     @staticmethod
     def _ad_to_dict(ad: Any) -> dict[str, Any]:
