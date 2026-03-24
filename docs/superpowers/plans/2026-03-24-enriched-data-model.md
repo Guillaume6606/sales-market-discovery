@@ -37,10 +37,10 @@
 | `libs/common/models.py` | Add ORM models: `ListingDetail`, `ListingEnrichment`, `ListingScore`; add `ListingDetail` Pydantic dataclass |
 | `libs/common/settings.py` | Add enrichment config settings |
 | `ingestion/connectors/ebay.py` | Add `fetch_detail()` function |
-| `ingestion/connectors/leboncoin_api.py` | Add `fetch_detail()` method |
-| `ingestion/connectors/leboncoin.py` | Add `fetch_detail()` method |
-| `ingestion/connectors/vinted_api.py` | Add `fetch_detail()` method |
-| `ingestion/connectors/vinted.py` | Add `fetch_detail()` method |
+| `ingestion/connectors/leboncoin_api.py` | Add `fetch_detail()` method (primary) |
+| `ingestion/connectors/leboncoin.py` | Add `fetch_detail()` method (delegates to API connector) |
+| `ingestion/connectors/vinted_api.py` | Add `fetch_detail()` method (primary) |
+| `ingestion/connectors/vinted.py` | Add `fetch_detail()` method (delegates to API connector) |
 | `ingestion/ingestion.py` | Call detail fetch after 1st-pass persist |
 | `ingestion/worker.py` | Register enrichment + scoring cron jobs |
 | `backend/routers/health.py` | Add enrichment freshness monitoring |
@@ -382,34 +382,33 @@ git commit -m "feat(db): add listing_detail, listing_enrichment, listing_score t
 
 Add the following after the `ConnectorAudit` class (after line 242, before the relationship assignments):
 
+**Note:** The existing codebase uses SQLAlchemy 1.x `Column()` style throughout. Follow that pattern.
+
 ```python
 class ListingDetailORM(Base):
     """Raw data from detail page fetches — one row per listing observation."""
 
     __tablename__ = "listing_detail"
 
-    detail_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    obs_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("listing_observation.obs_id", ondelete="CASCADE"), unique=True
+    detail_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    obs_id = Column(
+        BigInteger, ForeignKey("listing_observation.obs_id", ondelete="CASCADE"),
+        unique=True, nullable=False,
     )
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    description_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    photo_urls: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
-    photo_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    local_pickup_only: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    negotiation_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    original_posted_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
-    )
-    seller_account_age_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    seller_transaction_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    view_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    favorite_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    fetched_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
-    )
+    description = Column(Text)
+    description_length = Column(Integer)
+    photo_urls = Column(ARRAY(Text))
+    photo_count = Column(Integer)
+    local_pickup_only = Column(Boolean)
+    negotiation_enabled = Column(Boolean)
+    original_posted_at = Column(TIMESTAMP(timezone=True))
+    seller_account_age_days = Column(Integer)
+    seller_transaction_count = Column(Integer)
+    view_count = Column(Integer)
+    favorite_count = Column(Integer)
+    fetched_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
 
-    observation: Mapped["ListingObservation"] = relationship(back_populates="detail")
+    observation = relationship("ListingObservation", back_populates="detail")
 
 
 class ListingEnrichment(Base):
@@ -417,29 +416,28 @@ class ListingEnrichment(Base):
 
     __tablename__ = "listing_enrichment"
 
-    enrichment_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    obs_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("listing_observation.obs_id", ondelete="CASCADE"), unique=True
+    enrichment_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    obs_id = Column(
+        BigInteger, ForeignKey("listing_observation.obs_id", ondelete="CASCADE"),
+        unique=True, nullable=False,
     )
-    urgency_score: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
-    urgency_keywords: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
-    has_original_box: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    has_receipt_or_invoice: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    accessories_included: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
-    accessories_completeness: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
-    photo_quality_score: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
-    listing_quality_score: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
-    condition_confidence: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
-    fakeness_probability: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
-    seller_motivation_score: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
-    llm_model: Mapped[str | None] = mapped_column(Text, nullable=True)
-    llm_raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    enriched_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
-    )
-    cost_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    urgency_score = Column(Numeric(3, 2))
+    urgency_keywords = Column(ARRAY(Text))
+    has_original_box = Column(Boolean)
+    has_receipt_or_invoice = Column(Boolean)
+    accessories_included = Column(ARRAY(Text))
+    accessories_completeness = Column(Numeric(3, 2))
+    photo_quality_score = Column(Numeric(3, 2))
+    listing_quality_score = Column(Numeric(3, 2))
+    condition_confidence = Column(Numeric(3, 2))
+    fakeness_probability = Column(Numeric(3, 2))
+    seller_motivation_score = Column(Numeric(3, 2))
+    llm_model = Column(Text)
+    llm_raw_response = Column(JSONB)
+    enriched_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    cost_tokens = Column(Integer)
 
-    observation: Mapped["ListingObservation"] = relationship(back_populates="enrichment")
+    observation = relationship("ListingObservation", back_populates="enrichment")
 
 
 class ListingScore(Base):
@@ -447,36 +445,33 @@ class ListingScore(Base):
 
     __tablename__ = "listing_score"
 
-    score_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    obs_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("listing_observation.obs_id", ondelete="CASCADE"), unique=True
+    score_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    obs_id = Column(
+        BigInteger, ForeignKey("listing_observation.obs_id", ondelete="CASCADE"),
+        unique=True, nullable=False,
     )
-    product_id: Mapped[UUID] = mapped_column(
-        UUID_PG(as_uuid=True), ForeignKey("product_template.product_id"), nullable=False
-    )
-    arbitrage_spread_eur: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
-    net_roi_pct: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
-    risk_adjusted_confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
-    acquisition_cost_eur: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
-    estimated_sale_price_eur: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
-    estimated_sell_fees_eur: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
-    estimated_sell_shipping_eur: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
-    days_on_market: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    score_breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    scored_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
-    )
+    product_id = Column(UUID, ForeignKey("product_template.product_id"), nullable=False)
+    arbitrage_spread_eur = Column(Numeric)
+    net_roi_pct = Column(Numeric)
+    risk_adjusted_confidence = Column(Numeric(5, 2))
+    acquisition_cost_eur = Column(Numeric)
+    estimated_sale_price_eur = Column(Numeric)
+    estimated_sell_fees_eur = Column(Numeric)
+    estimated_sell_shipping_eur = Column(Numeric)
+    days_on_market = Column(Integer)
+    score_breakdown = Column(JSONB)
+    scored_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
 
-    observation: Mapped["ListingObservation"] = relationship(back_populates="score")
-    product: Mapped["ProductTemplate"] = relationship()
+    observation = relationship("ListingObservation", back_populates="score")
+    product = relationship("ProductTemplate")
 ```
 
-Also add back-populates on `ListingObservation` class (around line 89, add to existing relationships section):
+Also add back-populates on `ListingObservation` class (around line 89, add after existing `product` relationship):
 
 ```python
-    detail: Mapped["ListingDetailORM | None"] = relationship(back_populates="observation")
-    enrichment: Mapped["ListingEnrichment | None"] = relationship(back_populates="observation")
-    score: Mapped["ListingScore | None"] = relationship(back_populates="observation")
+    detail = relationship("ListingDetailORM", back_populates="observation", uselist=False)
+    enrichment = relationship("ListingEnrichment", back_populates="observation", uselist=False)
+    score = relationship("ListingScore", back_populates="observation", uselist=False)
 ```
 
 Add the Pydantic dataclass after the existing `Listing` class (~line 269):
@@ -488,6 +483,7 @@ class ListingDetail(BaseModel):
     obs_id: int
     description: str | None = None
     photo_urls: list[str] = []
+    photo_count: int | None = None  # Computed: len(photo_urls)
     local_pickup_only: bool | None = None
     negotiation_enabled: bool | None = None
     original_posted_at: datetime | None = None
@@ -495,6 +491,12 @@ class ListingDetail(BaseModel):
     seller_transaction_count: int | None = None
     view_count: int | None = None
     favorite_count: int | None = None
+
+    @model_validator(mode="after")
+    def set_photo_count(self) -> "ListingDetail":
+        if self.photo_count is None and self.photo_urls:
+            self.photo_count = len(self.photo_urls)
+        return self
 ```
 
 Ensure necessary imports are at the top of `models.py`:
@@ -926,8 +928,23 @@ Expected: All PASS
 
 - [ ] **Step 5: Commit**
 
+- [ ] **Step 6: Add delegation in scraping connector fallback**
+
+Add `fetch_detail()` to `LeBonCoinConnector` in `ingestion/connectors/leboncoin.py` that delegates to the API connector (the scraping connector is a fallback; detail fetch always uses the API):
+
+```python
+def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | None:
+    """Delegate to API connector for detail fetch."""
+    from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
+
+    api = LeBonCoinAPIConnector()
+    return api.fetch_detail(listing_id, obs_id)
+```
+
+- [ ] **Step 7: Commit**
+
 ```bash
-git add ingestion/connectors/leboncoin_api.py tests/smoke/test_06_detail_fetch.py
+git add ingestion/connectors/leboncoin_api.py ingestion/connectors/leboncoin.py tests/smoke/test_06_detail_fetch.py
 git commit -m "feat(lbc): add fetch_detail() for listing detail data"
 ```
 
@@ -1013,17 +1030,19 @@ Expected: FAIL — `AttributeError: 'VintedAPIConnector' object has no attribute
 
 - [ ] **Step 3: Implement Vinted `fetch_detail()`**
 
-Add to `VintedAPIConnector` class in `vinted_api.py`. Uses the per-item API endpoint:
+Add to `VintedAPIConnector` class in `vinted_api.py`. Creates its own `AsyncVintedScraper` instance (the connector doesn't persist one) and uses the `.item()` method:
 
 ```python
 async def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | None:
     """Fetch detailed data for a single Vinted listing."""
     from libs.common.models import ListingDetail
+    from vinted_scraper import AsyncVintedScraper
 
     try:
-        item = await self._scraper.get_item(int(listing_id))
+        async with AsyncVintedScraper(BASE_URL) as scraper:
+            item = await scraper.item(int(listing_id))
     except Exception:
-        logger.exception("Vinted get_item failed for %s", listing_id)
+        logger.exception("Vinted item fetch failed for %s", listing_id)
         return None
 
     if not item:
@@ -1111,8 +1130,23 @@ Expected: All PASS
 
 - [ ] **Step 5: Commit**
 
+- [ ] **Step 6: Add delegation in scraping connector fallback**
+
+Add `fetch_detail()` to `VintedConnector` in `ingestion/connectors/vinted.py` that delegates to the API connector:
+
+```python
+async def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | None:
+    """Delegate to API connector for detail fetch."""
+    from ingestion.connectors.vinted_api import VintedAPIConnector
+
+    api = VintedAPIConnector()
+    return await api.fetch_detail(listing_id, obs_id)
+```
+
+- [ ] **Step 7: Commit**
+
 ```bash
-git add ingestion/connectors/vinted_api.py tests/smoke/test_06_detail_fetch.py
+git add ingestion/connectors/vinted_api.py ingestion/connectors/vinted.py tests/smoke/test_06_detail_fetch.py
 git commit -m "feat(vinted): add fetch_detail() for listing detail data"
 ```
 
@@ -1701,7 +1735,7 @@ from ingestion.enrichment_prompt import (
     build_enrichment_prompt,
     parse_enrichment_response,
 )
-from libs.common.db import get_session
+from libs.common.db import SessionLocal
 from libs.common.models import (
     ListingDetailORM,
     ListingEnrichment,
@@ -1813,7 +1847,7 @@ def _enrich_single_listing(
 
     result = parse_enrichment_response(raw_text)
     if result:
-        result["_raw_response"] = raw_text
+        result["_raw_response"] = {"raw_text": raw_text, "parsed": result.copy()}
         result["_tokens"] = tokens
     return result
 
@@ -1864,7 +1898,7 @@ async def run_enrichment_batch(ctx: dict | None = None) -> dict:
     genai.configure(api_key=settings.gemini_api_key)
     model = genai.GenerativeModel(settings.enrichment_llm_model)
 
-    db = get_session()
+    db = SessionLocal()
     try:
         candidates = _get_unenriched_listings(db, settings.enrichment_batch_size)
         logger.info("Enrichment batch: %d candidates", len(candidates))
@@ -1918,6 +1952,177 @@ cron(run_enrichment_batch, hour=None, minute=30),  # Every hour at :30
 uv run ruff check --fix . && uv run ruff format .
 git add ingestion/enrichment.py ingestion/worker.py
 git commit -m "feat(enrichment): add hourly LLM enrichment batch job"
+```
+
+---
+
+### Task 10b: Enrichment Quality Tests (Structural + Golden Set)
+
+**Files:**
+- Create: `tests/smoke/test_07_enrichment.py`
+
+- [ ] **Step 1: Write enrichment structural validation tests**
+
+```python
+# tests/smoke/test_07_enrichment.py
+"""Smoke tests: enrichment quality (structural + golden set)."""
+import pytest
+from ingestion.enrichment_prompt import parse_enrichment_response, ALL_REQUIRED_KEYS
+
+
+class TestEnrichmentStructural:
+    """Structural validation of enrichment output."""
+
+    def test_all_scores_in_range(self):
+        """Valid response should have all scores clamped to [0, 1]."""
+        import json
+
+        valid = json.dumps({
+            "urgency_score": 0.5,
+            "urgency_keywords": ["test"],
+            "has_original_box": True,
+            "has_receipt_or_invoice": False,
+            "accessories_included": ["charger"],
+            "accessories_completeness": 0.5,
+            "photo_quality_score": 0.5,
+            "listing_quality_score": 0.5,
+            "condition_confidence": 0.5,
+            "fakeness_probability": 0.5,
+            "seller_motivation_score": 0.5,
+        })
+        result = parse_enrichment_response(valid)
+        assert result is not None
+        for key in [
+            "urgency_score", "accessories_completeness", "photo_quality_score",
+            "listing_quality_score", "condition_confidence", "fakeness_probability",
+            "seller_motivation_score",
+        ]:
+            assert 0.0 <= result[key] <= 1.0, f"{key} out of range: {result[key]}"
+
+    def test_accessories_are_nonempty_strings(self):
+        import json
+
+        valid = json.dumps({
+            "urgency_score": 0.5,
+            "urgency_keywords": [],
+            "has_original_box": False,
+            "has_receipt_or_invoice": False,
+            "accessories_included": ["charger", "cable"],
+            "accessories_completeness": 0.5,
+            "photo_quality_score": 0.5,
+            "listing_quality_score": 0.5,
+            "condition_confidence": 0.5,
+            "fakeness_probability": 0.5,
+            "seller_motivation_score": 0.5,
+        })
+        result = parse_enrichment_response(valid)
+        for item in result["accessories_included"]:
+            assert isinstance(item, str) and len(item) > 0
+
+    def test_required_keys_present(self):
+        """ALL_REQUIRED_KEYS matches spec Section 1.2."""
+        expected = {
+            "urgency_score", "urgency_keywords", "has_original_box",
+            "has_receipt_or_invoice", "accessories_included",
+            "accessories_completeness", "photo_quality_score",
+            "listing_quality_score", "condition_confidence",
+            "fakeness_probability", "seller_motivation_score",
+        }
+        assert set(ALL_REQUIRED_KEYS) == expected
+
+
+class TestEnrichmentGoldenSet:
+    """Golden set tests — requires labeled data in tests/fixtures/golden_set.json.
+
+    To create: label ~20 real listings with expected enrichment values.
+    Run: uv run pytest tests/smoke/test_07_enrichment.py::TestEnrichmentGoldenSet -v
+
+    These tests are marked as xfail until the golden set file is created.
+    """
+
+    GOLDEN_SET_PATH = "tests/fixtures/golden_set.json"
+
+    @pytest.fixture
+    def golden_set(self):
+        import json
+        from pathlib import Path
+
+        path = Path(self.GOLDEN_SET_PATH)
+        if not path.exists():
+            pytest.skip("Golden set not yet created — label ~20 real listings first")
+        return json.loads(path.read_text())
+
+    def test_boolean_accuracy_above_90pct(self, golden_set):
+        """has_original_box and has_receipt match ground truth >= 90%."""
+        from ingestion.enrichment_prompt import build_enrichment_prompt, parse_enrichment_response
+        import google.generativeai as genai
+        from libs.common.settings import settings
+
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel(settings.enrichment_llm_model)
+
+        correct_box = 0
+        correct_receipt = 0
+        total = 0
+
+        for item in golden_set:
+            prompt = build_enrichment_prompt(**item["input"])
+            response = model.generate_content(prompt)
+            result = parse_enrichment_response(response.text)
+            if result is None:
+                continue
+
+            total += 1
+            if result["has_original_box"] == item["expected"]["has_original_box"]:
+                correct_box += 1
+            if result["has_receipt_or_invoice"] == item["expected"]["has_receipt_or_invoice"]:
+                correct_receipt += 1
+
+        assert total > 0, "No golden set items were successfully enriched"
+        assert correct_box / total >= 0.9, f"Box accuracy: {correct_box}/{total}"
+        assert correct_receipt / total >= 0.9, f"Receipt accuracy: {correct_receipt}/{total}"
+
+    def test_urgency_score_direction(self, golden_set):
+        """Known-urgent items should score > 0.7, non-urgent < 0.3."""
+        from ingestion.enrichment_prompt import build_enrichment_prompt, parse_enrichment_response
+        import google.generativeai as genai
+        from libs.common.settings import settings
+
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel(settings.enrichment_llm_model)
+
+        for item in golden_set:
+            if "urgency_expected" not in item["expected"]:
+                continue
+            prompt = build_enrichment_prompt(**item["input"])
+            response = model.generate_content(prompt)
+            result = parse_enrichment_response(response.text)
+            if result is None:
+                continue
+
+            if item["expected"]["urgency_expected"] == "high":
+                assert result["urgency_score"] > 0.7, (
+                    f"Known-urgent listing scored {result['urgency_score']}"
+                )
+            elif item["expected"]["urgency_expected"] == "low":
+                assert result["urgency_score"] < 0.3, (
+                    f"Known-non-urgent listing scored {result['urgency_score']}"
+                )
+```
+
+- [ ] **Step 2: Run structural tests (golden set tests will skip until data is labeled)**
+
+Run: `uv run pytest tests/smoke/test_07_enrichment.py::TestEnrichmentStructural -v`
+Expected: All PASS
+
+Run: `uv run pytest tests/smoke/test_07_enrichment.py::TestEnrichmentGoldenSet -v`
+Expected: SKIPPED (golden set file not yet created)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/smoke/test_07_enrichment.py
+git commit -m "test: add enrichment structural + golden set quality tests"
 ```
 
 ---
@@ -2455,7 +2660,7 @@ async def run_scoring_batch(ctx: dict | None = None) -> dict:
     """Score all listings that need scoring. Called by ARQ after enrichment."""
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    from libs.common.db import get_session
+    from libs.common.db import SessionLocal
     from libs.common.models import (
         ListingDetailORM,
         ListingEnrichment,
@@ -2466,7 +2671,7 @@ async def run_scoring_batch(ctx: dict | None = None) -> dict:
         ProductTemplate,
     )
 
-    db = get_session()
+    db = SessionLocal()
     try:
         # Score: newly enriched (no score yet) + enriched with stale scores
         candidates = (
@@ -2528,10 +2733,11 @@ async def run_scoring_batch(ctx: dict | None = None) -> dict:
         db.close()
 ```
 
-Add missing imports at top of file:
+Add missing imports at top of `ingestion/composite_scoring.py` (add to existing imports):
 
 ```python
 from sqlalchemy import and_, or_, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 ```
 
 - [ ] **Step 2: Register scoring cron in worker.py**
