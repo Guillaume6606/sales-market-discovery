@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import lbc
 from loguru import logger
@@ -13,6 +13,9 @@ from loguru import logger
 from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingUtils
+
+if TYPE_CHECKING:
+    from libs.common.models import ListingDetail
 
 
 class LeBonCoinAPIConnector:
@@ -151,6 +154,80 @@ class LeBonCoinAPIConnector:
             brand=None,
             size=None,
             color=None,
+        )
+
+    def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | None:
+        """Fetch detailed data for a single LeBonCoin listing.
+
+        Uses ``lbc.Client.get_ad()`` to retrieve the full ad object, then maps
+        available fields to ``ListingDetail``.  LeBonCoin does not reliably
+        expose seller account age or transaction count, so those fields are
+        omitted.  View count is not available via the public API.
+
+        Args:
+            listing_id: The LeBonCoin ad ID (numeric string found in the URL).
+            obs_id: The observation ID to associate with the detail record.
+
+        Returns:
+            A populated ``ListingDetail`` or ``None`` if the fetch fails.
+        """
+        from libs.common.models import ListingDetail
+
+        try:
+            ad = self._client.get_ad(listing_id)
+        except Exception:
+            logger.exception("LeBonCoin get_ad failed for %s", listing_id)
+            return None
+
+        if ad is None:
+            return None
+
+        description: str | None = getattr(ad, "body", None) or None
+
+        # images is List[str] of large-format URLs
+        raw_images = getattr(ad, "images", None) or []
+        photo_urls: list[str] = [u for u in raw_images if isinstance(u, str)]
+
+        # original_posted_at — first_publication_date is an ISO string
+        original_posted_at = None
+        raw_date = getattr(ad, "first_publication_date", None)
+        if raw_date:
+            try:
+                original_posted_at = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                pass
+
+        # favorite_count — available on the detailed Ad object
+        favorites = getattr(ad, "favorites", None)
+        favorite_count = int(favorites) if favorites is not None else None
+
+        # Seller account age — requires a separate user fetch; lazy-load via ad.user
+        seller_account_age_days: int | None = None
+        seller_transaction_count: int | None = None
+        try:
+            user = ad.user  # triggers lbc API call for user profile
+            registered_at_str = getattr(user, "registered_at", None)
+            if registered_at_str:
+                reg_dt = datetime.fromisoformat(registered_at_str.replace("Z", "+00:00"))
+                seller_account_age_days = (datetime.now(UTC) - reg_dt).days
+            total_ads = getattr(user, "total_ads", None)
+            if total_ads is not None:
+                seller_transaction_count = int(total_ads)
+        except Exception:
+            logger.debug("Could not fetch LBC user profile for ad %s", listing_id)
+
+        # LBC does not expose negotiation/pickup flags in the public API
+        return ListingDetail(
+            obs_id=obs_id,
+            description=description,
+            photo_urls=photo_urls,
+            original_posted_at=original_posted_at,
+            favorite_count=favorite_count,
+            seller_account_age_days=seller_account_age_days,
+            seller_transaction_count=seller_transaction_count,
+            local_pickup_only=None,
+            negotiation_enabled=None,
+            view_count=None,
         )
 
     @staticmethod
