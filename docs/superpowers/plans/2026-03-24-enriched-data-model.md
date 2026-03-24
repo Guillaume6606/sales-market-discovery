@@ -6,7 +6,7 @@
 
 **Architecture:** Connectors write raw detail data to `listing_detail` via a selective 2nd-pass fetch (only promising listings). An hourly ARQ batch job calls Gemini Flash to enrich listings into `listing_enrichment`. A post-enrichment scoring job materializes composite action scores (`arbitrage_spread_eur`, `net_roi_pct`, `risk_adjusted_confidence`) into `listing_score`. The existing M2 opportunity score stays for ranking/alerting; new scores layer alongside for buy decisions.
 
-**Tech Stack:** Python 3.11, SQLAlchemy 2.0, Alembic, ARQ, FastAPI, Pydantic, Google Generative AI (Gemini Flash), pytest
+**Tech Stack:** Python 3.11, SQLAlchemy (1.x Column style), Alembic, ARQ, FastAPI, Pydantic v2, Google Generative AI (Gemini Flash), pytest
 
 **Spec:** `docs/superpowers/specs/2026-03-24-enriched-data-model-design.md`
 
@@ -499,11 +499,12 @@ class ListingDetail(BaseModel):
         return self
 ```
 
-Ensure necessary imports are at the top of `models.py`:
+Ensure necessary imports are at the top of `models.py` (some may already exist — only add what's missing):
 
 ```python
-from decimal import Decimal
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as UUID_PG
+from decimal import Decimal  # if not already imported
+from pydantic import BaseModel, model_validator  # add model_validator to existing import
+# ARRAY, JSONB, UUID are already imported in the existing file — verify, don't duplicate
 ```
 
 - [ ] **Step 2: Verify models load without errors**
@@ -1030,7 +1031,7 @@ Expected: FAIL — `AttributeError: 'VintedAPIConnector' object has no attribute
 
 - [ ] **Step 3: Implement Vinted `fetch_detail()`**
 
-Add to `VintedAPIConnector` class in `vinted_api.py`. Creates its own `AsyncVintedScraper` instance (the connector doesn't persist one) and uses the `.item()` method:
+Add to `VintedAPIConnector` class in `vinted_api.py`. Creates its own `AsyncVintedScraper` instance using the `.create()` factory (handles cookie setup) and uses the `.item()` method:
 
 ```python
 async def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | None:
@@ -1039,8 +1040,9 @@ async def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | No
     from vinted_scraper import AsyncVintedScraper
 
     try:
-        async with AsyncVintedScraper(BASE_URL) as scraper:
-            item = await scraper.item(int(listing_id))
+        scraper = await AsyncVintedScraper.create(self.BASE_URL)
+        async with scraper:
+            item = await scraper.item(listing_id)
     except Exception:
         logger.exception("Vinted item fetch failed for %s", listing_id)
         return None
@@ -1069,7 +1071,7 @@ async def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | No
         if val:
             try:
                 if isinstance(val, (int, float)):
-                    original_posted_at = datetime.fromtimestamp(val, tz=timezone.utc)
+                    original_posted_at = datetime.fromtimestamp(val, tz=UTC)
                 else:
                     original_posted_at = datetime.fromisoformat(
                         str(val).replace("Z", "+00:00")
@@ -1085,10 +1087,10 @@ async def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | No
     if user_created:
         try:
             if isinstance(user_created, (int, float)):
-                reg_dt = datetime.fromtimestamp(user_created, tz=timezone.utc)
+                reg_dt = datetime.fromtimestamp(user_created, tz=UTC)
             else:
                 reg_dt = datetime.fromisoformat(str(user_created).replace("Z", "+00:00"))
-            seller_account_age_days = (datetime.now(timezone.utc) - reg_dt).days
+            seller_account_age_days = (datetime.now(UTC) - reg_dt).days
         except (ValueError, TypeError, OSError):
             pass
 
@@ -1239,7 +1241,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -1350,8 +1351,8 @@ async def fetch_and_persist_details(
         if not should_fetch_detail(obs.price, pmn, threshold, price_min, price_max):
             continue
 
-        # Rate limiting
-        time.sleep(rate_limit)
+        # Rate limiting (async-safe)
+        await asyncio.sleep(rate_limit)
 
         try:
             if asyncio.iscoroutinefunction(fetch_detail_fn):
