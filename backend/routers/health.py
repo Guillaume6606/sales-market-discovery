@@ -306,7 +306,9 @@ def get_enrichment_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "score_coverage": {
             "with_enrichment": enrichment_count,
             "with_score": score_count,
-            "coverage_pct": round(score_count / enrichment_count * 100, 1) if enrichment_count else 0,
+            "coverage_pct": round(score_count / enrichment_count * 100, 1)
+            if enrichment_count
+            else 0,
         },
         "latest_enrichment_at": latest_enrichment.isoformat() if latest_enrichment else None,
         "latest_score_at": latest_score.isoformat() if latest_score else None,
