@@ -145,7 +145,7 @@ else:
         st.divider()
         st.subheader("Ingestion Activity (last 14 days)")
 
-        runs_data = fetch_ingestion_runs(page_size=200)
+        runs_data = fetch_ingestion_runs(page_size=100)
         runs = runs_data.get("runs", [])
 
         if runs:

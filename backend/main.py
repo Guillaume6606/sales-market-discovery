@@ -20,6 +20,7 @@ from libs.common.db import engine, get_db
 from libs.common.log import logger
 from libs.common.models import (
     AlertEvent,
+    AlertFeedback,
     AlertRule,
     Base,
     Category,
@@ -2062,7 +2063,9 @@ def list_alert_events(
     db: Session = Depends(get_db),
 ):
     """List alert history with filtering and pagination."""
-    query = db.query(AlertEvent)
+    query = db.query(AlertEvent, AlertFeedback.feedback).outerjoin(
+        AlertFeedback, AlertEvent.alert_id == AlertFeedback.alert_id
+    )
 
     if rule_id:
         query = query.filter(AlertEvent.rule_id == rule_id)
@@ -2071,7 +2074,7 @@ def list_alert_events(
 
     total = query.count()
 
-    events = query.order_by(desc(AlertEvent.sent_at)).offset(offset).limit(limit).all()
+    rows = query.order_by(desc(AlertEvent.sent_at)).offset(offset).limit(limit).all()
 
     return {
         "events": [
@@ -2083,8 +2086,9 @@ def list_alert_events(
                 "sent_at": event.sent_at.isoformat() if event.sent_at else None,
                 "delivery": event.delivery,
                 "suppressed": event.suppressed,
+                "feedback": feedback,
             }
-            for event in events
+            for event, feedback in rows
         ],
         "total": total,
         "limit": limit,
