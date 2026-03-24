@@ -120,6 +120,7 @@ Written by the hourly LLM batch job. One row per analyzed listing observation.
 - `listing_quality_score` is an inverse alpha signal — bad listings for retail buyers = good opportunities for arbitrage.
 - `condition_confidence` lets scoring discount listings where condition claims seem unreliable.
 - `fakeness_probability` feeds directly into `risk_adjusted_confidence`.
+- `accessories_completeness` is fully LLM-inferred. The enrichment prompt includes category-specific hints for expected accessories (e.g., "an iPhone typically ships with: charger, cable, earbuds, documentation"). These hints are hardcoded in the prompt template per category — no new DB table needed. The LLM compares what's mentioned in the description/photos against the expected set and returns the fraction. If the category has no defined expected accessories, this field is null.
 
 ### 1.3 `listing_score` — Materialized composite action scores
 
@@ -169,7 +170,7 @@ class ListingDetail(BaseModel):
     favorite_count: int | None
 ```
 
-Each connector implements `fetch_detail(listing_id: str) -> ListingDetail | None`. Fields that can't be extracted return None.
+Each connector implements `fetch_detail(listing_id: str, obs_id: int) -> ListingDetail | None`. The caller supplies both the marketplace `listing_id` (to fetch the detail page) and the database `obs_id` (to link the result back to the observation). Fields that can't be extracted return None.
 
 ### 2.2 Per-connector field availability
 
@@ -256,7 +257,7 @@ NO  → skip                  NO  → fetch detail for ALL (cold start, no signa
 - Max listings per run: configurable, default 50
 - LLM model: Gemini Flash (cost ~€0.01/listing with vision)
 - Budget cap: configurable max tokens/day to control costs
-- Re-enrichment: active listings re-enriched after 7 days (seller_motivation_score evolves with DOM)
+- Re-enrichment: active listings re-enriched after 7 days (seller_motivation_score evolves with DOM). Re-enrichment is capped at 20 listings/run and prioritized below fresh enrichment in the queue to prevent unbounded backlog growth.
 
 ### 3.3 Stage 3: Score (post-enrichment)
 
@@ -270,17 +271,24 @@ NO  → skip                  NO  → fetch detail for ALL (cold start, no signa
 ```
 listing.price
 + listing.shipping_cost (0 if local_pickup_only or null)
-+ buyer_platform_fees (Vinted: ~5% buyer protection; eBay/LBC: 0 for buyer)
++ buyer_platform_fees:
+    vinted:    ~5% buyer protection fee
+    ebay:      0 (no buyer fee)
+    leboncoin: 0 (no buyer fee)
 ```
 
 #### `estimated_sale_price_eur`
+
+**Condition normalization:** The `listing_observation` table stores raw condition text in the `condition` column. The scoring job re-normalizes it at score time using the same normalization functions each connector already implements (mapping French/English strings to `new`, `like_new`, `good`, `fair`). This shared normalization logic lives in a common utility (not duplicated per connector). If normalization fails (unknown string), default to `good` (conservative).
+
 ```
 PMN
-× condition_adjustment:
+× condition_adjustment (from re-normalized condition):
     new     = 1.10
     like_new = 1.00
     good    = 0.90
     fair    = 0.75
+    unknown = 0.90 (default to "good")
 × completeness_adjustment:
     has_original_box:     +5%
     has_receipt_or_invoice: +5%
@@ -465,8 +473,9 @@ Threshold breaches logged and optionally trigger Telegram alert via existing ale
 | Component | Cost | Frequency |
 |-----------|------|-----------|
 | Detail page fetches | Free (API calls) / compute only | Per ingestion run |
-| LLM enrichment (Gemini Flash + vision) | ~€0.01/listing | Hourly batch, ~50 listings/run |
-| Monthly enrichment budget (50/hr × 24h × 30d) | ~€360/month at full capacity | Configurable cap |
+| LLM enrichment (Gemini Flash + vision) | ~€0.01/listing | Hourly batch, up to 50 listings/run |
 | Score computation | CPU only, negligible | After each enrichment batch |
 
-Budget cap is configurable. Start conservative (20 listings/run ≈ €144/month) and scale up as ROI is validated.
+**Realistic steady-state estimate:** With ~10-20 active products × 3 platforms × hourly ingestion, expect ~100-300 new listings/day needing enrichment, plus ~50-100 re-enrichments. At ~€0.01/listing, steady-state cost is **~€50-120/month**. The theoretical max (50/hr × 24h × 30d = €360/month) would only apply if every hourly batch is fully saturated.
+
+Budget cap is configurable. Start conservative (20 listings/run) and scale up as ROI is validated.
