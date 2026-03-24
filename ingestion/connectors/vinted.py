@@ -5,7 +5,7 @@ Vinted connector using advanced web scraping
 import json
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
@@ -14,6 +14,9 @@ from loguru import logger
 from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingSession, ScrapingUtils, scraping_config
+
+if TYPE_CHECKING:
+    from libs.common.models import ListingDetail
 
 
 class VintedConnector:
@@ -105,6 +108,22 @@ class VintedConnector:
             logger.error(f"Error searching Vinted for {keyword}: {e}")
 
         return items
+
+    async def fetch_detail(self, listing_id: str, obs_id: int) -> "ListingDetail | None":
+        """Delegate detail fetching to the API connector.
+
+        Args:
+            listing_id: The Vinted item ID.
+            obs_id: The observation ID to associate with the detail record.
+
+        Returns:
+            A populated ``ListingDetail`` or ``None`` if the fetch fails.
+        """
+        from ingestion.connectors.vinted_api import VintedAPIConnector
+        from libs.common.models import ListingDetail  # noqa: F401 — ensure type is resolvable
+
+        api = VintedAPIConnector()
+        return await api.fetch_detail(listing_id, obs_id)
 
     async def get_item_details(self, item_url: str) -> Listing | None:
         """
