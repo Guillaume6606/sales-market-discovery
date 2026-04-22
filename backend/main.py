@@ -14,7 +14,9 @@ from backend.routers.audit import router as audit_router
 from backend.routers.feedback import router as feedback_router
 from backend.routers.health import router as health_router
 from backend.routers.ingestion import router as ingestion_router
+from backend.routers.listing_detail import router as listing_detail_router
 from backend.routers.pmn import router as pmn_router
+from backend.routers.scored_listings import router as scored_listings_router
 from ingestion.constants import SUPPORTED_PROVIDERS
 from libs.common.db import engine, get_db
 from libs.common.log import logger
@@ -24,7 +26,9 @@ from libs.common.models import (
     AlertRule,
     Base,
     Category,
+    ListingEnrichment,
     ListingObservation,
+    ListingScore,
     MarketPriceNormal,
     PMNHistory,
     ProductDailyMetrics,
@@ -52,6 +56,8 @@ app.include_router(feedback_router)
 app.include_router(ingestion_router)
 app.include_router(pmn_router)
 app.include_router(audit_router)
+app.include_router(scored_listings_router)
+app.include_router(listing_detail_router)
 
 
 @app.on_event("startup")
@@ -1560,6 +1566,31 @@ async def trigger_product_computation_endpoint(product_id: str, db: Session = De
         return {"error": "Failed to enqueue job", "message": str(exc)}
 
 
+@app.post("/enrichment/trigger")
+async def trigger_enrichment():
+    """Trigger LLM enrichment + scoring pipeline manually."""
+    if not arq_pool:
+        return {
+            "error": "ARQ pool not available",
+            "message": "Please ensure Redis and worker service are running",
+        }
+
+    try:
+        logger.info("Triggering enrichment + scoring pipeline")
+        enrich_job = await enqueue_arq_job("run_enrichment_batch")
+        score_job = await enqueue_arq_job("run_scoring_batch", _defer_by=60)
+
+        return {
+            "message": "Enrichment + scoring pipeline enqueued",
+            "status": "enqueued",
+            "enrichment_job_id": enrich_job.job_id,
+            "scoring_job_id": score_job.job_id,
+        }
+    except Exception as exc:
+        logger.error(f"Failed to enqueue enrichment pipeline: {exc}", exc_info=True)
+        return {"error": "Failed to enqueue job", "message": str(exc)}
+
+
 @app.get("/listings/{obs_id}/opportunity")
 def get_listing_opportunity_score(obs_id: int, db: Session = Depends(get_db)):
     """
@@ -1783,7 +1814,13 @@ def explore_listings(
     max_price: float | None = Query(None, description="Maximum price"),
     search: str | None = Query(None, description="Search in title"),
     llm_validated: bool | None = Query(None, description="Filter by LLM validation status"),
-    sort_by: str = Query("observed_at", description="Sort by: price, observed_at"),
+    min_confidence: float | None = Query(None, description="Minimum risk-adjusted confidence"),
+    min_spread: float | None = Query(None, description="Minimum arbitrage spread in EUR"),
+    has_score: bool | None = Query(None, description="Filter to listings that have a score"),
+    sort_by: str = Query(
+        "observed_at",
+        description="Sort by: price, observed_at, spread, confidence, roi",
+    ),
     sort_order: str = Query("desc", description="Sort order: asc, desc"),
     limit: int = Query(100, le=500),
     offset: int = 0,
@@ -1794,42 +1831,70 @@ def explore_listings(
     Great for debugging ingestion and understanding market data.
     """
     # Base query with product join for context
-    query = db.query(
+    base_query = db.query(
         ListingObservation,
         ProductTemplate.name.label("product_name"),
         ProductTemplate.brand.label("product_brand"),
     ).join(ProductTemplate, ListingObservation.product_id == ProductTemplate.product_id)
 
-    # Apply filters
+    # Apply filters on base columns (before outerjoin)
     if source:
-        query = query.filter(ListingObservation.source == source)
+        base_query = base_query.filter(ListingObservation.source == source)
 
     if is_sold is not None:
-        query = query.filter(ListingObservation.is_sold == is_sold)
+        base_query = base_query.filter(ListingObservation.is_sold == is_sold)
 
     if product_id:
-        query = query.filter(ListingObservation.product_id == product_id)
+        base_query = base_query.filter(ListingObservation.product_id == product_id)
 
     if min_price is not None:
-        query = query.filter(ListingObservation.price >= min_price)
+        base_query = base_query.filter(ListingObservation.price >= min_price)
 
     if max_price is not None:
-        query = query.filter(ListingObservation.price <= max_price)
+        base_query = base_query.filter(ListingObservation.price <= max_price)
 
     if search:
-        query = query.filter(ListingObservation.title.ilike(f"%{search}%"))
+        base_query = base_query.filter(ListingObservation.title.ilike(f"%{search}%"))
 
     if llm_validated is not None:
-        query = query.filter(ListingObservation.llm_validated == llm_validated)
+        base_query = base_query.filter(ListingObservation.llm_validated == llm_validated)
 
-    # Get total count before pagination
-    total = query.count()
+    # Count on the base query before the score/enrichment outerjoin to avoid row inflation
+    total = base_query.count()
+
+    # Add outerjoins for scoring and enrichment data
+    query = (
+        base_query.outerjoin(ListingScore, ListingScore.obs_id == ListingObservation.obs_id)
+        .outerjoin(ListingEnrichment, ListingEnrichment.obs_id == ListingObservation.obs_id)
+        .add_columns(
+            ListingScore.arbitrage_spread_eur,
+            ListingScore.net_roi_pct,
+            ListingScore.risk_adjusted_confidence,
+            ListingEnrichment.urgency_score,
+        )
+    )
+
+    # Filters that reference joined score/enrichment columns
+    if min_confidence is not None:
+        query = query.filter(ListingScore.risk_adjusted_confidence >= min_confidence)
+
+    if min_spread is not None:
+        query = query.filter(ListingScore.arbitrage_spread_eur >= min_spread)
+
+    if has_score is True:
+        query = query.filter(ListingScore.score_id.isnot(None))
+    elif has_score is False:
+        query = query.filter(ListingScore.score_id.is_(None))
 
     # Apply sorting
     if sort_by == "price":
         sort_col = ListingObservation.price
-    elif sort_by == "observed_at":
-        sort_col = ListingObservation.observed_at
+    elif sort_by == "spread":
+        sort_col = ListingScore.arbitrage_spread_eur
+    elif sort_by == "confidence":
+        sort_col = ListingScore.risk_adjusted_confidence
+    elif sort_by == "roi":
+        sort_col = ListingScore.net_roi_pct
     else:
         sort_col = ListingObservation.observed_at
 
@@ -1846,7 +1911,7 @@ def explore_listings(
 
     # Format response
     listings = []
-    for observation, product_name, product_brand in results:
+    for observation, product_name, product_brand, spread, roi, confidence, urgency in results:
         listings.append(
             {
                 "obs_id": observation.obs_id,
@@ -1870,6 +1935,10 @@ def explore_listings(
                 "llm_validated": observation.llm_validated,
                 "llm_validation_result": observation.llm_validation_result,
                 "screenshot_path": observation.screenshot_path,
+                "arbitrage_spread_eur": _decimal_to_float(spread),
+                "net_roi_pct": _decimal_to_float(roi),
+                "risk_adjusted_confidence": _decimal_to_float(confidence),
+                "urgency_score": _decimal_to_float(urgency),
             }
         )
 

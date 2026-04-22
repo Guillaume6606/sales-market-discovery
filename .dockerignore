@@ -1,0 +1,32 @@
+# Python virtual environment (large, not needed in Docker builds)
+.venv
+
+# Git history
+.git
+
+# Cache directories
+.ruff_cache
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Development/CI artifacts
+.github
+.claude
+market_discovery.egg-info
+
+# Test files
+tests/
+
+# Documentation
+docs/
+reports/
+README.md
+CHANGELOG.md
+TODO.md
+CLAUDE.md
+
+# Local environment
+.env

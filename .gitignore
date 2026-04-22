@@ -11,3 +11,7 @@ data/
 .parquet/
 *.egg-info/
 reports/
+.deploy.env
+.env.prod
+backups/
+MarketOpportunitiesDiscovery/

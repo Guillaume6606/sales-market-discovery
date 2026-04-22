@@ -280,6 +280,22 @@ def fetch_audit_results(connector: str | None = None, days: int = 7) -> dict[str
 
 
 # ---------------------------------------------------------------------------
+# Listings
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=10)
+def fetch_listing_detail(obs_id: int) -> dict[str, Any] | None:
+    """Fetch full listing detail across all enrichment tables."""
+    try:
+        r = api_get(f"/listings/{obs_id}/detail", timeout=10.0)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Alerts
 # ---------------------------------------------------------------------------
 

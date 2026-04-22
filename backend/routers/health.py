@@ -9,7 +9,15 @@ from sqlalchemy.orm import Session
 
 from backend.routers.feedback import compute_precision_summary
 from libs.common.db import get_db
-from libs.common.models import ConnectorAudit, IngestionRun, ProductTemplate
+from libs.common.models import (
+    ConnectorAudit,
+    IngestionRun,
+    ListingDetailORM,
+    ListingEnrichment,
+    ListingObservation,
+    ListingScore,
+    ProductTemplate,
+)
 from libs.common.settings import settings
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -264,4 +272,44 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
         "recent_runs": recent_runs_data,
         "precision": compute_precision_summary(db),
         "connector_quality": connector_quality,
+    }
+
+
+@router.get("/enrichment")
+def get_enrichment_health(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Check enrichment pipeline freshness."""
+    total_active = (
+        db.query(func.count(ListingObservation.obs_id))
+        .filter(ListingObservation.is_stale == False)  # noqa: E712
+        .scalar()
+        or 0
+    )
+
+    detail_count = db.query(func.count(ListingDetailORM.detail_id)).scalar() or 0
+    enrichment_count = db.query(func.count(ListingEnrichment.enrichment_id)).scalar() or 0
+    score_count = db.query(func.count(ListingScore.score_id)).scalar() or 0
+
+    latest_enrichment = db.query(func.max(ListingEnrichment.enriched_at)).scalar()
+    latest_score = db.query(func.max(ListingScore.scored_at)).scalar()
+
+    return {
+        "detail_coverage": {
+            "total_active_observations": total_active,
+            "with_detail": detail_count,
+            "coverage_pct": round(detail_count / total_active * 100, 1) if total_active else 0,
+        },
+        "enrichment_coverage": {
+            "with_detail": detail_count,
+            "with_enrichment": enrichment_count,
+            "coverage_pct": round(enrichment_count / detail_count * 100, 1) if detail_count else 0,
+        },
+        "score_coverage": {
+            "with_enrichment": enrichment_count,
+            "with_score": score_count,
+            "coverage_pct": round(score_count / enrichment_count * 100, 1)
+            if enrichment_count
+            else 0,
+        },
+        "latest_enrichment_at": latest_enrichment.isoformat() if latest_enrichment else None,
+        "latest_score_at": latest_score.isoformat() if latest_score else None,
     }

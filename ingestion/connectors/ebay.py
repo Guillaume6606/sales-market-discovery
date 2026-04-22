@@ -1,11 +1,15 @@
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from loguru import logger
 
+from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.settings import settings
+
+if TYPE_CHECKING:
+    from libs.common.models import ListingDetail
 
 # eBay API endpoints
 EBAY_FINDING_API_PRODUCTION = "https://svcs.ebay.com/services/search/FindingService/v1"
@@ -123,26 +127,6 @@ async def fetch_ebay_listings(keyword: str, limit: int = 50) -> list[Listing]:
         return []
 
 
-def normalize_condition(condition_raw: str) -> str | None:
-    """Normalize eBay condition to standard categories"""
-    if not condition_raw:
-        return None
-
-    condition_lower = condition_raw.lower()
-
-    # eBay condition mappings — check more specific strings before generic ones
-    if any(word in condition_lower for word in ["like new", "excellent", "mint"]):
-        return "like_new"
-    elif any(word in condition_lower for word in ["brand new", "new", "nib"]):
-        return "new"
-    elif any(word in condition_lower for word in ["very good", "good"]):
-        return "good"
-    elif any(word in condition_lower for word in ["acceptable", "fair", "poor"]):
-        return "fair"
-
-    return None
-
-
 def _safe_extract(data: Any, default: Any = None) -> Any:
     """Safely extract value from eBay's nested array structure"""
     if isinstance(data, list) and len(data) > 0:
@@ -179,6 +163,98 @@ def _extract_brand_from_title(title: str) -> str | None:
             return brand
 
     return None
+
+
+def fetch_detail(listing_id: str, obs_id: int) -> "ListingDetail | None":
+    """Fetch detailed data for a single eBay listing using Shopping API (GetSingleItem).
+
+    Args:
+        listing_id: The eBay item ID.
+        obs_id: The observation ID to associate with the detail record.
+
+    Returns:
+        A populated ``ListingDetail`` or ``None`` if the fetch fails.
+    """
+    from libs.common.models import ListingDetail
+
+    app_id = settings.ebay_app_id
+    if not app_id:
+        logger.warning("EBAY_APP_ID not set, skipping detail fetch")
+        return None
+
+    url = "https://open.api.ebay.com/shopping"
+    params = {
+        "callname": "GetSingleItem",
+        "responseencoding": "JSON",
+        "appid": app_id,
+        "siteid": "0",
+        "version": "967",
+        "ItemID": listing_id,
+        "IncludeSelector": "Description,Details,ItemSpecifics,ShippingCosts",
+    }
+
+    try:
+        resp = httpx.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        logger.exception("eBay GetSingleItem failed for %s", listing_id)
+        return None
+
+    item = data.get("Item")
+    if not item:
+        return None
+
+    pictures = item.get("PictureURL", [])
+    if isinstance(pictures, str):
+        pictures = [pictures]
+
+    description = item.get("Description", "")
+
+    start_time = item.get("StartTime")
+    original_posted_at = None
+    if start_time:
+        try:
+            original_posted_at = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            pass
+
+    seller = item.get("Seller", {})
+    feedback_score = seller.get("FeedbackScore")
+    seller_transaction_count = int(feedback_score) if feedback_score is not None else None
+
+    registration_date = seller.get("RegistrationDate")
+    seller_account_age_days = None
+    if registration_date:
+        try:
+            reg_dt = datetime.fromisoformat(registration_date.replace("Z", "+00:00"))
+            seller_account_age_days = (datetime.now(UTC) - reg_dt).days
+        except (ValueError, AttributeError):
+            pass
+
+    hit_count = item.get("HitCount")
+    view_count = int(hit_count) if hit_count is not None else None
+    watch_count = item.get("WatchCount")
+    favorite_count = int(watch_count) if watch_count is not None else None
+
+    best_offer = item.get("BestOfferEnabled", False)
+    negotiation_enabled = bool(best_offer)
+
+    shipping_type = item.get("ShippingType", "")
+    local_pickup_only = shipping_type.lower() in ("pickuponly", "freepickup")
+
+    return ListingDetail(
+        obs_id=obs_id,
+        description=description if description else None,
+        photo_urls=pictures,
+        local_pickup_only=local_pickup_only,
+        negotiation_enabled=negotiation_enabled,
+        original_posted_at=original_posted_at,
+        seller_account_age_days=seller_account_age_days,
+        seller_transaction_count=seller_transaction_count,
+        view_count=view_count,
+        favorite_count=favorite_count,
+    )
 
 
 def parse_ebay_response(response_data: dict, is_sold: bool = False) -> list[Listing]:

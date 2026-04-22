@@ -15,6 +15,17 @@ RED := \033[0;31m
 NC := \033[0m
 
 DC := docker-compose
+DC_PROD := docker compose -f docker-compose.yml -f docker-compose.prod.yml
+
+# Load deploy config if present
+-include .deploy.env
+export
+
+SSH_USER ?= root
+SSH_PORT ?= 22
+DEPLOY_DIR ?= /opt/market-discovery
+SSH_CMD := ssh -p $(SSH_PORT) $(SSH_USER)@$(SSH_HOST)
+SCP_CMD := scp -P $(SSH_PORT)
 
 # =============================================================================
 # Help
@@ -26,19 +37,22 @@ help: ## Show this help message
 	@echo "$(CYAN)========================================================$(NC)"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '(install|fmt|lint|test)' | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E '^(install|fmt|lint|test)' | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(GREEN)Docker:$(NC)"
-	@grep -E '^(up|down|stop|logs|build|rebuild|restart|status|health|clean):.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
+	@grep -hE '^(up|down|stop|logs|build|rebuild|restart|status|health|clean):.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(GREEN)Services:$(NC)"
-	@grep -E '^(backend|ingestion|ui|db)-.*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
+	@grep -hE '^(backend|ingestion|ui|db)-.*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(GREEN)Local Dev (no Docker):$(NC)"
-	@grep -E '^dev-.*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
+	@grep -hE '^dev-.*:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
 	@echo ""
 	@echo "$(GREEN)Operations:$(NC)"
-	@grep -E '^(audit|ingest:|migrate).*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
+	@grep -hE '^(audit|ingest:|migrate).*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
+	@echo ""
+	@echo "$(GREEN)Deployment (VPS):$(NC)"
+	@grep -hE '^(deploy|remote-|backup|setup-vps|telegram-|caddy-).*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
 
 # =============================================================================
 # Development
@@ -212,3 +226,63 @@ audit-ebay: ## Run eBay-only audit in Docker
 ingest: ## Run full ingestion in Docker
 	$(DC) run --rm -T -e UV_CACHE_DIR=/tmp/uv-cache ingestion \
 		uv run python -c "import asyncio; from ingestion.ingestion import run_full_ingestion_all; asyncio.run(run_full_ingestion_all())"
+
+# =============================================================================
+# Deployment (VPS)
+# =============================================================================
+
+deploy: ## Full deploy to VPS (sync + build + migrate + restart)
+	@test -n "$(SSH_HOST)" || (echo "$(RED)Set SSH_HOST in .deploy.env$(NC)" && exit 1)
+	@echo "$(GREEN)Deploying to $(SSH_HOST)...$(NC)"
+	bash infra/deploy.sh
+
+deploy-quick: ## Quick deploy to VPS (sync + restart, no rebuild)
+	@test -n "$(SSH_HOST)" || (echo "$(RED)Set SSH_HOST in .deploy.env$(NC)" && exit 1)
+	@echo "$(GREEN)Quick deploy to $(SSH_HOST)...$(NC)"
+	SSH_QUICK=1 bash infra/deploy.sh
+
+deploy-env: ## Copy .env.prod to VPS as .env (run once or after config changes)
+	@test -n "$(SSH_HOST)" || (echo "$(RED)Set SSH_HOST in .deploy.env$(NC)" && exit 1)
+	@test -f .env.prod || (echo "$(RED).env.prod not found$(NC)" && exit 1)
+	$(SCP_CMD) .env.prod $(SSH_USER)@$(SSH_HOST):$(DEPLOY_DIR)/.env
+	@echo "$(GREEN).env.prod copied to $(SSH_HOST):$(DEPLOY_DIR)/.env$(NC)"
+
+remote-logs: ## Follow remote logs (all services)
+	$(SSH_CMD) "cd $(DEPLOY_DIR) && $(DC_PROD) logs -f --tail=100"
+
+remote-health: ## Check remote service health
+	@echo "$(GREEN)Checking $(SSH_HOST)...$(NC)"
+	@$(SSH_CMD) "cd $(DEPLOY_DIR) && $(DC_PROD) ps"
+	@echo ""
+	@curl -sf https://$(DOMAIN)/health | python3 -m json.tool 2>/dev/null || echo "$(RED)Health endpoint unreachable$(NC)"
+
+remote-status: ## Show remote container status
+	$(SSH_CMD) "cd $(DEPLOY_DIR) && $(DC_PROD) ps"
+
+remote-shell: ## SSH into VPS project directory
+	ssh -t -p $(SSH_PORT) $(SSH_USER)@$(SSH_HOST) "cd $(DEPLOY_DIR) && bash"
+
+remote-db: ## Open psql on remote
+	ssh -t -p $(SSH_PORT) $(SSH_USER)@$(SSH_HOST) "cd $(DEPLOY_DIR) && $(DC_PROD) exec db psql -U app -d app"
+
+backup: ## Run database backup on VPS
+	$(SSH_CMD) "bash $(DEPLOY_DIR)/infra/backup.sh"
+
+setup-vps: ## One-time VPS provisioning (Docker, firewall, systemd, cron)
+	@test -n "$(SSH_HOST)" || (echo "$(RED)Set SSH_HOST in .deploy.env$(NC)" && exit 1)
+	@echo "$(GREEN)Setting up VPS at $(SSH_HOST)...$(NC)"
+	bash infra/setup-vps.sh
+
+telegram-setup: ## Register Telegram webhook with your domain
+	@test -n "$(TELEGRAM_BOT_TOKEN)" || (echo "$(RED)Set TELEGRAM_BOT_TOKEN in .env$(NC)" && exit 1)
+	@test -n "$(DOMAIN)" || (echo "$(RED)Set DOMAIN in .deploy.env$(NC)" && exit 1)
+	@curl -s "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/setWebhook?url=https://$(DOMAIN)/webhooks/telegram&secret_token=$(TELEGRAM_WEBHOOK_SECRET)" | python3 -m json.tool
+
+telegram-test: ## Send test message to verify Telegram config
+	@test -n "$(TELEGRAM_BOT_TOKEN)" || (echo "$(RED)Set TELEGRAM_BOT_TOKEN in .env$(NC)" && exit 1)
+	@test -n "$(TELEGRAM_CHAT_ID)" || (echo "$(RED)Set TELEGRAM_CHAT_ID in .env$(NC)" && exit 1)
+	@curl -s "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage?chat_id=$(TELEGRAM_CHAT_ID)&text=Market+Discovery+test+message+OK" | python3 -m json.tool
+
+caddy-hash: ## Generate bcrypt hash for Caddy basic auth (usage: make caddy-hash PASSWORD=yourpassword)
+	@test -n "$(PASSWORD)" || (echo "$(RED)Usage: make caddy-hash PASSWORD=yourpassword$(NC)" && exit 1)
+	@docker run --rm caddy:2 caddy hash-password --plaintext '$(PASSWORD)'
