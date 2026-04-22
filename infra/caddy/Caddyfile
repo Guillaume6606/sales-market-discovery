@@ -1,0 +1,32 @@
+{$DOMAIN} {
+	# ── Public routes (no auth) ──────────────────────────────
+	# Telegram webhook — Telegram must POST here without auth
+	handle /webhooks/* {
+		reverse_proxy backend:8000
+	}
+
+	# Simple health check — for uptime monitoring
+	@health_root path /health
+	handle @health_root {
+		reverse_proxy backend:8000
+	}
+
+	# ── Backend API routes — behind basic auth ───────────────
+	@backend path /health/* /products/* /products /categories/* /categories \
+		/listings/* /listings /ingestion/* /analytics/* /computation/* \
+		/enrichment/* /alerts/* /audit/* /docs /docs/* /openapi.json /redoc
+	handle @backend {
+		basicauth {
+			{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+		}
+		reverse_proxy backend:8000
+	}
+
+	# ── Streamlit dashboard — behind basic auth (catch-all) ──
+	handle {
+		basicauth {
+			{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+		}
+		reverse_proxy ui:8501
+	}
+}

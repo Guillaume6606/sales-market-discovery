@@ -1,0 +1,26 @@
+# Dev overrides — auto-loaded by `docker compose up`.
+# Exposes service ports to localhost and mounts GCP credentials.
+# NOT used in production (prod uses: docker compose -f docker-compose.yml -f docker-compose.prod.yml).
+
+services:
+  db:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  backend:
+    ports:
+      - "8000:8000"
+
+  ingestion:
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcloud/application_default_credentials.json
+    volumes:
+      - ${HOME}/.config/gcloud:/tmp/gcloud:ro
+
+  ui:
+    ports:
+      - "8501:8501"
