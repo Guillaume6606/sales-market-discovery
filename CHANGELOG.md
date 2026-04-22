@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **VPS deployment infrastructure** — One-command deployment via `make deploy` with rsync + SSH
+- **Caddy reverse proxy** — Auto-HTTPS via Let's Encrypt, basic auth on dashboard/API, public webhook endpoint for Telegram
+- **Production docker-compose override** (`docker-compose.prod.yml`) — Restart policies, log rotation, resource limits, db healthcheck
+- **Dev docker-compose override** (`docker-compose.override.yml`) — Auto-loaded for local dev, keeps ports and gcloud mount out of base config
+- **Makefile deployment targets** — `deploy`, `deploy-quick`, `remote-logs`, `remote-health`, `remote-status`, `remote-shell`, `remote-db`, `backup`, `setup-vps`, `telegram-setup`, `telegram-test`, `caddy-hash`
+- **VPS provisioning script** (`infra/setup-vps.sh`) — Docker install, firewall, systemd service, backup cron
+- **Database backup script** (`infra/backup.sh`) — Daily pg_dump with gzip and 14-day retention
+- **Systemd service** (`infra/systemd/market-discovery.service`) — Auto-start on VPS reboot
+
+### Changed
+- Restructured `docker-compose.yml` — Ports and dev-only mounts moved to `docker-compose.override.yml` (auto-loaded, no workflow change)
+- Remote deployment targets use `docker compose` (v2 plugin) on VPS
+
+---
+
+### Added
 - **Enriched data model** — Three new tables (`listing_detail`, `listing_enrichment`, `listing_score`) for capturing logistics, seller psychology, temporal signals, and product completeness
 - **Selective detail fetch** — 2nd-pass detail page fetching for promising listings with cold-start fallback
 - **LLM enrichment pipeline** — Hourly batch job analyzing listings via Gemini Flash for urgency, completeness, photo quality, fakeness, and seller motivation

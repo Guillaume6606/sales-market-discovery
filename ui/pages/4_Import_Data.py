@@ -140,6 +140,30 @@ else:
                     st.error(f"Error: {exc}")
 
         # ---------------------------------------------------------------------------
+        # Enrichment & Scoring trigger
+        # ---------------------------------------------------------------------------
+        st.divider()
+        st.subheader("Enrichment & Scoring")
+        st.caption("Trigger LLM enrichment and composite scoring for all eligible listings")
+
+        if st.button("Run Enrichment + Scoring", type="primary", key="trigger_enrichment"):
+            with st.spinner("Enqueuing enrichment pipeline..."):
+                try:
+                    r = api_post("/enrichment/trigger", timeout=20.0)
+                    if r.status_code == 200:
+                        result = r.json()
+                        enrich_id = result.get("enrichment_job_id", "N/A")
+                        score_id = result.get("scoring_job_id", "N/A")
+                        st.success(
+                            f"Pipeline enqueued — enrichment: {str(enrich_id)[:8]}, "
+                            f"scoring: {str(score_id)[:8]}"
+                        )
+                    else:
+                        st.error(f"Failed: {r.text}")
+                except Exception as exc:
+                    st.error(f"API error: {exc}")
+
+        # ---------------------------------------------------------------------------
         # Ingestion activity bar chart — last 14 days, stacked by source
         # ---------------------------------------------------------------------------
         st.divider()

@@ -1566,6 +1566,31 @@ async def trigger_product_computation_endpoint(product_id: str, db: Session = De
         return {"error": "Failed to enqueue job", "message": str(exc)}
 
 
+@app.post("/enrichment/trigger")
+async def trigger_enrichment():
+    """Trigger LLM enrichment + scoring pipeline manually."""
+    if not arq_pool:
+        return {
+            "error": "ARQ pool not available",
+            "message": "Please ensure Redis and worker service are running",
+        }
+
+    try:
+        logger.info("Triggering enrichment + scoring pipeline")
+        enrich_job = await enqueue_arq_job("run_enrichment_batch")
+        score_job = await enqueue_arq_job("run_scoring_batch", _defer_by=60)
+
+        return {
+            "message": "Enrichment + scoring pipeline enqueued",
+            "status": "enqueued",
+            "enrichment_job_id": enrich_job.job_id,
+            "scoring_job_id": score_job.job_id,
+        }
+    except Exception as exc:
+        logger.error(f"Failed to enqueue enrichment pipeline: {exc}", exc_info=True)
+        return {"error": "Failed to enqueue job", "message": str(exc)}
+
+
 @app.get("/listings/{obs_id}/opportunity")
 def get_listing_opportunity_score(obs_id: int, db: Session = Depends(get_db)):
     """

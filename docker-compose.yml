@@ -1,3 +1,7 @@
+# Base services — shared between dev and production.
+# Dev ports are in docker-compose.override.yml (auto-loaded by `docker compose up`).
+# Production adds Caddy via docker-compose.prod.yml.
+
 services:
   db:
     image: postgres:16
@@ -5,14 +9,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
       POSTGRES_DB: ${POSTGRES_DB:-app}
-    ports:
-      - "5432:5432"
     volumes:
       - dbdata:/var/lib/postgresql/data
 
   redis:
     image: redis:7
-    ports: ["6379:6379"]
 
   backend:
     build:
@@ -20,7 +21,6 @@ services:
       dockerfile: infra/docker/Dockerfile.backend
     env_file: .env
     depends_on: [db, redis]
-    ports: ["8000:8000"]
 
   ingestion:
     build:
@@ -38,9 +38,7 @@ services:
     environment:
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - LOG_LEVEL=DEBUG
-      - GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcloud/application_default_credentials.json
     volumes:
-      - ${HOME}/.config/gcloud:/tmp/gcloud:ro
       - pwuser-data:/tmp/pwuser
     tmpfs:
       - /home/pwuser/.cache
@@ -51,7 +49,6 @@ services:
       dockerfile: infra/docker/Dockerfile.ui
     env_file: .env
     depends_on: [backend]
-    ports: ["8501:8501"]
 
 volumes:
   dbdata:
