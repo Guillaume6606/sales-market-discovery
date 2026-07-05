@@ -58,6 +58,8 @@ services:
 
   backend:
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"  # loopback only: deploy health check + SSH-tunnel access
     deploy:
       resources:
         limits:
@@ -82,6 +84,8 @@ services:
 
   ui:
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:8501:8501"  # loopback only: SSH-tunnel access to dashboard
     deploy:
       resources:
         limits:

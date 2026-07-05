@@ -11,9 +11,11 @@ set -euo pipefail
 
 echo "==> Provisioning ${SSH_USER}@${SSH_HOST} (port ${SSH_PORT})"
 
-ssh -p "${SSH_PORT}" "${SSH_USER}@${SSH_HOST}" bash -s -- "${DEPLOY_DIR}" <<'REMOTE'
+ssh -p "${SSH_PORT}" "${SSH_USER}@${SSH_HOST}" sudo bash -s -- "${DEPLOY_DIR}" "${SSH_USER}" "${SSH_PORT}" <<'REMOTE'
 set -euo pipefail
 DEPLOY_DIR="$1"
+DEPLOY_USER="$2"
+FW_SSH_PORT="$3"
 
 echo "--- Updating system packages..."
 apt-get update -qq && apt-get upgrade -y -qq
@@ -33,9 +35,16 @@ if ! docker compose version &>/dev/null; then
     exit 1
 fi
 
-# Create deploy directory
-echo "--- Creating ${DEPLOY_DIR}/backups"
+# Create deploy directory owned by the deploy user (rsync runs unprivileged)
+echo "--- Creating ${DEPLOY_DIR}/backups (owner: ${DEPLOY_USER})"
 mkdir -p "${DEPLOY_DIR}/backups"
+chown -R "${DEPLOY_USER}:${DEPLOY_USER}" "${DEPLOY_DIR}"
+
+# Ensure deploy user can run docker
+if ! id -nG "${DEPLOY_USER}" | grep -qw docker; then
+    usermod -aG docker "${DEPLOY_USER}"
+    echo "--- Added ${DEPLOY_USER} to docker group"
+fi
 
 # Install systemd service
 SERVICE_SRC="${DEPLOY_DIR}/infra/systemd/market-discovery.service"
@@ -63,11 +72,11 @@ fi
 # Basic firewall
 if command -v ufw &>/dev/null; then
     echo "--- Configuring firewall (ufw)..."
-    ufw allow 22/tcp   >/dev/null 2>&1 || true
+    ufw allow "${FW_SSH_PORT}/tcp" >/dev/null 2>&1 || true
     ufw allow 80/tcp   >/dev/null 2>&1 || true
     ufw allow 443/tcp  >/dev/null 2>&1 || true
     ufw --force enable  >/dev/null 2>&1 || true
-    echo "    Allowed: SSH (22), HTTP (80), HTTPS (443)"
+    echo "    Allowed: SSH (${FW_SSH_PORT}), HTTP (80), HTTPS (443)"
 else
     echo "--- ufw not found, skipping firewall setup"
 fi
