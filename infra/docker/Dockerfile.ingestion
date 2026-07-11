@@ -45,6 +45,11 @@ RUN chmod +x /start-ingestion.sh
 # access to /app itself at runtime (uv run rebuilds the editable install).
 RUN chown -R pwuser:pwuser /app
 
+# Pre-create the Chromium profile dir with correct ownership so the
+# pwuser-data named volume initializes pwuser-owned (else Docker creates
+# it root-owned and Chromium fails on SingletonLock).
+RUN mkdir -p /tmp/pwuser && chown pwuser:pwuser /tmp/pwuser
+
 USER pwuser
 
 # Redirect uv cache to a pwuser-writable location.
