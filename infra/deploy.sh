@@ -22,6 +22,7 @@ RSYNC_EXCLUDES=(
     __pycache__ htmlcov node_modules
     docs/ tests/ reports/
     "*.pyc" "*.pyo"
+    "*.egg-info" ".~lock.*"
     .env .deploy.env
     backups/
 )
@@ -46,18 +47,17 @@ cd "$DEPLOY_DIR"
 if [ "$QUICK" = "0" ]; then
     echo "--- Building images..."
     $DC_PROD build --pull
+
+    echo "--- Running migrations (before app services start)..."
+    $DC_PROD up -d db
+    until $DC_PROD exec -T db pg_isready -U "${POSTGRES_USER:-app}" >/dev/null 2>&1; do
+        sleep 2
+    done
+    $DC_PROD run --rm --no-deps backend python -m alembic upgrade head
 fi
 
 echo "--- Starting services..."
 $DC_PROD up -d
-
-if [ "$QUICK" = "0" ]; then
-    echo "--- Waiting for backend to be ready..."
-    sleep 5
-
-    echo "--- Running migrations..."
-    $DC_PROD exec -T backend python -m alembic upgrade head
-fi
 
 echo "--- Health check..."
 sleep 3

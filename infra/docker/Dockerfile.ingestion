@@ -40,9 +40,10 @@ COPY --chown=pwuser:pwuser infra/docker/start-ingestion.sh /start-ingestion.sh
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TZ=Europe/Paris
 RUN chmod +x /start-ingestion.sh
 
-# Fix permissions: uv sync ran as root, so .venv is root-owned.
-# pwuser needs write access at runtime (uv run).
-RUN chown -R pwuser:pwuser /app/.venv
+# Fix permissions: uv sync/uv run ran as root, so .venv and any build
+# artifacts (market_discovery.egg-info) are root-owned. pwuser needs write
+# access to /app itself at runtime (uv run rebuilds the editable install).
+RUN chown -R pwuser:pwuser /app
 
 USER pwuser
 
