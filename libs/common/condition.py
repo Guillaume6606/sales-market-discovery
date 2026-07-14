@@ -68,6 +68,7 @@ def normalize_condition(raw: str | None) -> str | None:
         "good",
         "bien",
         "used",
+        "occasion",  # LeBonCoin generic "secondhand" label (no finer grade given)
     ]
     fair_patterns = [
         "etat satisfaisant",

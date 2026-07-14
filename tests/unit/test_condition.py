@@ -17,6 +17,7 @@ from libs.common.condition import normalize_condition
         ("bon état", "good"),
         ("Satisfaisant", "fair"),
         ("État satisfaisant", "fair"),
+        ("Occasion", "good"),  # LeBonCoin generic secondhand label
         # English
         ("Brand New", "new"),
         ("new", "new"),

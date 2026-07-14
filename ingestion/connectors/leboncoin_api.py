@@ -130,9 +130,7 @@ class LeBonCoinAPIConnector:
         self._extract_field(
             ad, ad_data, ["body", "description", "content"]
         )  # reserved for future use
-        condition_raw = (
-            self._extract_field(ad, ad_data, ["condition", "item_condition", "state"]) or None
-        )
+        condition_raw = self._extract_condition(ad, ad_data)
         location = self._extract_location(ad_data)
         shipping_cost = self._extract_shipping_cost(ad_data)
         url = self._extract_field(ad, ad_data, ["url", "permalink", "short_url"])
@@ -250,6 +248,26 @@ class LeBonCoinAPIConnector:
             return dict(ad.__dict__)
 
         return {}
+
+    # LeBonCoin exposes condition inside the ad's `attributes` list
+    # (Attribute(key="item_condition", value=<slug>, value_label=<French label>)),
+    # never as a top-level field. The value_label ("Neuf", "Très bon état", …)
+    # is the reliable human string that normalize_condition() understands.
+    _CONDITION_KEYS = frozenset({"item_condition", "condition", "etat", "state"})
+
+    def _extract_condition(self, ad: Any, ad_data: dict[str, Any]) -> str | None:
+        attributes = ad_data.get("attributes")
+        if attributes is None:
+            attributes = getattr(ad, "attributes", None)
+        for attr in attributes or []:
+            attr_data = attr if isinstance(attr, dict) else self._ad_to_dict(attr)
+            key = attr_data.get("key")
+            if key and str(key).lower() in self._CONDITION_KEYS:
+                value = attr_data.get("value_label") or attr_data.get("value")
+                if value not in (None, ""):
+                    return str(value)
+        # Fall back to a top-level field in case a future API shape provides one.
+        return self._extract_field(ad, ad_data, ["condition", "item_condition", "state"]) or None
 
     @staticmethod
     def _extract_field(ad: Any, ad_data: dict[str, Any], keys: Iterable[str]) -> Any | None:

@@ -228,6 +228,32 @@ class TestLeBonCoinAPIParsing:
         assert listing.condition_raw == "Bon état"
         assert listing.condition_norm == "good"
 
+    def test_condition_from_attributes(self):
+        # Real LeBonCoin shape: condition lives in the attributes list as an
+        # item_condition Attribute, not a top-level field.
+        ad = {
+            "list_id": "44444",
+            "subject": "Sony WH-1000XM4",
+            "price": 150,
+            "attributes": [
+                {"key": "brand", "value": "sony", "value_label": "Sony"},
+                {"key": "item_condition", "value": "2", "value_label": "Très bon état"},
+            ],
+        }
+        listing = self.connector._map_ad_to_listing(ad)
+
+        assert listing is not None
+        assert listing.condition_raw == "Très bon état"
+        assert listing.condition_norm == "like_new"
+
+    def test_condition_missing_attributes_is_none(self):
+        ad = {"list_id": "55555", "subject": "No condition", "price": 100}
+        listing = self.connector._map_ad_to_listing(ad)
+
+        assert listing is not None
+        assert listing.condition_raw is None
+        assert listing.condition_norm is None
+
 
 # =========================================================================== #
 # Vinted tests

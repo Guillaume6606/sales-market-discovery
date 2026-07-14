@@ -773,13 +773,19 @@ class WorkerSettings:
         # Scoring tasks
         run_scoring_batch,
     ]
+    # NOTE: arq's cron() fires on EVERY minute of a matching hour unless `minute`
+    # is pinned. Every daily job below MUST set minute=N or it runs 60x/night.
+    # Times are container-local (TZ=Europe/Paris). Daily cycle runs at 07:00 Paris
+    # so fresh data is ready when the operator wakes up; jobs are staggered to
+    # avoid overlap (Vinted drives a headless browser) and ordered
+    # stale-mark -> ingest -> compute.
     cron_jobs = [
         cron(ping, minute=0),  # Run ping every hour
-        cron(scheduled_ebay_ingestion, hour=2),  # Run eBay ingestion daily at 2 AM
-        cron(scheduled_leboncoin_ingestion, hour=3),  # Run LeBonCoin ingestion daily at 3 AM
-        cron(scheduled_vinted_ingestion, hour=4),  # Run Vinted ingestion daily at 4 AM
-        cron(scheduled_computation, hour=5),  # Run computation daily at 5 AM (after ingestion)
-        cron(mark_stale_listings, hour=1),  # Mark stale listings daily at 1 AM
+        cron(mark_stale_listings, hour=6, minute=45),  # Mark stale listings before ingestion
+        cron(scheduled_ebay_ingestion, hour=7, minute=0),  # eBay ingestion daily 07:00
+        cron(scheduled_leboncoin_ingestion, hour=7, minute=20),  # LeBonCoin daily 07:20
+        cron(scheduled_vinted_ingestion, hour=7, minute=40),  # Vinted daily 07:40
+        cron(scheduled_computation, hour=8, minute=0),  # Computation daily 08:00 (after ingest)
         cron(
             check_system_health,
             hour={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22},
