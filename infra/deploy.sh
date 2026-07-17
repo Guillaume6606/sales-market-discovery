@@ -35,50 +35,11 @@ rsync -azP --delete \
     . "${SSH_USER}@${SSH_HOST}:${DEPLOY_DIR}/"
 
 # ── Remote deploy ───────────────────────────────────────────
+# Executed from the rsynced file, NOT an ssh heredoc: docker compose
+# exec/run attach stdin and steal heredoc bytes, truncating the script.
 echo "==> Running deploy on remote (quick=${QUICK})"
-ssh -p "${SSH_PORT}" "${SSH_USER}@${SSH_HOST}" bash -s -- "${QUICK}" "${DEPLOY_DIR}" <<'REMOTE'
-set -euo pipefail
-QUICK="$1"
-DEPLOY_DIR="$2"
-DC_PROD="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
-
-cd "$DEPLOY_DIR"
-
-if [ "$QUICK" = "0" ]; then
-    echo "--- Building images..."
-    $DC_PROD build --pull
-
-    echo "--- Running migrations (before app services start)..."
-    $DC_PROD up -d db
-    until $DC_PROD exec -T db pg_isready -U "${POSTGRES_USER:-app}" >/dev/null 2>&1; do
-        sleep 2
-    done
-    # -T + </dev/null: without them `compose run` attaches stdin and swallows
-    # the rest of this heredoc, silently skipping every step below
-    $DC_PROD run --rm --no-deps -T backend python -m alembic upgrade head </dev/null
-fi
-
-echo "--- Starting services..."
-# --force-recreate: compose does NOT recreate containers when the image is
-# rebuilt under the same tag or when .env changes on disk
-$DC_PROD up -d --force-recreate
-
-echo "--- Health check..."
-sleep 3
-STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo "FAIL")
-if [ "$STATUS" = "200" ]; then
-    echo "==> Health check PASSED"
-else
-    echo "==> Health check FAILED (status: $STATUS)"
-    echo "--- Last 30 lines of logs:"
-    $DC_PROD logs --tail=30
-    exit 1
-fi
-
-echo ""
-echo "--- Container status:"
-$DC_PROD ps
-REMOTE
+ssh -p "${SSH_PORT}" "${SSH_USER}@${SSH_HOST}" \
+    "cd '${DEPLOY_DIR}' && bash infra/remote-deploy.sh '${QUICK}'"
 
 DOMAIN="${DOMAIN:-unknown}"
 echo ""
