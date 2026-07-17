@@ -22,6 +22,10 @@ class Settings(BaseSettings):
 
     # APIs
     ebay_app_id: str | None = None
+    # eBay marketplace account deletion compliance (32-80 char token you invent,
+    # and the exact public URL registered in the eBay developer portal)
+    ebay_verification_token: str | None = None
+    ebay_deletion_endpoint_url: str | None = None
 
     # Scraping proxy (rotating residential, format: http://user:pass@host:port)
     scraping_proxy_url: str | None = None

@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **eBay account deletion webhook** (`GET/POST /webhooks/ebay/account-deletion`) — Challenge-response handshake + notification acknowledgment required to flip a production eBay keyset to compliant. Configured via `EBAY_VERIFICATION_TOKEN` and `EBAY_DELETION_ENDPOINT_URL`; already public through the existing Caddy `/webhooks/*` route.
 - **Residential proxy support** (`SCRAPING_PROXY_URL`) — Single env var routes all scraper traffic through a rotating residential proxy: curl_cffi session, Playwright persistent context, and the LeBonCoin `lbc.Client`. Fixes DataDome blocking of the datacenter VPS IP.
 - **VPS deployment infrastructure** — One-command deployment via `make deploy` with rsync + SSH
 - **Caddy reverse proxy** — Auto-HTTPS via Let's Encrypt, basic auth on dashboard/API, public webhook endpoint for Telegram

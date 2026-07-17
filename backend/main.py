@@ -11,6 +11,7 @@ from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
 from backend.routers.audit import router as audit_router
+from backend.routers.ebay_webhook import router as ebay_webhook_router
 from backend.routers.feedback import router as feedback_router
 from backend.routers.health import router as health_router
 from backend.routers.ingestion import router as ingestion_router
@@ -52,6 +53,7 @@ arq_pool = None
 
 app = FastAPI(title="Market Discovery API", version="0.1.0")
 app.include_router(health_router)
+app.include_router(ebay_webhook_router)
 app.include_router(feedback_router)
 app.include_router(ingestion_router)
 app.include_router(pmn_router)
