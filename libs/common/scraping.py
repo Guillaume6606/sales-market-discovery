@@ -10,6 +10,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from curl_cffi.requests import AsyncSession
 from fake_useragent import UserAgent
@@ -49,6 +50,25 @@ class DataDomeBlockError(RuntimeError):
 
 
 VINTED_COOKIE_PATH: Path = Path("/tmp/pwuser/vinted-cookies.json")  # noqa: S108
+
+
+def playwright_proxy_from_url(url: str | None) -> dict[str, str] | None:
+    """Split a proxy URL into the {server, username, password} dict Playwright expects."""
+    if not url:
+        return None
+    parts = urlsplit(url)
+    if not parts.hostname:
+        logger.warning("SCRAPING_PROXY_URL is set but has no hostname — ignoring")
+        return None
+    server = f"{parts.scheme or 'http'}://{parts.hostname}"
+    if parts.port:
+        server = f"{server}:{parts.port}"
+    proxy: dict[str, str] = {"server": server}
+    if parts.username:
+        proxy["username"] = unquote(parts.username)
+    if parts.password:
+        proxy["password"] = unquote(parts.password)
+    return proxy
 
 
 # Advanced browser fingerprinting patch from test-stealth.py
@@ -247,8 +267,16 @@ class ScrapingSession:
     async def initialize(self):
         """Initialize scraping session"""
         # Create curl_cffi session with Chrome TLS impersonation
+        proxies: dict[str, str] | None = None
+        if settings.scraping_proxy_url:
+            proxies = {
+                "http": settings.scraping_proxy_url,
+                "https": settings.scraping_proxy_url,
+            }
+            logger.info("Scraping session routed through residential proxy")
         self.session = AsyncSession(
             impersonate="chrome",
+            proxies=proxies,
             headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
@@ -267,6 +295,7 @@ class ScrapingSession:
             self._playwright_context = (
                 await self._playwright_instance.chromium.launch_persistent_context(
                     user_data_dir=self.config.playwright_user_data_dir,
+                    proxy=playwright_proxy_from_url(settings.scraping_proxy_url),
                     locale="fr-FR",
                     timezone_id="Europe/Paris",
                     geolocation={"latitude": 48.8566, "longitude": 2.3522},

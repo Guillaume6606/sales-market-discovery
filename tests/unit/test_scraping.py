@@ -9,7 +9,36 @@ from libs.common.scraping import (
     VINTED_COOKIE_PATH,
     DataDomeBlockError,
     human_delay,
+    playwright_proxy_from_url,
 )
+
+
+class TestPlaywrightProxyFromUrl:
+    def test_none_url_returns_none(self) -> None:
+        assert playwright_proxy_from_url(None) is None
+
+    def test_empty_url_returns_none(self) -> None:
+        assert playwright_proxy_from_url("") is None
+
+    def test_full_url_split_into_server_and_credentials(self) -> None:
+        proxy = playwright_proxy_from_url("http://user:pass_country-fr@geo.example.com:12321")
+        assert proxy == {
+            "server": "http://geo.example.com:12321",
+            "username": "user",
+            "password": "pass_country-fr",
+        }
+
+    def test_url_without_credentials(self) -> None:
+        proxy = playwright_proxy_from_url("http://geo.example.com:12321")
+        assert proxy == {"server": "http://geo.example.com:12321"}
+
+    def test_percent_encoded_credentials_are_decoded(self) -> None:
+        proxy = playwright_proxy_from_url("http://user:p%40ss@geo.example.com:12321")
+        assert proxy is not None
+        assert proxy["password"] == "p@ss"
+
+    def test_url_without_hostname_returns_none(self) -> None:
+        assert playwright_proxy_from_url("not-a-url") is None
 
 
 class TestHumanDelay:

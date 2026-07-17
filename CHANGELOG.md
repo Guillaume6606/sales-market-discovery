@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Residential proxy support** (`SCRAPING_PROXY_URL`) — Single env var routes all scraper traffic through a rotating residential proxy: curl_cffi session, Playwright persistent context, and the LeBonCoin `lbc.Client`. Fixes DataDome blocking of the datacenter VPS IP.
 - **VPS deployment infrastructure** — One-command deployment via `make deploy` with rsync + SSH
 - **Caddy reverse proxy** — Auto-HTTPS via Let's Encrypt, basic auth on dashboard/API, public webhook endpoint for Telegram
 - **Production docker-compose override** (`docker-compose.prod.yml`) — Restart policies, log rotation, resource limits, db healthcheck

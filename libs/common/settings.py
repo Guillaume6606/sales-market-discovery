@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # APIs
     ebay_app_id: str | None = None
 
+    # Scraping proxy (rotating residential, format: http://user:pass@host:port)
+    scraping_proxy_url: str | None = None
+
     # LLM Configuration (Gemini via Vertex AI)
     gemini_api_key: str | None = None
     gemini_model: str = Field(default="gemini-2.5-flash")

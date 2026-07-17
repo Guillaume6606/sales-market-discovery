@@ -143,6 +143,36 @@ class TestEbayParsing:
 # =========================================================================== #
 
 
+class TestLeBonCoinProxyFromSettings:
+    def test_no_proxy_url_returns_none(self, monkeypatch):
+        from ingestion.connectors import leboncoin_api
+
+        monkeypatch.setattr(leboncoin_api.settings, "scraping_proxy_url", None)
+        assert leboncoin_api._proxy_from_settings() is None
+
+    def test_full_url_builds_lbc_proxy(self, monkeypatch):
+        from ingestion.connectors import leboncoin_api
+
+        monkeypatch.setattr(
+            leboncoin_api.settings,
+            "scraping_proxy_url",
+            "http://user:pass_country-fr@geo.example.com:12321",
+        )
+        proxy = leboncoin_api._proxy_from_settings()
+        assert proxy is not None
+        assert proxy.host == "geo.example.com"
+        assert proxy.port == 12321
+        assert proxy.username == "user"
+        assert proxy.password == "pass_country-fr"
+        assert proxy.scheme == "http"
+
+    def test_url_without_port_returns_none(self, monkeypatch):
+        from ingestion.connectors import leboncoin_api
+
+        monkeypatch.setattr(leboncoin_api.settings, "scraping_proxy_url", "http://geo.example.com")
+        assert leboncoin_api._proxy_from_settings() is None
+
+
 class TestLeBonCoinAPIParsing:
     def setup_method(self):
         self.connector = LeBonCoinAPIConnector()

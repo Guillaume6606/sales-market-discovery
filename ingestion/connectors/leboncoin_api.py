@@ -13,9 +13,30 @@ from loguru import logger
 from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingUtils
+from libs.common.settings import settings
 
 if TYPE_CHECKING:
     from libs.common.models import ListingDetail
+
+
+def _proxy_from_settings() -> lbc.Proxy | None:
+    """Build an ``lbc.Proxy`` from ``SCRAPING_PROXY_URL`` if configured."""
+    url = settings.scraping_proxy_url
+    if not url:
+        return None
+    from urllib.parse import unquote, urlsplit
+
+    parts = urlsplit(url)
+    if not parts.hostname or not parts.port:
+        logger.warning("SCRAPING_PROXY_URL is set but missing host or port — ignoring")
+        return None
+    return lbc.Proxy(
+        host=parts.hostname,
+        port=parts.port,
+        username=unquote(parts.username) if parts.username else None,
+        password=unquote(parts.password) if parts.password else None,
+        scheme=parts.scheme or "http",
+    )
 
 
 class LeBonCoinAPIConnector:
@@ -33,10 +54,9 @@ class LeBonCoinAPIConnector:
         # Allow dependency injection for easier testing while still supporting proxy configuration.
         if client is not None:
             self._client = client
-        elif proxy is not None:
-            self._client = lbc.Client(proxy=proxy)
         else:
-            self._client = lbc.Client()
+            effective_proxy = proxy if proxy is not None else _proxy_from_settings()
+            self._client = lbc.Client(proxy=effective_proxy) if effective_proxy else lbc.Client()
 
         self._scraping_utils = ScrapingUtils()
 
