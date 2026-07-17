@@ -26,9 +26,15 @@ echo "--- Starting services..."
 # rebuilt under the same tag or when .env changes on disk
 $DC_PROD up -d --force-recreate
 
-echo "--- Health check..."
-sleep 3
-STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo "FAIL")
+echo "--- Health check (up to 60s)..."
+STATUS="FAIL"
+for _ in $(seq 1 20); do
+    sleep 3
+    if STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null); then
+        break
+    fi
+    STATUS="FAIL"
+done
 if [ "$STATUS" = "200" ]; then
     echo "==> Health check PASSED"
 else
