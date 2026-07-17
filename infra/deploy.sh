@@ -57,7 +57,9 @@ if [ "$QUICK" = "0" ]; then
 fi
 
 echo "--- Starting services..."
-$DC_PROD up -d
+# --force-recreate: compose does NOT recreate containers when the image is
+# rebuilt under the same tag or when .env changes on disk
+$DC_PROD up -d --force-recreate
 
 echo "--- Health check..."
 sleep 3
