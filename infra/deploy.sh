@@ -53,7 +53,9 @@ if [ "$QUICK" = "0" ]; then
     until $DC_PROD exec -T db pg_isready -U "${POSTGRES_USER:-app}" >/dev/null 2>&1; do
         sleep 2
     done
-    $DC_PROD run --rm --no-deps backend python -m alembic upgrade head
+    # -T + </dev/null: without them `compose run` attaches stdin and swallows
+    # the rest of this heredoc, silently skipping every step below
+    $DC_PROD run --rm --no-deps -T backend python -m alembic upgrade head </dev/null
 fi
 
 echo "--- Starting services..."
