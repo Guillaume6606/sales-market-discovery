@@ -18,6 +18,9 @@ from libs.common.condition import normalize_condition
         ("Satisfaisant", "fair"),
         ("État satisfaisant", "fair"),
         ("Occasion", "good"),  # LeBonCoin generic secondhand label
+        ("Ouvert (jamais utilisé)", "like_new"),  # eBay FR open box
+        ("Reconditionné", "good"),  # eBay FR refurbished
+        ("Très bon état - Reconditionné", "like_new"),  # certified refurb grades win
         # English
         ("Brand New", "new"),
         ("new", "new"),
@@ -30,6 +33,8 @@ from libs.common.condition import normalize_condition
         ("Acceptable", "fair"),
         ("Fair", "fair"),
         ("Poor", "fair"),
+        ("Open box", "like_new"),
+        ("Certified - Refurbished", "good"),
         # Edge cases
         ("", None),
         (None, None),

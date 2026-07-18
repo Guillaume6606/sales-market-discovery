@@ -1,6 +1,8 @@
 """Unit tests for marketplace connector parsing logic (Task 3.5)."""
 
-from ingestion.connectors.ebay import parse_ebay_response
+import time
+
+from ingestion.connectors.ebay import parse_ebay_browse_response
 from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
 from ingestion.connectors.vinted import VintedConnector
 from ingestion.connectors.vinted_api import VintedAPIConnector
@@ -11,105 +13,114 @@ from libs.common.condition import normalize_condition
 # =========================================================================== #
 
 
-def _make_ebay_item(
-    item_id: str = "123456",
+def _make_browse_item(
+    item_id: str = "v1|123456|0",
     title: str = "Sony WH-1000XM4",
     price: str = "199.99",
     currency: str = "EUR",
     condition: str = "Used",
-    location: str = "Paris, France",
 ) -> dict:
-    """Build a realistic eBay Finding API item dict."""
+    """Build a realistic eBay Browse API item summary dict."""
     return {
-        "itemId": [item_id],
-        "title": [title],
-        "sellingStatus": [
-            {
-                "currentPrice": [{"__value__": [price], "@currencyId": [currency]}],
-                "sellingState": ["EndedWithSales"],
-            }
-        ],
-        "condition": [{"conditionDisplayName": [condition]}],
-        "location": [location],
-        "sellerInfo": [{"feedbackScore": ["1500"]}],
-        "shippingInfo": [
-            {
-                "shippingServiceCost": [{"__value__": ["5.99"], "@currencyId": ["EUR"]}],
-            }
+        "itemId": item_id,
+        "legacyItemId": "123456",
+        "title": title,
+        "price": {"value": price, "currency": currency},
+        "condition": condition,
+        "itemWebUrl": "https://www.ebay.fr/itm/123456",
+        "itemLocation": {"postalCode": "75001", "country": "FR"},
+        "seller": {"username": "seller1", "feedbackScore": 1500},
+        "shippingOptions": [
+            {"shippingCostType": "FIXED", "shippingCost": {"value": "5.99", "currency": "EUR"}}
         ],
     }
 
 
-def _make_ebay_response(items: list[dict], count: int | None = None) -> dict:
-    """Wrap items in eBay Finding API response structure."""
-    if count is None:
-        count = len(items)
-    return {
-        "searchResult": [{"@count": [str(count)], "item": items}],
-    }
+def _make_browse_response(items: list[dict]) -> dict:
+    """Wrap item summaries in a Browse API search response structure."""
+    if not items:
+        return {"total": 0}
+    return {"total": len(items), "itemSummaries": items}
 
 
 class TestEbayParsing:
     def test_basic_listing_extraction(self):
-        item = _make_ebay_item()
-        response = _make_ebay_response([item])
-        listings = parse_ebay_response(response, is_sold=True)
+        item = _make_browse_item()
+        response = _make_browse_response([item])
+        listings = parse_ebay_browse_response(response, is_sold=True)
 
         assert len(listings) == 1
         listing = listings[0]
-        assert listing.listing_id == "123456"
+        assert listing.listing_id == "v1|123456|0"
         assert listing.title == "Sony WH-1000XM4"
         assert listing.price == 199.99
         assert listing.source == "ebay"
         assert listing.is_sold is True
-        assert listing.url == "https://www.ebay.com/itm/123456"
+        assert listing.url == "https://www.ebay.fr/itm/123456"
         assert listing.condition_raw == "Used"
 
     def test_multiple_items(self):
         items = [
-            _make_ebay_item(item_id="1", title="Item A", price="100.00"),
-            _make_ebay_item(item_id="2", title="Item B", price="200.00"),
+            _make_browse_item(item_id="v1|1|0", title="Item A", price="100.00"),
+            _make_browse_item(item_id="v1|2|0", title="Item B", price="200.00"),
         ]
-        response = _make_ebay_response(items)
-        listings = parse_ebay_response(response, is_sold=False)
+        response = _make_browse_response(items)
+        listings = parse_ebay_browse_response(response, is_sold=False)
 
         assert len(listings) == 2
-        assert listings[0].listing_id == "1"
-        assert listings[1].listing_id == "2"
+        assert listings[0].listing_id == "v1|1|0"
+        assert listings[1].listing_id == "v1|2|0"
         assert listings[0].is_sold is False
 
     def test_zero_price_skipped(self):
-        item = _make_ebay_item(price="0")
-        response = _make_ebay_response([item])
-        listings = parse_ebay_response(response, is_sold=True)
+        item = _make_browse_item(price="0")
+        response = _make_browse_response([item])
+        listings = parse_ebay_browse_response(response, is_sold=True)
 
         assert len(listings) == 0
 
     def test_missing_price_skipped(self):
-        item = {
-            "itemId": ["999"],
-            "title": ["No Price Item"],
-            "sellingStatus": [{}],
-        }
-        response = _make_ebay_response([item])
-        listings = parse_ebay_response(response, is_sold=True)
+        item = {"itemId": "v1|999|0", "title": "No Price Item"}
+        response = _make_browse_response([item])
+        listings = parse_ebay_browse_response(response, is_sold=True)
 
         assert len(listings) == 0
 
     def test_empty_results(self):
-        response = {"searchResult": [{"@count": ["0"]}]}
-        listings = parse_ebay_response(response, is_sold=True)
-
+        listings = parse_ebay_browse_response({"total": 0}, is_sold=True)
         assert listings == []
 
-    def test_no_search_result(self):
-        listings = parse_ebay_response({}, is_sold=True)
+    def test_no_item_summaries(self):
+        listings = parse_ebay_browse_response({}, is_sold=True)
         assert listings == []
 
-    def test_error_message_in_response(self):
-        response = {"errorMessage": [{"error": [{"message": ["API key invalid"]}]}]}
-        listings = parse_ebay_response(response, is_sold=True)
+    def test_error_in_response(self):
+        response = {"errors": [{"errorId": 1001, "message": "Invalid access token"}]}
+        listings = parse_ebay_browse_response(response, is_sold=True)
         assert listings == []
+
+    def test_url_falls_back_to_legacy_item_id(self):
+        item = _make_browse_item()
+        del item["itemWebUrl"]
+        listings = parse_ebay_browse_response(_make_browse_response([item]))
+        assert listings[0].url == "https://www.ebay.fr/itm/123456"
+
+    def test_location_joined_from_parts(self):
+        listings = parse_ebay_browse_response(_make_browse_response([_make_browse_item()]))
+        assert listings[0].location == "75001, FR"
+
+    def test_token_cache_roundtrip(self, monkeypatch):
+        from ingestion.connectors import ebay
+
+        monkeypatch.setitem(ebay._token_cache, "token", None)
+        monkeypatch.setitem(ebay._token_cache, "expires_at", 0.0)
+        assert ebay._cached_token() is None
+
+        ebay._cache_token({"access_token": "tok123", "expires_in": 7200})
+        assert ebay._cached_token() == "tok123"
+
+        monkeypatch.setitem(ebay._token_cache, "expires_at", time.time() - 1)
+        assert ebay._cached_token() is None
 
     def test_condition_normalization(self):
         from ingestion.connectors.ebay import normalize_condition
@@ -124,16 +135,16 @@ class TestEbayParsing:
         assert normalize_condition("unknown_condition") is None
 
     def test_seller_rating_extraction(self):
-        item = _make_ebay_item()
-        response = _make_ebay_response([item])
-        listings = parse_ebay_response(response, is_sold=True)
+        item = _make_browse_item()
+        response = _make_browse_response([item])
+        listings = parse_ebay_browse_response(response, is_sold=True)
 
         assert listings[0].seller_rating == 1500.0
 
     def test_shipping_cost_extraction(self):
-        item = _make_ebay_item()
-        response = _make_ebay_response([item])
-        listings = parse_ebay_response(response, is_sold=True)
+        item = _make_browse_item()
+        response = _make_browse_response([item])
+        listings = parse_ebay_browse_response(response, is_sold=True)
 
         assert listings[0].shipping_cost == 5.99
 

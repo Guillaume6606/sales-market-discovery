@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **eBay Browse API connector** — Full rewrite of `ingestion/connectors/ebay.py` off the decommissioned Finding/Shopping APIs: OAuth2 client-credentials with token caching, `item_summary/search` on `EBAY_FR` for active listings, `getItem` for details. Sold data returns empty until Marketplace Insights is granted (PMN falls back to active-listing statistics). New `EBAY_CERT_ID` env var. Condition normalizer learned eBay FR labels ("Ouvert (jamais utilisé)" → like_new, "Reconditionné" → good).
 - **eBay account deletion webhook** (`GET/POST /webhooks/ebay/account-deletion`) — Challenge-response handshake + notification acknowledgment required to flip a production eBay keyset to compliant. Configured via `EBAY_VERIFICATION_TOKEN` and `EBAY_DELETION_ENDPOINT_URL`; already public through the existing Caddy `/webhooks/*` route.
 - **Residential proxy support** (`SCRAPING_PROXY_URL`) — Single env var routes all scraper traffic through a rotating residential proxy: curl_cffi session, Playwright persistent context, and the LeBonCoin `lbc.Client`. Fixes DataDome blocking of the datacenter VPS IP.
 - **VPS deployment infrastructure** — One-command deployment via `make deploy` with rsync + SSH

@@ -51,6 +51,8 @@ def normalize_condition(raw: str | None) -> str | None:
         "like new",
         "excellent",
         "mint",
+        "jamais utilise",  # eBay FR "Ouvert (jamais utilisé)" — open box, never used
+        "open box",
     ]
     new_patterns = [
         "brand new",
@@ -69,6 +71,8 @@ def normalize_condition(raw: str | None) -> str | None:
         "bien",
         "used",
         "occasion",  # LeBonCoin generic "secondhand" label (no finer grade given)
+        "reconditionne",  # eBay FR refurbished (certified/seller)
+        "refurbished",
     ]
     fair_patterns = [
         "etat satisfaisant",

@@ -1,5 +1,20 @@
+"""eBay connector backed by the Browse API (OAuth2 client-credentials).
+
+The legacy Finding and Shopping APIs were decommissioned in Feb 2025; this
+module talks to the Buy Browse API instead:
+
+- ``fetch_ebay_listings`` — active listings via ``item_summary/search``.
+- ``fetch_ebay_sold`` — TRUE sold data needs the approval-gated Marketplace
+  Insights API (application pending); until granted this returns empty and
+  PMN falls back to active-listing statistics downstream.
+- ``fetch_detail`` — single-item detail via ``item/{item_id}``.
+"""
+
+import base64
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
 from loguru import logger
@@ -11,127 +26,139 @@ from libs.common.settings import settings
 if TYPE_CHECKING:
     from libs.common.models import ListingDetail
 
-# eBay API endpoints
-EBAY_FINDING_API_PRODUCTION = "https://svcs.ebay.com/services/search/FindingService/v1"
-EBAY_FINDING_API_SANDBOX = "https://svcs.sandbox.ebay.com/services/search/FindingService/v1"
+EBAY_MARKETPLACE_ID = "EBAY_FR"
+OAUTH_SCOPE = "https://api.ebay.com/oauth/api_scope"
+TOKEN_EXPIRY_MARGIN_S = 60
+
+# Module-level app token cache (client-credentials tokens live ~2h)
+_token_cache: dict[str, Any] = {"token": None, "expires_at": 0.0}
 
 
-def _get_ebay_api_url() -> str:
-    """Determine which eBay API endpoint to use based on the App ID"""
-    if settings.ebay_app_id and "-SBX-" in settings.ebay_app_id:
-        logger.info("Using eBay Sandbox API (detected sandbox App ID)")
-        return EBAY_FINDING_API_SANDBOX
-    else:
-        logger.debug("Using eBay Production API")
-        return EBAY_FINDING_API_PRODUCTION
+def _is_sandbox() -> bool:
+    return bool(settings.ebay_app_id and "-SBX-" in settings.ebay_app_id)
+
+
+def _api_host() -> str:
+    return "https://api.sandbox.ebay.com" if _is_sandbox() else "https://api.ebay.com"
+
+
+def _credentials_ready() -> bool:
+    if not settings.ebay_app_id or not settings.ebay_cert_id:
+        logger.warning("EBAY_APP_ID / EBAY_CERT_ID not set; returning empty result")
+        return False
+    return True
+
+
+def _token_request_args() -> tuple[str, dict[str, str], dict[str, str]]:
+    raw = f"{settings.ebay_app_id}:{settings.ebay_cert_id}".encode()
+    headers = {
+        "Authorization": f"Basic {base64.b64encode(raw).decode()}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    data = {"grant_type": "client_credentials", "scope": OAUTH_SCOPE}
+    return f"{_api_host()}/identity/v1/oauth2/token", headers, data
+
+
+def _cache_token(payload: dict[str, Any]) -> str:
+    token = str(payload["access_token"])
+    expires_in = float(payload.get("expires_in", 7200))
+    _token_cache["token"] = token
+    _token_cache["expires_at"] = time.time() + expires_in - TOKEN_EXPIRY_MARGIN_S
+    return token
+
+
+def _cached_token() -> str | None:
+    token = _token_cache.get("token")
+    if token and time.time() < float(_token_cache["expires_at"]):
+        return str(token)
+    return None
+
+
+async def _get_app_token() -> str | None:
+    """Fetch (or reuse) an OAuth2 application access token."""
+    cached = _cached_token()
+    if cached:
+        return cached
+    url, headers, data = _token_request_args()
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(url, headers=headers, data=data)
+            r.raise_for_status()
+            return _cache_token(r.json())
+    except httpx.HTTPStatusError as e:
+        logger.error(f"eBay OAuth token error: {e.response.status_code} - {e.response.text}")
+    except Exception as e:
+        logger.error(f"eBay OAuth token request failed: {e}")
+    return None
+
+
+def _get_app_token_sync() -> str | None:
+    """Sync variant for the sync ``fetch_detail`` path; shares the same cache."""
+    cached = _cached_token()
+    if cached:
+        return cached
+    url, headers, data = _token_request_args()
+    try:
+        r = httpx.post(url, headers=headers, data=data, timeout=15)
+        r.raise_for_status()
+        return _cache_token(r.json())
+    except httpx.HTTPStatusError as e:
+        logger.error(f"eBay OAuth token error: {e.response.status_code} - {e.response.text}")
+    except Exception as e:
+        logger.error(f"eBay OAuth token request failed: {e}")
+    return None
 
 
 async def fetch_ebay_sold(keyword: str, limit: int = 50) -> list[Listing]:
-    """Fetch sold items from eBay Finding API and return parsed Listing objects"""
-    if not settings.ebay_app_id:
-        logger.warning("EBAY_APP_ID not set; returning empty result")
-        return []
+    """Sold listings require the Marketplace Insights API (approval pending).
 
-    api_url = _get_ebay_api_url()
-    headers = {"X-EBAY-SOA-SECURITY-APPNAME": settings.ebay_app_id}
-    params = {
-        "OPERATION-NAME": "findCompletedItems",
-        "SERVICE-VERSION": "1.13.0",
-        "RESPONSE-DATA-FORMAT": "JSON",
-        "keywords": keyword,
-        "paginationInput.entriesPerPage": str(min(limit, 100)),  # eBay max is 100
-        "itemFilter(0).name": "SoldItemsOnly",
-        "itemFilter(0).value": "true",
-        # Add currency filter to get consistent pricing
-        "itemFilter(1).name": "Currency",
-        "itemFilter(1).value": "EUR",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(api_url, headers=headers, params=params)
-            r.raise_for_status()
-            data = r.json()
-
-            # eBay wraps response in an array - extract first element
-            if "findCompletedItemsResponse" in data:
-                response_data = data["findCompletedItemsResponse"]
-                if isinstance(response_data, list) and len(response_data) > 0:
-                    return parse_ebay_response(response_data[0], is_sold=True)
-
-            logger.warning(f"Unexpected eBay response structure for keyword '{keyword}'")
-            return []
-
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            f"eBay API HTTP error for keyword '{keyword}': {e.response.status_code} - {e.response.text}"
-        )
-        return []
-    except httpx.RequestError as e:
-        logger.error(f"eBay API request error for keyword '{keyword}': {e}")
-        return []
-    except Exception as e:
-        logger.error(
-            f"Unexpected error fetching eBay sold items for '{keyword}': {e}", exc_info=True
-        )
-        return []
+    Returning empty (instead of relabeling active listings as sold) keeps PMN
+    honest — downstream computation falls back to active-listing statistics.
+    """
+    logger.warning(
+        "eBay sold data unavailable (Marketplace Insights not granted); returning empty for '{}'",
+        keyword,
+    )
+    return []
 
 
 async def fetch_ebay_listings(keyword: str, limit: int = 50) -> list[Listing]:
-    """Fetch current active listings from eBay Finding API and return parsed Listing objects"""
-    if not settings.ebay_app_id:
-        logger.warning("EBAY_APP_ID not set; returning empty result")
+    """Fetch active listings from the Browse API ``item_summary/search``."""
+    if not _credentials_ready():
+        return []
+    token = await _get_app_token()
+    if not token:
         return []
 
-    api_url = _get_ebay_api_url()
-    headers = {"X-EBAY-SOA-SECURITY-APPNAME": settings.ebay_app_id}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": EBAY_MARKETPLACE_ID,
+    }
     params = {
-        "OPERATION-NAME": "findItemsByKeywords",
-        "SERVICE-VERSION": "1.13.0",
-        "RESPONSE-DATA-FORMAT": "JSON",
-        "keywords": keyword,
-        "paginationInput.entriesPerPage": str(min(limit, 100)),  # eBay max is 100
-        "itemFilter(0).name": "HideDuplicateItems",
-        "itemFilter(0).value": "true",
-        # Add currency filter to get consistent pricing
-        "itemFilter(1).name": "Currency",
-        "itemFilter(1).value": "EUR",
-        # Remove Used-only filter to get all conditions
+        "q": keyword,
+        "limit": str(min(limit, 200)),  # Browse API max page size
+        "filter": "priceCurrency:EUR",
     }
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(api_url, headers=headers, params=params)
+            r = await client.get(
+                f"{_api_host()}/buy/browse/v1/item_summary/search",
+                headers=headers,
+                params=params,
+            )
             r.raise_for_status()
-            data = r.json()
-
-            # eBay wraps response in an array - extract first element
-            if "findItemsByKeywordsResponse" in data:
-                response_data = data["findItemsByKeywordsResponse"]
-                if isinstance(response_data, list) and len(response_data) > 0:
-                    return parse_ebay_response(response_data[0], is_sold=False)
-
-            logger.warning(f"Unexpected eBay response structure for keyword '{keyword}'")
-            return []
-
+            return parse_ebay_browse_response(r.json(), is_sold=False)
     except httpx.HTTPStatusError as e:
         logger.error(
-            f"eBay API HTTP error for keyword '{keyword}': {e.response.status_code} - {e.response.text}"
+            f"eBay Browse API HTTP error for '{keyword}': "
+            f"{e.response.status_code} - {e.response.text}"
         )
-        return []
     except httpx.RequestError as e:
-        logger.error(f"eBay API request error for keyword '{keyword}': {e}")
-        return []
+        logger.error(f"eBay Browse API request error for '{keyword}': {e}")
     except Exception as e:
         logger.error(f"Unexpected error fetching eBay listings for '{keyword}': {e}", exc_info=True)
-        return []
-
-
-def _safe_extract(data: Any, default: Any = None) -> Any:
-    """Safely extract value from eBay's nested array structure"""
-    if isinstance(data, list) and len(data) > 0:
-        return data[0]
-    return default
+    return []
 
 
 def _extract_brand_from_title(title: str) -> str | None:
@@ -165,210 +192,78 @@ def _extract_brand_from_title(title: str) -> str | None:
     return None
 
 
-def fetch_detail(listing_id: str, obs_id: int) -> "ListingDetail | None":
-    """Fetch detailed data for a single eBay listing using Shopping API (GetSingleItem).
-
-    Args:
-        listing_id: The eBay item ID.
-        obs_id: The observation ID to associate with the detail record.
-
-    Returns:
-        A populated ``ListingDetail`` or ``None`` if the fetch fails.
-    """
-    from libs.common.models import ListingDetail
-
-    app_id = settings.ebay_app_id
-    if not app_id:
-        logger.warning("EBAY_APP_ID not set, skipping detail fetch")
-        return None
-
-    url = "https://open.api.ebay.com/shopping"
-    params = {
-        "callname": "GetSingleItem",
-        "responseencoding": "JSON",
-        "appid": app_id,
-        "siteid": "0",
-        "version": "967",
-        "ItemID": listing_id,
-        "IncludeSelector": "Description,Details,ItemSpecifics,ShippingCosts",
-    }
-
-    try:
-        resp = httpx.get(url, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception:
-        logger.exception("eBay GetSingleItem failed for %s", listing_id)
-        return None
-
-    item = data.get("Item")
-    if not item:
-        return None
-
-    pictures = item.get("PictureURL", [])
-    if isinstance(pictures, str):
-        pictures = [pictures]
-
-    description = item.get("Description", "")
-
-    start_time = item.get("StartTime")
-    original_posted_at = None
-    if start_time:
-        try:
-            original_posted_at = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            pass
-
-    seller = item.get("Seller", {})
-    feedback_score = seller.get("FeedbackScore")
-    seller_transaction_count = int(feedback_score) if feedback_score is not None else None
-
-    registration_date = seller.get("RegistrationDate")
-    seller_account_age_days = None
-    if registration_date:
-        try:
-            reg_dt = datetime.fromisoformat(registration_date.replace("Z", "+00:00"))
-            seller_account_age_days = (datetime.now(UTC) - reg_dt).days
-        except (ValueError, AttributeError):
-            pass
-
-    hit_count = item.get("HitCount")
-    view_count = int(hit_count) if hit_count is not None else None
-    watch_count = item.get("WatchCount")
-    favorite_count = int(watch_count) if watch_count is not None else None
-
-    best_offer = item.get("BestOfferEnabled", False)
-    negotiation_enabled = bool(best_offer)
-
-    shipping_type = item.get("ShippingType", "")
-    local_pickup_only = shipping_type.lower() in ("pickuponly", "freepickup")
-
-    return ListingDetail(
-        obs_id=obs_id,
-        description=description if description else None,
-        photo_urls=pictures,
-        local_pickup_only=local_pickup_only,
-        negotiation_enabled=negotiation_enabled,
-        original_posted_at=original_posted_at,
-        seller_account_age_days=seller_account_age_days,
-        seller_transaction_count=seller_transaction_count,
-        view_count=view_count,
-        favorite_count=favorite_count,
-    )
+def _shipping_cost_from_options(item: dict[str, Any]) -> float | None:
+    for option in item.get("shippingOptions") or []:
+        cost = (option or {}).get("shippingCost") or {}
+        value = cost.get("value")
+        if value is not None:
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                continue
+    return None
 
 
-def parse_ebay_response(response_data: dict, is_sold: bool = False) -> list[Listing]:
-    """
-    Parse eBay Finding API response into standardized Listing objects.
+def _location_from_item(item: dict[str, Any]) -> str | None:
+    loc = item.get("itemLocation") or {}
+    parts = [loc.get("city"), loc.get("postalCode"), loc.get("country")]
+    joined = ", ".join(p for p in parts if p)
+    return joined or None
 
-    eBay API structure:
-    - Response is wrapped in array: data["findCompletedItemsResponse"][0]
-    - Most fields are wrapped in arrays: item.get("itemId")[0]
-    - searchResult contains the items array
-    """
+
+def parse_ebay_browse_response(response_data: dict, is_sold: bool = False) -> list[Listing]:
+    """Parse a Browse API ``item_summary/search`` response into ``Listing`` objects."""
     if not response_data:
         return []
 
-    # Check for API errors
-    if "errorMessage" in response_data:
-        error = response_data["errorMessage"]
-        logger.error(f"eBay API error: {error}")
+    if "errors" in response_data:
+        logger.error(f"eBay Browse API error: {response_data['errors']}")
         return []
 
-    # Extract search results
-    search_result = _safe_extract(response_data.get("searchResult", []))
-    if not search_result:
-        logger.warning("No searchResult in eBay response")
-        return []
-
-    # Check if any items found
-    count = _safe_extract(search_result.get("@count", ["0"]))
-    if count == "0":
-        logger.info("eBay search returned 0 results")
-        return []
-
-    # Extract items array
-    items = search_result.get("item", [])
-    if not isinstance(items, list):
-        items = [items] if items else []
-
+    items = response_data.get("itemSummaries") or []
     if not items:
-        logger.info("No items in eBay search results")
+        logger.info("eBay search returned 0 results")
         return []
 
     parsed_items = []
     for item in items:
         try:
-            # Extract basic item info with safe array unwrapping
-            listing_id = _safe_extract(item.get("itemId"), "")
+            listing_id = item.get("itemId") or ""
             if not listing_id:
-                continue  # Skip items without ID
-
-            title = _safe_extract(item.get("title"), "")
-
-            # Extract price info
-            selling_status = _safe_extract(item.get("sellingStatus"))
-            if not selling_status:
-                continue  # Skip items without price
-
-            current_price = _safe_extract(selling_status.get("currentPrice"))
-            if not current_price:
                 continue
 
-            price_value = _safe_extract(current_price.get("__value__"))
-            if not price_value:
-                continue
+            title = item.get("title") or ""
 
+            price_data = item.get("price") or {}
+            price_value = price_data.get("value")
+            if price_value is None:
+                continue
             try:
                 price = float(price_value)
             except (ValueError, TypeError):
                 logger.warning(f"Invalid price value for item {listing_id}: {price_value}")
                 continue
-
-            # Skip items with zero or negative price
             if price <= 0:
                 logger.debug(f"Skipping item {listing_id} with invalid price: {price}")
                 continue
 
-            currency = _safe_extract(current_price.get("@currencyId"), "EUR")
+            currency = price_data.get("currency") or "EUR"
 
-            # Extract seller info
-            seller_info = _safe_extract(item.get("sellerInfo"))
             seller_rating = None
-            if seller_info:
-                feedback_score = _safe_extract(seller_info.get("feedbackScore"))
-                if feedback_score:
-                    try:
-                        seller_rating = float(feedback_score)
-                    except (ValueError, TypeError):
-                        pass
+            feedback_score = (item.get("seller") or {}).get("feedbackScore")
+            if feedback_score is not None:
+                try:
+                    seller_rating = float(feedback_score)
+                except (ValueError, TypeError):
+                    pass
 
-            # Extract shipping info
-            shipping_info = _safe_extract(item.get("shippingInfo"))
-            shipping_cost = None
-            if shipping_info:
-                shipping_service_cost = _safe_extract(shipping_info.get("shippingServiceCost"))
-                if shipping_service_cost:
-                    shipping_value = _safe_extract(shipping_service_cost.get("__value__"))
-                    if shipping_value:
-                        try:
-                            shipping_cost = float(shipping_value)
-                        except (ValueError, TypeError):
-                            pass
+            condition = item.get("condition") or "Unknown"
 
-            # Extract location
-            location = _safe_extract(item.get("location"), "")
+            legacy_id = item.get("legacyItemId")
+            url = item.get("itemWebUrl") or (
+                f"https://www.ebay.fr/itm/{legacy_id}" if legacy_id else None
+            )
 
-            # Extract condition
-            condition_data = _safe_extract(item.get("condition"))
-            condition = "Unknown"
-            if condition_data:
-                condition = _safe_extract(condition_data.get("conditionDisplayName"), "Unknown")
-
-            # Extract brand from title (eBay Finding API doesn't provide brand field)
-            brand = _extract_brand_from_title(title)
-
-            # Create standardized Listing object
             listing = Listing(
                 source="ebay",
                 listing_id=listing_id,
@@ -377,17 +272,16 @@ def parse_ebay_response(response_data: dict, is_sold: bool = False) -> list[List
                 currency=currency,
                 condition_raw=condition,
                 condition_norm=normalize_condition(condition),
-                location=location,
+                location=_location_from_item(item),
                 seller_rating=seller_rating,
-                shipping_cost=shipping_cost,
+                shipping_cost=_shipping_cost_from_options(item),
                 observed_at=datetime.now(UTC),
                 is_sold=is_sold,
-                url=f"https://www.ebay.com/itm/{listing_id}",
-                brand=brand,
-                size=None,  # Not available in Finding API
-                color=None,  # Not available in Finding API
+                url=url,
+                brand=_extract_brand_from_title(title),
+                size=None,  # Not available in item summaries
+                color=None,  # Not available in item summaries
             )
-
             parsed_items.append(listing)
 
         except Exception as e:
@@ -396,3 +290,87 @@ def parse_ebay_response(response_data: dict, is_sold: bool = False) -> list[List
 
     logger.info(f"Parsed {len(parsed_items)} eBay items from {len(items)} raw items")
     return parsed_items
+
+
+def fetch_detail(listing_id: str, obs_id: int) -> "ListingDetail | None":
+    """Fetch detailed data for a single eBay listing via Browse API ``getItem``.
+
+    Args:
+        listing_id: Browse RESTful item id (``v1|123|0``) or a legacy numeric id.
+        obs_id: The observation ID to associate with the detail record.
+
+    Returns:
+        A populated ``ListingDetail`` or ``None`` if the fetch fails.
+    """
+    from libs.common.models import ListingDetail
+
+    if not _credentials_ready():
+        return None
+    token = _get_app_token_sync()
+    if not token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": EBAY_MARKETPLACE_ID,
+    }
+    if listing_id.isdigit():
+        url = f"{_api_host()}/buy/browse/v1/item/get_item_by_legacy_id"
+        params: dict[str, str] = {"legacy_item_id": listing_id}
+    else:
+        url = f"{_api_host()}/buy/browse/v1/item/{quote(listing_id, safe='')}"
+        params = {}
+
+    try:
+        resp = httpx.get(url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        item = resp.json()
+    except Exception:
+        logger.exception("eBay Browse getItem failed for {}", listing_id)
+        return None
+
+    if not item or "itemId" not in item:
+        return None
+
+    pictures: list[str] = []
+    primary = (item.get("image") or {}).get("imageUrl")
+    if primary:
+        pictures.append(primary)
+    for extra in item.get("additionalImages") or []:
+        extra_url = (extra or {}).get("imageUrl")
+        if extra_url:
+            pictures.append(extra_url)
+
+    description = item.get("description") or None
+
+    original_posted_at = None
+    creation_date = item.get("itemCreationDate")
+    if creation_date:
+        try:
+            original_posted_at = datetime.fromisoformat(creation_date.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            pass
+
+    feedback_score = (item.get("seller") or {}).get("feedbackScore")
+    seller_transaction_count = int(feedback_score) if feedback_score is not None else None
+
+    watch_count = item.get("watchCount")
+    favorite_count = int(watch_count) if watch_count is not None else None
+
+    buying_options = item.get("buyingOptions") or []
+    negotiation_enabled = "BEST_OFFER" in buying_options
+
+    local_pickup_only = bool(item.get("pickupOptions")) and not item.get("shippingOptions")
+
+    return ListingDetail(
+        obs_id=obs_id,
+        description=description,
+        photo_urls=pictures,
+        local_pickup_only=local_pickup_only,
+        negotiation_enabled=negotiation_enabled,
+        original_posted_at=original_posted_at,
+        seller_account_age_days=None,  # Not exposed by the Browse API
+        seller_transaction_count=seller_transaction_count,
+        view_count=None,  # Not exposed by the Browse API
+        favorite_count=favorite_count,
+    )
