@@ -444,7 +444,7 @@ try:
                                 ),
                             },
                             {
-                                "label": "Spread",
+                                "label": "Estimated contribution",
                                 "value": format_spread(score.get("arbitrage_spread_eur")),
                             },
                             {
@@ -452,29 +452,21 @@ try:
                                 "value": format_roi(score.get("net_roi_pct")),
                             },
                             {
-                                "label": "Confidence",
+                                "label": "Heuristic (uncalibrated)",
                                 "value": format_score_badge(score.get("risk_adjusted_confidence")),
                             },
                         ]
                     )
 
-                    # Cost breakdown from score_breakdown
-                    breakdown = score.get("score_breakdown")
-                    if breakdown:
-                        with st.expander("Cost Breakdown"):
-                            acq = breakdown.get("acquisition_cost", {})
-                            st.markdown(f"""
-| Component | Value |
-|-----------|-------|
-| Purchase price | €{acq.get("price", "N/A")} |
-| Shipping (buy) | €{acq.get("shipping", "N/A")} |
-| Buyer fee | {acq.get("buyer_fee", "N/A")} |
-| **Acquisition cost** | **€{score.get("acquisition_cost_eur", "N/A")}** |
-| Estimated sale price | €{score.get("estimated_sale_price_eur", "N/A")} |
-| Sell fees | -€{score.get("estimated_sell_fees_eur", "N/A")} |
-| Sell shipping | -€{score.get("estimated_sell_shipping_eur", "N/A")} |
-| **Net spread** | **€{score.get("arbitrage_spread_eur", "N/A")}** |
-""")
+                    valuation = (score.get("score_breakdown") or {}).get("verified_valuation", {})
+                    if not valuation.get("eligible"):
+                        st.warning("Valuation blocked: " + ", ".join(valuation.get("reasons", [])))
+                    else:
+                        st.caption(
+                            f"Reviewed exit: {valuation.get('destination_marketplace')} · Reference: {valuation.get('reference_id')}"
+                        )
+                        with st.expander("Reviewed costs and evidence"):
+                            st.json(valuation)
                 else:
                     st.info(
                         "This listing has not been scored yet. "

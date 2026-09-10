@@ -14,7 +14,7 @@
 	# ── Backend API routes — behind basic auth ───────────────
 	@backend path /health/* /products/* /products /categories/* /categories \
 		/listings/* /listings /ingestion/* /analytics/* /computation/* \
-		/enrichment/* /alerts/* /audit/* /docs /docs/* /openapi.json /redoc
+		/enrichment/* /alerts/* /audit/* /valuation/* /trades /trades/* /docs /docs/* /openapi.json /redoc
 	handle @backend {
 		basicauth {
 			{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}

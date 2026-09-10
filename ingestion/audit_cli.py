@@ -347,6 +347,14 @@ async def main() -> None:
 
         all_records[connector] = records
 
+    if (
+        not all_records
+        or any(not records for records in all_records.values())
+        or set(connectors) - set(all_records)
+    ):
+        raise RuntimeError(
+            "Audit failed: missing observations for one or more requested connectors"
+        )
     all_flat = [r for records in all_records.values() for r in records]
     all_accuracy = compute_connector_accuracy(all_flat)
 

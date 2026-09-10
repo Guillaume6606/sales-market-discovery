@@ -64,7 +64,7 @@ st.divider()
 # Precision dashboard
 # ---------------------------------------------------------------------------
 
-st.subheader("Alert Precision (Last 30 Days)")
+st.subheader("Alert Interest Feedback (Last 30 Days)")
 precision: dict[str, Any] | None = fetch_alert_precision(days=30)
 
 if precision:
@@ -77,7 +77,7 @@ if precision:
         [
             {"label": "Total Alerts", "value": total_alerts},
             {"label": "Feedback Rate", "value": f"{fr:.0%}" if fr is not None else "N/A"},
-            {"label": "Precision", "value": f"{prec:.0%}" if prec is not None else "N/A"},
+            {"label": "Positive feedback", "value": f"{prec:.0%}" if prec is not None else "N/A"},
             {"label": "Purchased", "value": purchased},
         ]
     )
@@ -183,7 +183,7 @@ if rules:
                 try:
                     resp = api_delete(f"/alerts/rules/{rule_id_to_delete}")
                     if resp.status_code == 204:
-                        st.success("Rule deleted")
+                        st.success("Rule archived")
                         fetch_alert_rules.clear()
                     else:
                         st.error(f"Delete failed: {resp.text}")
@@ -192,9 +192,9 @@ if rules:
 
             confirm_action(
                 key=f"delete_rule_{rule_id_to_delete}",
-                label="Delete Rule",
+                label="Archive Rule",
                 on_confirm=_do_delete,
-                confirm_label="Confirm Delete",
+                confirm_label="Confirm Archive",
                 danger=True,
             )
 
@@ -209,7 +209,7 @@ with st.form("create_rule", clear_on_submit=True):
     rc1, rc2 = st.columns(2)
     with rc1:
         rule_threshold: float = st.number_input(
-            "Threshold % (margin below PMN)",
+            "Minimum discount vs reviewed exit (%)",
             min_value=0.0,
             max_value=100.0,
             value=10.0,
@@ -218,7 +218,7 @@ with st.form("create_rule", clear_on_submit=True):
         )  # type: ignore[assignment]
     with rc2:
         rule_margin_abs: float = st.number_input(
-            "Min Margin Absolute",
+            "Minimum net contribution (EUR)",
             min_value=0.0,
             value=0.0,
             step=5.0,
@@ -230,9 +230,9 @@ with st.form("create_rule", clear_on_submit=True):
         rule_liquidity: float = st.number_input(
             "Min Liquidity Score",
             min_value=0.0,
-            max_value=1.0,
+            max_value=100.0,
             value=0.0,
-            step=0.1,
+            step=5.0,
             key="new_rule_liquidity",
         )  # type: ignore[assignment]
     with rc4:
@@ -249,7 +249,7 @@ with st.form("create_rule", clear_on_submit=True):
         else:
             payload: dict[str, Any] = {
                 "name": rule_name.strip(),
-                "threshold_pct": rule_threshold if rule_threshold > 0 else None,
+                "threshold_pct": -rule_threshold if rule_threshold > 0 else None,
                 "min_margin_abs": rule_margin_abs if rule_margin_abs > 0 else None,
                 "min_liquidity_score": rule_liquidity if rule_liquidity > 0 else None,
                 "channels": rule_channels,
@@ -317,7 +317,7 @@ _FEEDBACK_LABELS: dict[str, str] = {
 if events:
     for evt in events:
         alert_id: int = evt.get("alert_id")
-        sent_at: str = relative_time(evt.get("sent_at"))
+        sent_at: str = relative_time(evt.get("sent_at") or evt.get("created_at"))
         product_id_raw: str = evt.get("product_id", "?")
         suppressed: bool = evt.get("suppressed", False)
         existing_feedback: str | None = evt.get("feedback")
@@ -327,9 +327,11 @@ if events:
             matched_rule.get("name", product_id_raw[:8]) if matched_rule else product_id_raw[:8]
         )
 
-        suppressed_badge: str = (
-            status_badge("red", "Suppressed") if suppressed else status_badge("green", "Active")
+        delivery_status = evt.get("delivery_status", "legacy")
+        delivery_color = {"sent": "green", "failed": "red", "pending": "yellow"}.get(
+            delivery_status, "gray"
         )
+        suppressed_badge = status_badge(delivery_color, delivery_status.replace("_", " ").title())
 
         with st.container(border=True):
             header_col, badge_col = st.columns([4, 1])
@@ -340,6 +342,22 @@ if events:
                 )
             with badge_col:
                 st.markdown(suppressed_badge, unsafe_allow_html=True)
+
+            st.caption(
+                f"Delivery attempts: {evt.get('delivery_attempts', 0)} · Next retry: {evt.get('next_attempt_at') or 'none'}"
+            )
+            with st.expander("Valuation and delivery details"):
+                st.json(evt.get("delivery") or {})
+
+            if delivery_status in {"failed", "suppressed"} and st.button(
+                "Retry if eligible", key=f"retry_alert_{alert_id}"
+            ):
+                response = api_post(f"/alerts/events/{alert_id}/retry")
+                if response.status_code == 200:
+                    fetch_alert_events.clear()
+                    st.rerun()
+                else:
+                    st.error(response.text)
 
             if existing_feedback:
                 fb_label = _FEEDBACK_LABELS.get(existing_feedback, existing_feedback)

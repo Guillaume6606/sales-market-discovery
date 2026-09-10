@@ -1,10 +1,13 @@
 """Scored listings endpoints — composite arbitrage scores per product."""
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from backend.valuation_view import current_score
+from ingestion.valuation import evaluate_valuation
 from libs.common.db import get_db
 from libs.common.models import (
     ListingDetailORM,
@@ -12,6 +15,7 @@ from libs.common.models import (
     ListingObservation,
     ListingScore,
 )
+from libs.common.settings import settings
 
 router = APIRouter(tags=["scored_listings"])
 
@@ -19,9 +23,9 @@ router = APIRouter(tags=["scored_listings"])
 @router.get("/products/{product_id}/scored-listings")
 def scored_listings(
     product_id: str,
-    min_confidence: float = 80.0,
+    min_confidence: float = 0.0,
     sort_by: str = "spread",
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """Return scored listings for a product filtered by minimum confidence.
@@ -29,7 +33,7 @@ def scored_listings(
     Args:
         product_id: UUID of the product template to query.
         min_confidence: Minimum ``risk_adjusted_confidence`` (0-100). Defaults
-            to 80.0.
+            to 0.0; this heuristic is uncalibrated.
         sort_by: Sort field — one of ``"spread"``, ``"roi"``, or
             ``"confidence"``. Defaults to ``"spread"``.
         limit: Maximum number of results to return. Defaults to 50.
@@ -53,51 +57,53 @@ def scored_listings(
         .filter(
             ListingScore.product_id == product_id,
             ListingScore.risk_adjusted_confidence >= min_confidence,
+            ListingObservation.is_sold.is_(False),
+            ListingObservation.last_seen_at
+            >= datetime.now(UTC) - timedelta(minutes=settings.alert_freshness_minutes),
             ListingObservation.is_stale == False,  # noqa: E712
         )
         .order_by(sort_column)
-        .limit(limit)
         .all()
     )
 
-    return [
-        {
-            "obs_id": obs.obs_id,
-            "title": obs.title,
-            "price": float(obs.price) if obs.price else None,
-            "source": obs.source,
-            "url": obs.url,
-            "condition": obs.condition,
-            "arbitrage_spread_eur": float(score.arbitrage_spread_eur)
-            if score.arbitrage_spread_eur
-            else None,
-            "net_roi_pct": float(score.net_roi_pct) if score.net_roi_pct else None,
-            "risk_adjusted_confidence": float(score.risk_adjusted_confidence)
-            if score.risk_adjusted_confidence
-            else None,
-            "acquisition_cost_eur": float(score.acquisition_cost_eur)
-            if score.acquisition_cost_eur
-            else None,
-            "estimated_sale_price_eur": float(score.estimated_sale_price_eur)
-            if score.estimated_sale_price_eur
-            else None,
-            "days_on_market": score.days_on_market,
-            "score_breakdown": score.score_breakdown,
-            "photo_count": detail.photo_count if detail else None,
-            "local_pickup_only": detail.local_pickup_only if detail else None,
-            "negotiation_enabled": detail.negotiation_enabled if detail else None,
-            "view_count": detail.view_count if detail else None,
-            "favorite_count": detail.favorite_count if detail else None,
-            "urgency_score": float(enrichment.urgency_score)
-            if enrichment and enrichment.urgency_score
-            else None,
-            "seller_motivation_score": float(enrichment.seller_motivation_score)
-            if enrichment and enrichment.seller_motivation_score
-            else None,
-            "has_original_box": enrichment.has_original_box if enrichment else None,
-            "listing_quality_score": float(enrichment.listing_quality_score)
-            if enrichment and enrichment.listing_quality_score
-            else None,
-        }
-        for obs, score, detail, enrichment in rows
-    ]
+    result = []
+    for obs, score, detail, enrichment in rows:
+        valuation = evaluate_valuation(db, obs)
+        if not valuation["eligible"]:
+            continue
+        result.append(
+            {
+                "obs_id": obs.obs_id,
+                "title": obs.title,
+                "price": float(obs.price) if obs.price else None,
+                "source": obs.source,
+                "url": obs.url,
+                "condition": obs.condition,
+                **current_score(valuation, score),
+                "photo_count": detail.photo_count if detail else None,
+                "local_pickup_only": detail.local_pickup_only if detail else None,
+                "negotiation_enabled": detail.negotiation_enabled if detail else None,
+                "view_count": detail.view_count if detail else None,
+                "favorite_count": detail.favorite_count if detail else None,
+                "urgency_score": float(enrichment.urgency_score)
+                if enrichment and enrichment.urgency_score
+                else None,
+                "seller_motivation_score": float(enrichment.seller_motivation_score)
+                if enrichment and enrichment.seller_motivation_score
+                else None,
+                "has_original_box": enrichment.has_original_box if enrichment else None,
+                "listing_quality_score": float(enrichment.listing_quality_score)
+                if enrichment and enrichment.listing_quality_score
+                else None,
+            }
+        )
+    current_key = {
+        "spread": "arbitrage_spread_eur",
+        "roi": "net_roi_pct",
+        "confidence": "risk_adjusted_confidence",
+    }.get(sort_by, "arbitrage_spread_eur")
+    result.sort(
+        key=lambda row: row[current_key] if row[current_key] is not None else float("-inf"),
+        reverse=True,
+    )
+    return result[:limit]

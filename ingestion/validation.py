@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from math import isfinite
 
 from libs.common.models import Listing
 
@@ -21,10 +22,17 @@ def validate_listing(listing: Listing) -> str | None:
     discovered later via updates or marketplace-specific fields.
     """
     if listing.price is not None:
+        if not isfinite(listing.price):
+            return "price_nonfinite"
         if listing.price <= 0:
             return "price_non_positive"
         if listing.price > 50000:
             return "price_too_high"
+
+    if listing.shipping_cost is not None and (
+        not isfinite(listing.shipping_cost) or listing.shipping_cost < 0
+    ):
+        return "shipping_cost_invalid"
 
     if not listing.title or not listing.title.strip():
         return "empty_title"

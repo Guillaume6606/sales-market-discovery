@@ -1,101 +1,89 @@
-"""Integration test fixtures with SQLite in-memory database.
+"""PostgreSQL integration test fixtures."""
 
-Uses raw SQL for seeding to avoid SQLAlchemy UUID bind processor issues,
-while the computation functions under test use the ORM session.
-The key insight: we patch the metadata column types ONCE globally, and
-importantly, we clear SQLAlchemy's type compilation caches so the patched
-types take effect even if unit tests ran first.
-"""
+from __future__ import annotations
 
+import importlib
+import os
 import uuid
+from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import UUID as SA_UUID
-from sqlalchemy import Integer, String, Text, create_engine, text
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import ARRAY, BigInteger
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.schema import CreateSchema, DropSchema
 
 from libs.common.models import Base
 
-# Track whether we've already patched metadata
-_metadata_patched = False
 
-
-def _patch_metadata_for_sqlite():
-    """Patch Base.metadata column types for SQLite compatibility.
-
-    This mutates the global metadata in-place. Safe because integration tests
-    run this process and these types won't be used with Postgres afterward.
-    """
-    global _metadata_patched
-    if _metadata_patched:
-        return
-    _metadata_patched = True
-
-    for table in Base.metadata.sorted_tables:
-        for col in table.columns:
-            if isinstance(col.type, ARRAY):
-                col.type = Text()
-            elif isinstance(col.type, SA_UUID):
-                col.type = String(36)
-            elif isinstance(col.type, BigInteger):
-                col.type = Integer()
-
-            # Remove Postgres-only server defaults
-            if col.server_default is not None:
-                try:
-                    sd_text = str(col.server_default.arg)
-                except Exception:
-                    sd_text = ""
-                if "gen_random_uuid" in sd_text or "now" in sd_text:
-                    col.server_default = None
-
-        # Clear cached type processors so new types take effect
-        for col in table.columns:
-            if hasattr(col.type, "_literal_processor"):
-                col.type._literal_processor = None
-
-
-# Patch metadata at import time (before any fixtures run)
-_patch_metadata_for_sqlite()
+def _register_model_modules() -> None:
+    """Load standalone model modules so their tables join the shared metadata."""
+    for module_name in ("libs.common.valuation_models", "libs.common.trade_models"):
+        importlib.import_module(module_name)
 
 
 @pytest.fixture()
-def integration_db():
-    """In-memory SQLite database with all tables."""
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine)
+def integration_db() -> Generator[Session, None, None]:
+    """Create a real PostgreSQL schema isolated from every other test run."""
+    database_url = os.environ.get("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("TEST_DATABASE_URL is required for PostgreSQL integration tests")
+    if make_url(database_url).get_backend_name() != "postgresql":
+        pytest.fail("TEST_DATABASE_URL must use PostgreSQL")
 
-    session = sessionmaker(bind=engine)()
+    _register_model_modules()
+    schema_name = f"test_{uuid.uuid4().hex}"
+    admin_engine = create_engine(database_url, pool_pre_ping=True)
+    schema_created = False
+    test_engine: Engine | None = None
+    session: Session | None = None
+
     try:
+        with admin_engine.begin() as connection:
+            connection.execute(CreateSchema(schema_name))
+        schema_created = True
+
+        test_engine = create_engine(
+            database_url,
+            connect_args={"options": f"-csearch_path={schema_name}"},
+            pool_pre_ping=True,
+        )
+        Base.metadata.create_all(bind=test_engine)
+        session = sessionmaker(bind=test_engine)()
         yield session
     finally:
-        session.close()
-        engine.dispose()
+        if session is not None:
+            session.close()
+        if test_engine is not None:
+            test_engine.dispose()
+        if schema_created:
+            with admin_engine.begin() as connection:
+                connection.execute(DropSchema(schema_name, cascade=True, if_exists=True))
+        admin_engine.dispose()
 
 
 @pytest.fixture()
-def seed_category(integration_db):
+def seed_category(integration_db: Session) -> str:
     """Seed a category and return its ID."""
-    cat_id = str(uuid.uuid4())
+    category_id = str(uuid.uuid4())
     integration_db.execute(
         text("INSERT INTO category (category_id, name) VALUES (:id, :name)"),
-        {"id": cat_id, "name": "Electronics"},
+        {"id": category_id, "name": "Electronics"},
     )
     integration_db.commit()
-    return cat_id
+    return category_id
 
 
 @pytest.fixture()
-def seed_product(integration_db, seed_category):
+def seed_product(integration_db: Session, seed_category: str) -> str:
     """Seed a product template and return its ID."""
     product_id = str(uuid.uuid4())
     integration_db.execute(
         text(
             "INSERT INTO product_template "
             "(product_id, name, search_query, category_id, brand, is_active) "
-            "VALUES (:pid, :name, :sq, :cid, :brand, 1)"
+            "VALUES (:pid, :name, :sq, :cid, :brand, true)"
         ),
         {
             "pid": product_id,
@@ -110,26 +98,31 @@ def seed_product(integration_db, seed_category):
 
 
 @pytest.fixture()
-def seed_sold_observations(integration_db, seed_product):
-    """Seed 20 sold listing observations with known prices."""
+def seed_sold_observations(integration_db: Session, seed_product: str) -> list[int]:
+    """Seed 20 verified sold listing observations with known prices."""
+    observation_ids = []
     base_price = 700.0
-    for i in range(20):
-        integration_db.execute(
+    for index in range(20):
+        observation_id = integration_db.execute(
             text(
                 "INSERT INTO listing_observation "
-                "(product_id, source, listing_id, title, price, currency, "
-                "condition, is_sold, observed_at) "
-                "VALUES (:pid, :src, :lid, :title, :price, :cur, :cond, 1, :obs_at)"
+                "(product_id, source, listing_id, title, price, currency, condition, "
+                "is_sold, evidence_type, observed_at) "
+                "VALUES (:pid, :src, :lid, :title, :price, :cur, :cond, true, "
+                ":evidence_type, :observed_at) RETURNING obs_id"
             ),
             {
                 "pid": seed_product,
                 "src": "ebay",
-                "lid": f"sold-{i}",
-                "title": f"iPhone 14 Pro #{i}",
-                "price": base_price + (i * 5),
+                "lid": f"sold-{index}",
+                "title": f"iPhone 14 Pro #{index}",
+                "price": base_price + (index * 5),
                 "cur": "EUR",
                 "cond": "Used",
-                "obs_at": (datetime.now(UTC) - timedelta(days=i)).isoformat(),
+                "evidence_type": "verified_sale",
+                "observed_at": datetime.now(UTC) - timedelta(days=index),
             },
-        )
+        ).scalar_one()
+        observation_ids.append(observation_id)
     integration_db.commit()
+    return observation_ids

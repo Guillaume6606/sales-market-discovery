@@ -34,6 +34,10 @@ pg = st.navigation(
         "Operator": [
             st.Page("pages/1_Discovery.py", title="Discovery", icon=":material/search:"),
             st.Page("pages/2_Listing_Explorer.py", title="Listings", icon=":material/list_alt:"),
+            st.Page("pages/7_Valuation.py", title="Valuation", icon=":material/calculate:"),
+            st.Page(
+                "pages/8_Inventory.py", title="Inventory & Profit", icon=":material/inventory_2:"
+            ),
             st.Page("pages/6_Alerts.py", title="Alerts", icon=":material/notifications_active:"),
         ],
         "Admin": [

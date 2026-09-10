@@ -54,6 +54,7 @@ class ProductTemplate(Base):
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
     last_ingested_at = Column(TIMESTAMP(timezone=True))
+    ingestion_interval_minutes = Column(Integer, nullable=False, default=60, server_default="60")
 
     category = relationship("Category", back_populates="products")
 
@@ -78,6 +79,9 @@ class ListingObservation(Base):
     location = Column(Text)
     observed_at = Column(TIMESTAMP(timezone=True))
     url = Column(Text)  # Listing URL for direct access
+    first_seen_at = Column(TIMESTAMP(timezone=True))
+    updated_at = Column(TIMESTAMP(timezone=True))
+    evidence_type = Column(Text, nullable=False, default="asking", server_default="asking")
     last_seen_at = Column(TIMESTAMP(timezone=True))
     is_stale = Column(Boolean, server_default="false", default=False)
     llm_validated = Column(Boolean, default=False)
@@ -89,6 +93,21 @@ class ListingObservation(Base):
     detail = relationship("ListingDetailORM", back_populates="observation", uselist=False)
     enrichment = relationship("ListingEnrichment", back_populates="observation", uselist=False)
     score = relationship("ListingScore", back_populates="observation", uselist=False)
+
+
+class ListingObservationEvent(Base):
+    __tablename__ = "listing_observation_event"
+
+    event_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    obs_id = Column(
+        BigInteger, ForeignKey("listing_observation.obs_id"), nullable=False, index=True
+    )
+    recorded_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    price = Column(Numeric)
+    currency = Column(Text)
+    is_sold = Column(Boolean, nullable=False)
+    evidence_type = Column(Text, nullable=False)
+    payload = Column(JSON)
 
 
 class ProductDailyMetrics(Base):
@@ -134,6 +153,7 @@ class PMNHistory(Base):
     pmn_high = Column(Numeric)
     confidence = Column(Numeric)
     sample_size = Column(Integer)
+    is_valid = Column(Boolean, nullable=False, default=False, server_default="false")
 
     product = relationship("ProductTemplate", back_populates="pmn_history")
 
@@ -162,6 +182,11 @@ class AlertEvent(Base):
     sent_at = Column(TIMESTAMP(timezone=True))
     delivery = Column(JSON)
     suppressed = Column(Boolean)
+    idempotency_key = Column(Text, unique=True)
+    delivery_status = Column(Text, nullable=False, default="pending", server_default="pending")
+    delivery_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at = Column(TIMESTAMP(timezone=True))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     # Relationships
     rule = relationship("AlertRule")
@@ -346,6 +371,7 @@ class Listing(BaseModel):
     shipping_cost: float | None
     observed_at: datetime  # sold_at or seen_at
     is_sold: bool
+    evidence_type: Literal["asking", "verified_sale", "unknown"] = "asking"
     url: str | None
     brand: str | None = None
     size: str | None = None

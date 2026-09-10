@@ -1,12 +1,11 @@
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from arq import cron
 from arq.connections import RedisSettings
 from sqlalchemy import and_, update
 from sqlalchemy.orm.session import make_transient
 
-from ingestion.alert_engine import trigger_alerts
+from ingestion.alert_engine import deliver_pending_alerts, trigger_alerts
 from ingestion.composite_scoring import run_scoring_batch
 from ingestion.computation import (
     compute_all_product_metrics,
@@ -15,11 +14,8 @@ from ingestion.computation import (
 )
 from ingestion.enrichment import run_enrichment_batch
 from ingestion.ingestion import (
-    ingest_ebay_listings,
     ingest_ebay_sold,
-    ingest_leboncoin_listings,
     ingest_leboncoin_sold,
-    ingest_vinted_listings,
     run_full_ingestion,
 )
 from libs.common.db import SessionLocal
@@ -38,121 +34,75 @@ from libs.common.settings import settings
 from libs.common.telegram_service import send_system_alert
 
 
-async def ping(ctx):
+async def ping(ctx: dict) -> None:
+    pool = ctx.get("redis") or ctx.get("pool")
+    if pool is not None:
+        await pool.set("worker:heartbeat", datetime.now(UTC).isoformat(), ex=180)
     logger.info("Worker alive.")
+
+
+def ingestion_is_due(last_attempt: datetime | None, interval_minutes: int, now: datetime) -> bool:
+    if last_attempt is None:
+        return True
+    if last_attempt.tzinfo is None:
+        last_attempt = last_attempt.replace(tzinfo=UTC)
+    return last_attempt + timedelta(minutes=max(5, interval_minutes)) <= now
 
 
 def _active_product_ids(provider: str | None = None) -> list[str]:
     with SessionLocal() as db:
-        products = db.query(ProductTemplate).filter(ProductTemplate.is_active == True).all()
+        products = db.query(ProductTemplate).filter(ProductTemplate.is_active.is_(True)).all()
+        ids = []
+        for product in products:
+            if provider and product.providers and provider not in product.providers:
+                continue
+            if provider:
+                latest = (
+                    db.query(IngestionRun.started_at)
+                    .filter(
+                        IngestionRun.product_id == product.product_id,
+                        IngestionRun.source == provider,
+                    )
+                    .order_by(IngestionRun.started_at.desc())
+                    .first()
+                )
+                if not ingestion_is_due(
+                    latest[0] if latest else None,
+                    product.ingestion_interval_minutes,
+                    datetime.now(UTC),
+                ):
+                    continue
+            ids.append(str(product.product_id))
+        return ids
 
-    product_ids: list[str] = []
-    for product in products:
-        allowed_providers = product.providers or []
-        if provider and allowed_providers and provider not in allowed_providers:
-            continue
-        product_ids.append(str(product.product_id))
 
-    if provider:
-        logger.info(
-            "Found %d active product templates for provider '%s'",
-            len(product_ids),
-            provider,
+async def scheduled_source_ingestion(ctx: dict, source: str) -> dict:
+    pool = ctx.get("redis") or ctx.get("pool")
+    if pool is None:
+        return {"status": "error", "reason": "redis_unavailable"}
+    results = {}
+    for product_id in _active_product_ids(source):
+        job = await pool.enqueue_job(
+            "ingest_scheduled_product", product_id, source, _job_id=f"ingest:{source}:{product_id}"
         )
-    else:
-        logger.info("Found %d active product templates", len(product_ids))
-
-    return product_ids
-
-
-async def scheduled_ebay_ingestion(ctx):
-    """Scheduled ingestion for all active products targeting eBay."""
-    product_ids = _active_product_ids("ebay")
-    logger.info("Starting scheduled eBay ingestion for %d products", len(product_ids))
-
-    results: dict[str, dict[str, Any]] = {}
-    for product_id in product_ids:
-        try:
-            result = await run_full_ingestion(
-                product_id,
-                {"ebay_sold": 20, "ebay_listings": 20},
-                sources=["ebay"],
-            )
-            results[product_id] = result
-            logger.info(f"Completed scheduled eBay ingestion for {product_id}: {result}")
-        except Exception as exc:
-            logger.error(f"Error in scheduled eBay ingestion for {product_id}: {exc}")
-            results[product_id] = {"status": "error", "error": str(exc)}
-
-    if settings.audit_enabled:
-        try:
-            pool = ctx.get("redis") or ctx.get("pool")
-            if pool:
-                await pool.enqueue_job("audit_ingestion_sample", source="ebay")
-        except Exception as exc:
-            logger.warning("Failed to enqueue audit task: %s", exc)
-
+        results[product_id] = "queued" if job is not None else "already_queued"
     return results
 
 
-async def scheduled_leboncoin_ingestion(ctx):
-    """Scheduled ingestion for all active products targeting LeBonCoin."""
-    product_ids = _active_product_ids("leboncoin")
-    logger.info("Starting scheduled LeBonCoin ingestion for %d products", len(product_ids))
-
-    results: dict[str, dict[str, Any]] = {}
-    for product_id in product_ids:
-        try:
-            result = await run_full_ingestion(
-                product_id,
-                {"leboncoin_listings": 20, "leboncoin_sold": 20},
-                sources=["leboncoin"],
-            )
-            results[product_id] = result
-            logger.info(f"Completed scheduled LeBonCoin ingestion for {product_id}: {result}")
-        except Exception as exc:
-            logger.error(f"Error in scheduled LeBonCoin ingestion for {product_id}: {exc}")
-            results[product_id] = {"status": "error", "error": str(exc)}
-
-    if settings.audit_enabled:
-        try:
-            pool = ctx.get("redis") or ctx.get("pool")
-            if pool:
-                await pool.enqueue_job("audit_ingestion_sample", source="leboncoin")
-        except Exception as exc:
-            logger.warning("Failed to enqueue audit task: %s", exc)
-
-    return results
+async def ingest_scheduled_product(ctx: dict, product_id: str, source: str) -> dict:
+    return await run_full_ingestion(product_id, {f"{source}_listings": 20}, sources=[source])
 
 
-async def scheduled_vinted_ingestion(ctx):
-    """Scheduled ingestion for all active products targeting Vinted."""
-    product_ids = _active_product_ids("vinted")
-    logger.info("Starting scheduled Vinted ingestion for %d products", len(product_ids))
+async def scheduled_ebay_ingestion(ctx: dict) -> dict:
+    return await scheduled_source_ingestion(ctx, "ebay")
 
-    results: dict[str, dict[str, Any]] = {}
-    for product_id in product_ids:
-        try:
-            result = await run_full_ingestion(
-                product_id,
-                {"vinted_listings": 20},
-                sources=["vinted"],
-            )
-            results[product_id] = result
-            logger.info(f"Completed scheduled Vinted ingestion for {product_id}: {result}")
-        except Exception as exc:
-            logger.error(f"Error in scheduled Vinted ingestion for {product_id}: {exc}")
-            results[product_id] = {"status": "error", "error": str(exc)}
 
-    if settings.audit_enabled:
-        try:
-            pool = ctx.get("redis") or ctx.get("pool")
-            if pool:
-                await pool.enqueue_job("audit_ingestion_sample", source="vinted")
-        except Exception as exc:
-            logger.warning("Failed to enqueue audit task: %s", exc)
+async def scheduled_leboncoin_ingestion(ctx: dict) -> dict:
+    return await scheduled_source_ingestion(ctx, "leboncoin")
 
-    return results
+
+async def scheduled_vinted_ingestion(ctx: dict) -> dict:
+    return await scheduled_source_ingestion(ctx, "vinted")
 
 
 async def trigger_ebay_sold_ingestion(ctx, product_id: str, limit: int = 50):
@@ -166,7 +116,7 @@ async def trigger_ebay_sold_ingestion(ctx, product_id: str, limit: int = 50):
 async def trigger_ebay_listings_ingestion(ctx, product_id: str, limit: int = 50):
     """Trigger eBay listings ingestion for a specific product template."""
     logger.info(f"Triggering eBay listings ingestion for product {product_id}")
-    result = await ingest_ebay_listings(product_id, limit)
+    result = await run_full_ingestion(product_id, {"ebay_listings": limit}, ["ebay"])
     logger.info(f"Completed listings ingestion for {product_id}: {result}")
     return result
 
@@ -200,7 +150,7 @@ async def trigger_full_ingestion(
 async def trigger_leboncoin_listings_ingestion(ctx, product_id: str, limit: int = 50):
     """Trigger LeBonCoin listings ingestion for a specific product template."""
     logger.info(f"Triggering LeBonCoin listings ingestion for product {product_id}")
-    result = await ingest_leboncoin_listings(product_id, limit)
+    result = await run_full_ingestion(product_id, {"leboncoin_listings": limit}, ["leboncoin"])
     logger.info(f"Completed LeBonCoin listings ingestion for {product_id}: {result}")
     return result
 
@@ -216,7 +166,7 @@ async def trigger_leboncoin_sold_ingestion(ctx, product_id: str, limit: int = 50
 async def trigger_vinted_listings_ingestion(ctx, product_id: str, limit: int = 50):
     """Trigger Vinted listings ingestion for a specific product template."""
     logger.info(f"Triggering Vinted listings ingestion for product {product_id}")
-    result = await ingest_vinted_listings(product_id, limit)
+    result = await run_full_ingestion(product_id, {"vinted_listings": limit}, ["vinted"])
     logger.info(f"Completed Vinted listings ingestion for {product_id}: {result}")
     return result
 
@@ -479,9 +429,6 @@ async def process_opportunity_alerts(ctx, product_id: str):
                 .first()
             )
 
-            if not pmn_data or not pmn_data.pmn:
-                return {"status": "skipped", "reason": "PMN not computed for this product"}
-
             metrics = (
                 db.query(ProductDailyMetrics)
                 .filter(ProductDailyMetrics.product_id == product_id)
@@ -489,7 +436,7 @@ async def process_opportunity_alerts(ctx, product_id: str):
                 .first()
             )
 
-            # Get opportunities (listings below PMN)
+            # The alert engine applies the verified valuation and freshness gates.
             opportunities_list = (
                 db.query(ListingObservation)
                 .filter(
@@ -497,7 +444,6 @@ async def process_opportunity_alerts(ctx, product_id: str):
                     ListingObservation.is_sold == False,
                     ListingObservation.is_stale == False,
                     ListingObservation.price.isnot(None),
-                    ListingObservation.price < pmn_data.pmn,
                 )
                 .limit(200)
                 .all()
@@ -743,8 +689,14 @@ async def run_on_demand_audit(
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
+    on_startup = ping
+    max_jobs = 3
+    job_timeout = 900
+    keep_result = 0
     functions = [
         ping,
+        ingest_scheduled_product,
+        deliver_pending_alerts,
         scheduled_ebay_ingestion,
         scheduled_leboncoin_ingestion,
         scheduled_vinted_ingestion,
@@ -780,11 +732,12 @@ class WorkerSettings:
     # avoid overlap (Vinted drives a headless browser) and ordered
     # stale-mark -> ingest -> compute.
     cron_jobs = [
-        cron(ping, minute=0),  # Run ping every hour
+        cron(deliver_pending_alerts, minute=set(range(60))),
+        cron(ping, minute=set(range(60))),  # Run ping every hour
         cron(mark_stale_listings, hour=6, minute=45),  # Mark stale listings before ingestion
-        cron(scheduled_ebay_ingestion, hour=7, minute=0),  # eBay ingestion daily 07:00
-        cron(scheduled_leboncoin_ingestion, hour=7, minute=20),  # LeBonCoin daily 07:20
-        cron(scheduled_vinted_ingestion, hour=7, minute=40),  # Vinted daily 07:40
+        cron(scheduled_ebay_ingestion, minute=set(range(0, 60, 5))),  # eBay ingestion daily 07:00
+        cron(scheduled_leboncoin_ingestion, minute=set(range(1, 60, 5))),  # LeBonCoin daily 07:20
+        cron(scheduled_vinted_ingestion, minute=set(range(2, 60, 5))),  # Vinted daily 07:40
         cron(scheduled_computation, hour=8, minute=0),  # Computation daily 08:00 (after ingest)
         cron(
             check_system_health,

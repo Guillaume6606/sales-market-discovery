@@ -17,6 +17,7 @@ COPY backend ./backend
 COPY ingestion ./ingestion
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
+COPY scripts/quarantine_sold_proxies.py ./scripts/quarantine_sold_proxies.py
 
 RUN uv pip install --system .
 

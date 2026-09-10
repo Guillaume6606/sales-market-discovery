@@ -136,7 +136,7 @@ def get_product_pmn_accuracy(
 
     snapshots = (
         db.query(PMNHistory)
-        .filter(PMNHistory.product_id == product_id)
+        .filter(PMNHistory.product_id == product_id, PMNHistory.is_valid.is_(True))
         .order_by(PMNHistory.computed_at)
         .all()
     )
@@ -156,6 +156,7 @@ def get_product_pmn_accuracy(
         .filter(
             ListingObservation.product_id == product_id,
             ListingObservation.is_sold.is_(True),
+            ListingObservation.evidence_type == "verified_sale",
             ListingObservation.price.isnot(None),
         )
         .all()
@@ -170,7 +171,9 @@ def get_aggregate_pmn_accuracy(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Aggregate PMN accuracy across all products."""
-    product_ids = db.query(PMNHistory.product_id).distinct().all()
+    product_ids = (
+        db.query(PMNHistory.product_id).filter(PMNHistory.is_valid.is_(True)).distinct().all()
+    )
 
     if not product_ids:
         return {
@@ -188,7 +191,7 @@ def get_aggregate_pmn_accuracy(
     # Batch-load all data in 3 queries instead of 3N+1 (+ 1 low-confidence query below)
     all_snapshots = (
         db.query(PMNHistory)
-        .filter(PMNHistory.product_id.in_(pid_list))
+        .filter(PMNHistory.product_id.in_(pid_list), PMNHistory.is_valid.is_(True))
         .order_by(PMNHistory.product_id, PMNHistory.computed_at)
         .all()
     )
@@ -197,6 +200,7 @@ def get_aggregate_pmn_accuracy(
         .filter(
             ListingObservation.product_id.in_(pid_list),
             ListingObservation.is_sold.is_(True),
+            ListingObservation.evidence_type == "verified_sale",
             ListingObservation.price.isnot(None),
         )
         .all()

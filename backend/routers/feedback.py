@@ -38,12 +38,16 @@ class FeedbackCreate(BaseModel):
 class FeedbackUpdate(BaseModel):
     feedback: str | None = None
     notes: str | None = None
-    profit: float | None = Field(None, ge=0)
+    profit: float | None = Field(None, allow_inf_nan=False)
 
 
 def _verify_webhook_secret(request: Request) -> None:
     """Verify Telegram webhook secret if configured."""
     if not settings.telegram_webhook_secret:
+        if settings.app_env in {"production", "prod"}:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, detail="Webhook secret is not configured"
+            )
         return
     token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
     if token != settings.telegram_webhook_secret:
@@ -89,6 +93,10 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)) -> d
     if not callback_query:
         # Not a callback query (e.g. a regular message) — just acknowledge
         return {"status": "ok"}
+
+    chat = callback_query.get("message", {}).get("chat", {}).get("id")
+    if not settings.telegram_chat_id or str(chat) != str(settings.telegram_chat_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Unauthorized feedback chat")
 
     callback_data = callback_query.get("data", "")
     parts = callback_data.split(":")

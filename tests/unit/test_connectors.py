@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from ingestion.connectors.ebay import parse_ebay_browse_response
 from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
 from ingestion.connectors.vinted import VintedConnector
@@ -185,8 +187,9 @@ class TestLeBonCoinProxyFromSettings:
 
 
 class TestLeBonCoinAPIParsing:
-    def setup_method(self):
-        self.connector = LeBonCoinAPIConnector()
+    @pytest.fixture(autouse=True)
+    def _connector(self) -> None:
+        self.connector = LeBonCoinAPIConnector(client=object())
 
     def test_basic_ad_mapping(self):
         ad = {

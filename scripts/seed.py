@@ -177,7 +177,14 @@ PRODUCTS: list[dict[str, Any]] = [
         "brand": "Nvidia",
         "price_min": 250,
         "price_max": 600,
-        "extra_words_to_avoid": ["4070 ti", "4070ti", "4070 super", "pc gamer", "unité centrale", "ordinateur"],
+        "extra_words_to_avoid": [
+            "4070 ti",
+            "4070ti",
+            "4070 super",
+            "pc gamer",
+            "unité centrale",
+            "ordinateur",
+        ],
     },
     {
         "name": "Garmin Fenix 7",

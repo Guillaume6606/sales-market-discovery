@@ -30,7 +30,7 @@ echo "--- Health check (up to 60s)..."
 STATUS="FAIL"
 for _ in $(seq 1 20); do
     sleep 3
-    if STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null); then
+    if STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8000/health/ready 2>/dev/null); then
         break
     fi
     STATUS="FAIL"

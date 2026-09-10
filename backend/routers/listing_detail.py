@@ -5,6 +5,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from backend.valuation_view import current_score
+from ingestion.valuation import evaluate_valuation
 from libs.common.db import get_db
 from libs.common.models import (
     ListingDetailORM,
@@ -117,20 +119,7 @@ def get_listing_detail(obs_id: int, db: Session = Depends(get_db)) -> dict[str, 
         }
         if enrichment is not None
         else None,
-        "score": {
-            "arbitrage_spread_eur": _decimal_to_float(score.arbitrage_spread_eur),
-            "net_roi_pct": _decimal_to_float(score.net_roi_pct),
-            "risk_adjusted_confidence": _decimal_to_float(score.risk_adjusted_confidence),
-            "acquisition_cost_eur": _decimal_to_float(score.acquisition_cost_eur),
-            "estimated_sale_price_eur": _decimal_to_float(score.estimated_sale_price_eur),
-            "estimated_sell_fees_eur": _decimal_to_float(score.estimated_sell_fees_eur),
-            "estimated_sell_shipping_eur": _decimal_to_float(score.estimated_sell_shipping_eur),
-            "days_on_market": score.days_on_market,
-            "score_breakdown": score.score_breakdown,
-            "scored_at": score.scored_at.isoformat() if score.scored_at else None,
-        }
-        if score is not None
-        else None,
+        "score": current_score(evaluate_valuation(db, obs), score),
         "pmn": {
             "pmn": _decimal_to_float(pmn.pmn),
             "pmn_low": _decimal_to_float(pmn.pmn_low),

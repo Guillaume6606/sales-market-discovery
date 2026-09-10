@@ -196,6 +196,14 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
             key="pf_providers",
         )
 
+        pf_interval = st.number_input(
+            "Scan interval (minutes)",
+            min_value=5,
+            max_value=1440,
+            value=int((selected_product or {}).get("ingestion_interval_minutes", 60)),
+            step=5,
+        )
+
         pf_llm = st.checkbox(
             "Enable LLM Validation",
             value=default_llm,
@@ -255,6 +263,7 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
                         "providers": pf_providers_val,
                         "words_to_avoid": words_list,
                         "enable_llm_validation": pf_llm_val,
+                        "ingestion_interval_minutes": pf_interval,
                         "is_active": pf_active_val,
                     }
 

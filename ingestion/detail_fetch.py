@@ -146,7 +146,7 @@ async def fetch_and_persist_details(
             if asyncio.iscoroutinefunction(fetch_detail_fn):
                 detail = await fetch_detail_fn(obs.listing_id, obs_id=obs.obs_id)
             else:
-                detail = fetch_detail_fn(obs.listing_id, obs_id=obs.obs_id)
+                detail = await asyncio.to_thread(fetch_detail_fn, obs.listing_id, obs_id=obs.obs_id)
         except Exception:
             logger.exception("Detail fetch failed for %s/%s", source, obs.listing_id)
             continue

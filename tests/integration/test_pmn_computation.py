@@ -45,3 +45,42 @@ class TestPmnComputation:
 
         result = compute_pmn_for_product(seed_product, db=integration_db)
         assert result["status"] == "insufficient_data"
+
+
+def test_unverified_sold_records_do_not_create_sales_liquidity(
+    integration_db, seed_product, seed_sold_observations
+):
+    from ingestion.computation import compute_liquidity_score, compute_pmn_for_product
+    from libs.common.models import ListingObservation
+
+    integration_db.query(ListingObservation).update({"evidence_type": "unknown"})
+    integration_db.commit()
+    assert compute_pmn_for_product(seed_product, db=integration_db)["status"] == "insufficient_data"
+    assert compute_liquidity_score(seed_product, db=integration_db)["sold_count_30d"] == 0
+
+
+def test_daily_metrics_exclude_unverified_sold_records(
+    integration_db, seed_product, seed_sold_observations, monkeypatch
+):
+    from sqlalchemy.orm import sessionmaker
+
+    from ingestion.ingestion import calculate_daily_metrics
+    from libs.common.models import ListingObservation
+
+    integration_db.query(ListingObservation).update({"evidence_type": "unknown"})
+    integration_db.commit()
+    monkeypatch.setattr(
+        "ingestion.ingestion.SessionLocal", sessionmaker(bind=integration_db.get_bind())
+    )
+    assert calculate_daily_metrics(seed_product)["sold_count_30d"] == 0
+
+
+def test_foreign_currency_prices_are_not_mixed_into_eur_pmn(
+    integration_db, seed_product, seed_sold_observations
+):
+    from ingestion.computation import compute_pmn_for_product
+    from libs.common.models import ListingObservation
+
+    integration_db.query(ListingObservation).update({"currency": "USD"})
+    integration_db.commit()
+    assert compute_pmn_for_product(seed_product, db=integration_db)["status"] == "insufficient_data"

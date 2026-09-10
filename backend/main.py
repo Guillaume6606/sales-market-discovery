@@ -6,7 +6,7 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
@@ -18,17 +18,19 @@ from backend.routers.ingestion import router as ingestion_router
 from backend.routers.listing_detail import router as listing_detail_router
 from backend.routers.pmn import router as pmn_router
 from backend.routers.scored_listings import router as scored_listings_router
+from backend.routers.trades import router as trades_router
+from backend.routers.valuation import router as valuation_router
 from ingestion.constants import SUPPORTED_PROVIDERS
-from libs.common.db import engine, get_db
+from libs.common.db import get_db
 from libs.common.log import logger
 from libs.common.models import (
     AlertEvent,
     AlertFeedback,
     AlertRule,
-    Base,
     Category,
     ListingEnrichment,
     ListingObservation,
+    ListingObservationEvent,
     ListingScore,
     MarketPriceNormal,
     PMNHistory,
@@ -39,14 +41,6 @@ from libs.common.settings import settings
 from libs.common.utils import decimal_to_float as _decimal_to_float
 
 # ARQ-based ingestion - no need to import heavy ingestion modules in backend
-
-# Create database tables (with error handling)
-try:
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created successfully")
-except Exception as e:
-    logger.warning(f"Could not create database tables: {e}")
-    logger.info("Tables may already exist or database connection may be unavailable")
 
 # Global ARQ pool
 arq_pool = None
@@ -60,6 +54,8 @@ app.include_router(pmn_router)
 app.include_router(audit_router)
 app.include_router(scored_listings_router)
 app.include_router(listing_detail_router)
+app.include_router(valuation_router)
+app.include_router(trades_router)
 
 
 @app.on_event("startup")
@@ -121,6 +117,30 @@ class DiscoveryItem(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def readiness(db: Session = Depends(get_db)) -> dict[str, str]:
+    from sqlalchemy import text
+
+    try:
+        db.execute(
+            text(
+                "SELECT o.evidence_type, a.delivery_status, p.ingestion_interval_minutes "
+                "FROM listing_observation o, alert_event a, product_template p, "
+                "verified_valuation_reference v, trade t LIMIT 0"
+            )
+        )
+        if arq_pool is None:
+            raise RuntimeError("queue_unavailable")
+        await arq_pool.ping()
+        if not await arq_pool.get("worker:heartbeat"):
+            raise RuntimeError("worker_heartbeat_missing")
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database, queue or worker is unavailable"
+        ) from exc
+    return {"status": "ready"}
 
 
 @app.get("/products/discovery")
@@ -303,6 +323,7 @@ class ProductTemplateCreate(BaseModel):
     price_max: float | None = None
     providers: list[str] | None = None
     words_to_avoid: list[str] | None = None
+    ingestion_interval_minutes: int = Field(default=60, ge=5, le=1440)
     enable_llm_validation: bool = False
     is_active: bool = True
 
@@ -317,6 +338,7 @@ class ProductTemplateUpdate(BaseModel):
     price_max: float | None = None
     providers: list[str] | None = None
     words_to_avoid: list[str] | None = None
+    ingestion_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     enable_llm_validation: bool | None = None
     is_active: bool | None = None
 
@@ -344,6 +366,7 @@ def _serialize_product_template(product: ProductTemplate) -> dict[str, Any]:
         "price_max": _decimal_to_float(product.price_max),
         "providers": list(product.providers or []),
         "words_to_avoid": list(product.words_to_avoid or []),
+        "ingestion_interval_minutes": product.ingestion_interval_minutes,
         "enable_llm_validation": product.enable_llm_validation,
         "is_active": product.is_active,
         "category": _serialize_category(product.category),
@@ -497,40 +520,46 @@ def product_price_history(
     # Get sold items grouped by day
     sold_history = (
         db.query(
-            func.date(ListingObservation.observed_at).label("date"),
-            func.avg(ListingObservation.price).label("avg_price"),
-            func.min(ListingObservation.price).label("min_price"),
-            func.max(ListingObservation.price).label("max_price"),
-            func.count(ListingObservation.obs_id).label("count"),
+            func.date(ListingObservationEvent.recorded_at).label("date"),
+            func.avg(ListingObservationEvent.price).label("avg_price"),
+            func.min(ListingObservationEvent.price).label("min_price"),
+            func.max(ListingObservationEvent.price).label("max_price"),
+            func.count(ListingObservationEvent.event_id).label("count"),
         )
+        .join(ListingObservation, ListingObservation.obs_id == ListingObservationEvent.obs_id)
         .filter(
+            ListingObservationEvent.currency == "EUR",
             ListingObservation.product_id == product_id,
-            ListingObservation.is_sold == True,
-            ListingObservation.observed_at >= start_date,
-            ListingObservation.price.isnot(None),
+            ListingObservationEvent.is_sold.is_(True),
+            ListingObservationEvent.evidence_type == "verified_sale",
+            ListingObservationEvent.recorded_at >= start_date,
+            ListingObservationEvent.price.isnot(None),
         )
-        .group_by(func.date(ListingObservation.observed_at))
-        .order_by(func.date(ListingObservation.observed_at))
+        .group_by(func.date(ListingObservationEvent.recorded_at))
+        .order_by(func.date(ListingObservationEvent.recorded_at))
         .all()
     )
 
-    # Get current active listings grouped by day first observed
+    # Recorded asking-price changes; do not backdate current prices.
     active_history = (
         db.query(
-            func.date(ListingObservation.observed_at).label("date"),
-            func.avg(ListingObservation.price).label("avg_price"),
-            func.min(ListingObservation.price).label("min_price"),
-            func.max(ListingObservation.price).label("max_price"),
-            func.count(ListingObservation.obs_id).label("count"),
+            func.date(ListingObservationEvent.recorded_at).label("date"),
+            func.avg(ListingObservationEvent.price).label("avg_price"),
+            func.min(ListingObservationEvent.price).label("min_price"),
+            func.max(ListingObservationEvent.price).label("max_price"),
+            func.count(ListingObservationEvent.event_id).label("count"),
         )
+        .join(ListingObservation, ListingObservation.obs_id == ListingObservationEvent.obs_id)
         .filter(
+            ListingObservationEvent.currency == "EUR",
             ListingObservation.product_id == product_id,
-            ListingObservation.is_sold == False,
-            ListingObservation.observed_at >= start_date,
-            ListingObservation.price.isnot(None),
+            ListingObservationEvent.is_sold.is_(False),
+            ListingObservationEvent.evidence_type == "asking",
+            ListingObservationEvent.recorded_at >= start_date,
+            ListingObservationEvent.price.isnot(None),
         )
-        .group_by(func.date(ListingObservation.observed_at))
-        .order_by(func.date(ListingObservation.observed_at))
+        .group_by(func.date(ListingObservationEvent.recorded_at))
+        .order_by(func.date(ListingObservationEvent.recorded_at))
         .all()
     )
 
@@ -542,6 +571,7 @@ def product_price_history(
     return {
         "product_id": str(product_id),
         "days": days,
+        "basis": "recorded_price_changes",
         "pmn": _decimal_to_float(pmn_data.pmn) if pmn_data else None,
         "pmn_low": _decimal_to_float(pmn_data.pmn_low) if pmn_data else None,
         "pmn_high": _decimal_to_float(pmn_data.pmn_high) if pmn_data else None,
@@ -744,6 +774,7 @@ def create_product(payload: ProductTemplateCreate, db: Session = Depends(get_db)
         price_max=payload.price_max,
         providers=providers,
         words_to_avoid=payload.words_to_avoid or [],
+        ingestion_interval_minutes=payload.ingestion_interval_minutes,
         enable_llm_validation=payload.enable_llm_validation,
         is_active=payload.is_active,
     )
@@ -821,6 +852,8 @@ def update_product(
     if payload.words_to_avoid is not None:
         product.words_to_avoid = payload.words_to_avoid
 
+    if payload.ingestion_interval_minutes is not None:
+        product.ingestion_interval_minutes = payload.ingestion_interval_minutes
     if payload.enable_llm_validation is not None:
         product.enable_llm_validation = payload.enable_llm_validation
 
@@ -1595,65 +1628,23 @@ async def trigger_enrichment():
 
 @app.get("/listings/{obs_id}/opportunity")
 def get_listing_opportunity_score(obs_id: int, db: Session = Depends(get_db)):
-    """
-    Calculate and return the opportunity score for a specific listing.
+    """Return current verified valuation and available-capital eligibility."""
+    from ingestion.alert_engine import _alert_valuation
 
-    Returns detailed breakdown including:
-    - Opportunity score (0-100)
-    - Margin analysis (gross/net margins, fees)
-    - Risk assessment
-    - Recommendation (strong_buy, good_buy, fair, pass)
-    """
-    # Import here to avoid circular dependency
-    from ingestion.computation import compute_opportunity_score
-
-    # Get listing
-    listing = db.query(ListingObservation).filter(ListingObservation.obs_id == obs_id).first()
-
-    if not listing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Listing with ID {obs_id} not found"
-        )
-
-    # Get product metrics and PMN
-    product_metrics = (
-        db.query(ProductDailyMetrics)
-        .filter(ProductDailyMetrics.product_id == listing.product_id)
-        .order_by(desc(ProductDailyMetrics.date))
-        .first()
-    )
-
-    pmn_data = (
-        db.query(MarketPriceNormal)
-        .filter(MarketPriceNormal.product_id == listing.product_id)
-        .first()
-    )
-
-    # Compute opportunity score
-    opportunity = compute_opportunity_score(listing, product_metrics, pmn_data)
-
-    # Add listing context
-    opportunity["listing"] = {
-        "obs_id": listing.obs_id,
-        "title": listing.title,
-        "price": _decimal_to_float(listing.price),
-        "source": listing.source,
-        "url": listing.url,
-        "condition": listing.condition,
-        "seller_rating": _decimal_to_float(listing.seller_rating),
-        "shipping_cost": _decimal_to_float(listing.shipping_cost),
+    listing = db.get(ListingObservation, obs_id)
+    if listing is None:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    valuation = _alert_valuation(db, listing)
+    return {
+        **valuation,
+        "recommendation": "manual_review" if valuation["eligible"] else "pass",
+        "listing": {
+            "obs_id": listing.obs_id,
+            "title": listing.title,
+            "price": _decimal_to_float(listing.price),
+            "url": listing.url,
+        },
     }
-
-    opportunity["pmn"] = {
-        "value": _decimal_to_float(pmn_data.pmn) if pmn_data else None,
-        "pmn_low": _decimal_to_float(pmn_data.pmn_low) if pmn_data else None,
-        "pmn_high": _decimal_to_float(pmn_data.pmn_high) if pmn_data else None,
-        "last_computed": pmn_data.last_computed_at.isoformat()
-        if pmn_data and pmn_data.last_computed_at
-        else None,
-    }
-
-    return opportunity
 
 
 @app.get("/computation/status")
@@ -1960,20 +1951,20 @@ def explore_listings(
 class AlertRuleCreate(BaseModel):
     name: str
     product_filter: dict[str, Any] | None = None
-    threshold_pct: float | None = None
-    min_margin_abs: float | None = None
-    min_liquidity_score: float | None = None
-    min_seller_rating: float | None = None
+    threshold_pct: float | None = Field(None, ge=-100, le=100, allow_inf_nan=False)
+    min_margin_abs: float | None = Field(None, ge=0, allow_inf_nan=False)
+    min_liquidity_score: float | None = Field(None, ge=0, le=100, allow_inf_nan=False)
+    min_seller_rating: float | None = Field(None, ge=0, le=5, allow_inf_nan=False)
     channels: list[str] | None = None
 
 
 class AlertRuleUpdate(BaseModel):
     name: str | None = None
     product_filter: dict[str, Any] | None = None
-    threshold_pct: float | None = None
-    min_margin_abs: float | None = None
-    min_liquidity_score: float | None = None
-    min_seller_rating: float | None = None
+    threshold_pct: float | None = Field(None, ge=-100, le=100, allow_inf_nan=False)
+    min_margin_abs: float | None = Field(None, ge=0, allow_inf_nan=False)
+    min_liquidity_score: float | None = Field(None, ge=0, le=100, allow_inf_nan=False)
+    min_seller_rating: float | None = Field(None, ge=0, le=5, allow_inf_nan=False)
     channels: list[str] | None = None
 
 
@@ -1987,7 +1978,7 @@ def create_alert_rule(payload: AlertRuleCreate, db: Session = Depends(get_db)):
         min_margin_abs=payload.min_margin_abs,
         min_liquidity_score=payload.min_liquidity_score,
         min_seller_rating=payload.min_seller_rating,
-        channels=payload.channels or [],
+        channels=payload.channels if payload.channels is not None else ["telegram"],
     )
     db.add(rule)
     db.commit()
@@ -2007,8 +1998,8 @@ def create_alert_rule(payload: AlertRuleCreate, db: Session = Depends(get_db)):
 
 @app.get("/alerts/rules")
 def list_alert_rules(db: Session = Depends(get_db)):
-    """List all alert rules."""
-    rules = db.query(AlertRule).all()
+    """List active alert rules; archived rules remain attached to history."""
+    rules = db.query(AlertRule).filter(AlertRule.is_active.is_(True)).all()
     return {
         "rules": [
             {
@@ -2065,12 +2056,12 @@ def update_alert_rule(rule_id: str, payload: AlertRuleUpdate, db: Session = Depe
 
 @app.delete("/alerts/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_alert_rule(rule_id: str, db: Session = Depends(get_db)):
-    """Delete an alert rule."""
+    """Archive an alert rule while retaining its delivery history."""
     rule = db.query(AlertRule).filter(AlertRule.rule_id == rule_id).first()
     if not rule:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert rule not found")
 
-    db.delete(rule)
+    rule.is_active = False
     db.commit()
     return None
 
@@ -2084,7 +2075,7 @@ async def test_alert_rule(rule_id: str, db: Session = Depends(get_db)):
     if not rule:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert rule not found")
 
-    # Get opportunities (listings below PMN)
+    # Preview the same valuation gate used for delivery.
     opportunities_query = (
         db.query(ListingObservation, ProductTemplate, MarketPriceNormal, ProductDailyMetrics)
         .join(ProductTemplate, ListingObservation.product_id == ProductTemplate.product_id)
@@ -2099,10 +2090,10 @@ async def test_alert_rule(rule_id: str, db: Session = Depends(get_db)):
         .filter(
             ListingObservation.is_sold == False,
             ListingObservation.price.isnot(None),
-            MarketPriceNormal.pmn.isnot(None),
+            ListingObservation.is_stale.is_(False),
         )
-        .having(ListingObservation.price < MarketPriceNormal.pmn)
-        .limit(10)
+        .order_by(ListingObservation.last_seen_at.desc())
+        .limit(200)
     )
 
     matches = []
@@ -2145,7 +2136,12 @@ def list_alert_events(
 
     total = query.count()
 
-    rows = query.order_by(desc(AlertEvent.sent_at)).offset(offset).limit(limit).all()
+    rows = (
+        query.order_by(desc(AlertEvent.created_at), desc(AlertEvent.alert_id))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
     return {
         "events": [
@@ -2155,7 +2151,13 @@ def list_alert_events(
                 "product_id": str(event.product_id),
                 "obs_id": event.obs_id,
                 "sent_at": event.sent_at.isoformat() if event.sent_at else None,
+                "created_at": event.created_at.isoformat() if event.created_at else None,
                 "delivery": event.delivery,
+                "delivery_status": event.delivery_status,
+                "delivery_attempts": event.delivery_attempts,
+                "next_attempt_at": event.next_attempt_at.isoformat()
+                if event.next_attempt_at
+                else None,
                 "suppressed": event.suppressed,
                 "feedback": feedback,
             }
@@ -2165,6 +2167,61 @@ def list_alert_events(
         "limit": limit,
         "offset": offset,
     }
+
+
+@app.post("/alerts/events/{alert_id}/retry")
+def retry_alert_event(alert_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Rearm a failed or suppressed event after an explicit operator request."""
+    from ingestion.alert_engine import _alert_valuation, _rule_matches
+
+    event = db.query(AlertEvent).filter(AlertEvent.alert_id == alert_id).with_for_update().first()
+    if event is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    if event.delivery_status not in {"failed", "suppressed"}:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, detail="Only failed or suppressed alerts can be retried"
+        )
+    listing = db.get(ListingObservation, event.obs_id)
+    product = db.get(ProductTemplate, event.product_id)
+    rule = db.get(AlertRule, event.rule_id)
+    metrics = (
+        db.query(ProductDailyMetrics)
+        .filter(ProductDailyMetrics.product_id == event.product_id)
+        .order_by(ProductDailyMetrics.date.desc())
+        .first()
+    )
+    valuation = _alert_valuation(db, listing) if listing is not None else {}
+    if (
+        not listing
+        or not product
+        or not rule
+        or not rule.is_active
+        or not _rule_matches(rule, listing, product, None, metrics, valuation=valuation)
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Alert is not currently eligible",
+                "reasons": valuation.get("reasons", []),
+            },
+        )
+    previous_delivery = event.delivery or {}
+    retries = list(previous_delivery.get("manual_retries", []))
+    retries.append(
+        {
+            "requested_at": datetime.now(UTC).isoformat(),
+            "previous_status": event.delivery_status,
+            "previous_attempts": event.delivery_attempts,
+            "previous_result": previous_delivery.get("result"),
+        }
+    )
+    event.delivery = {**previous_delivery, "manual_retries": retries}
+    event.delivery_status = "pending"
+    event.delivery_attempts = 0
+    event.next_attempt_at = datetime.now(UTC)
+    event.suppressed = False
+    db.commit()
+    return {"alert_id": event.alert_id, "delivery_status": event.delivery_status}
 
 
 @app.post("/alerts/send-test")

@@ -403,7 +403,9 @@ def compute_all_scores(
 # ---------------------------------------------------------------------------
 
 
-async def run_scoring_batch(ctx: dict | None = None) -> dict[str, Any]:
+async def run_scoring_batch(
+    ctx: dict | None = None, *, product_id: str | None = None
+) -> dict[str, Any]:
     """Score all listings that need scoring.
 
     Queries every non-stale listing that either has no score yet, or whose
@@ -417,9 +419,12 @@ async def run_scoring_batch(ctx: dict | None = None) -> dict[str, Any]:
         Dictionary with ``status`` (``"success"`` or ``"error"``) and
         ``scored`` count on success.
     """
-    from sqlalchemy import and_, func, or_
+    import json
+
+    from sqlalchemy import and_, func
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+    from ingestion.valuation import evaluate_valuation
     from libs.common.db import SessionLocal
     from libs.common.models import (
         ListingDetailORM,
@@ -459,11 +464,12 @@ async def run_scoring_batch(ctx: dict | None = None) -> dict[str, Any]:
             .outerjoin(ListingScore, ListingScore.obs_id == ListingObservation.obs_id)
             .filter(
                 ListingObservation.is_stale == False,  # noqa: E712
-                or_(
-                    ListingScore.obs_id.is_(None),
-                    ListingScore.scored_at < ListingEnrichment.enriched_at,
-                ),
+                ListingObservation.is_sold.is_(False),
+                ProductTemplate.is_active.is_(True),
+                *([ListingObservation.product_id == product_id] if product_id else []),
             )
+            .order_by(ListingScore.scored_at.asc().nullsfirst())
+            .limit(500)
             .all()
         )
 
@@ -472,6 +478,32 @@ async def run_scoring_batch(ctx: dict | None = None) -> dict[str, Any]:
 
         for obs, detail, enrichment, pmn_row, metrics, product in candidates:
             scores = compute_all_scores(obs, detail, enrichment, pmn_row, metrics, product)
+            valuation = evaluate_valuation(db, obs)
+            scores["estimated_sale_price_eur"] = (
+                valuation.get("estimated_sale_price_eur") if valuation["eligible"] else None
+            )
+            scores["acquisition_cost_eur"] = (
+                valuation.get("acquisition_cost_eur") if valuation["eligible"] else None
+            )
+            scores["arbitrage_spread_eur"] = (
+                valuation.get("contribution_eur") if valuation["eligible"] else None
+            )
+            scores["net_roi_pct"] = (
+                compute_net_roi(
+                    Decimal(str(valuation["contribution_eur"])),
+                    Decimal(str(valuation["acquisition_cost_eur"])),
+                )
+                if valuation["eligible"]
+                else None
+            )
+            scores["estimated_sell_fees_eur"] = None
+            scores["estimated_sell_shipping_eur"] = None
+            if not valuation["eligible"]:
+                scores["risk_adjusted_confidence"] = Decimal("0")
+            scores["score_breakdown"] = {
+                "verified_valuation": json.loads(json.dumps(valuation, default=str)),
+                "confidence_label": "uncalibrated_heuristic",
+            }
             stmt = pg_insert(ListingScore).values(**scores)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["obs_id"],

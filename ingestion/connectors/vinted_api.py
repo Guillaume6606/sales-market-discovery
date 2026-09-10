@@ -70,6 +70,7 @@ class VintedAPIConnector:
 
         except Exception as exc:
             logger.error(f"Vinted API search failed for '{keyword}': {exc}")
+            raise RuntimeError("Vinted API search failed") from exc
 
         return results
 

@@ -88,25 +88,28 @@ async def send_opportunity_alert(
     try:
         # Format message
         product_name = html.escape(product_template.get("name", "Unknown Product"))
-        brand = html.escape(product_template.get("brand", ""))
+        brand = html.escape(product_template.get("brand") or "")
         listing_title = html.escape(listing.get("title", "No title"))
         listing_price = listing.get("price", 0)
-        listing_url = listing.get("url", "")
-        margin_pct = opportunity.get("margin_pct", 0)
+        listing_url = html.escape(listing.get("url") or "", quote=True)
+        opportunity.get("margin_pct", 0)
         margin_abs = opportunity.get("margin_abs", 0)
         pmn = opportunity.get("pmn", 0)
+        destination = html.escape(opportunity.get("destination_marketplace") or "review reference")
 
         # Build message text
-        message_text = f"""🎯 <b>Arbitrage Opportunity Found!</b>
+        message_text = f"""🎯 <b>Opportunity for manual review</b>
 
 📦 <b>Product:</b> {product_name}
 {f"🏷️ <b>Brand:</b> {brand}" if brand else ""}
 
 📋 <b>Listing:</b> {listing_title}
 💰 <b>Price:</b> €{listing_price:.2f}
-📊 <b>PMN:</b> €{pmn:.2f}
+📊 <b>Reviewed exit estimate:</b> €{pmn:.2f} ({destination})
 
-💵 <b>Margin:</b> {margin_pct:.1f}% (€{margin_abs:.2f})
+💵 <b>Estimated net contribution:</b> €{margin_abs:.2f}
+🧾 <b>Reference:</b> {opportunity.get("reference_id", "manual review required")}
+⚖️ <b>Maximum item price:</b> €{opportunity.get("max_buy_price_eur", 0):.2f}
 {_confidence_badge(pmn_confidence)}
 🔗 <a href="{listing_url}">View Listing</a>"""
 

@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import importlib
 import os
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from libs.common.models import Base
+
 config = context.config
 fileConfig(config.config_file_name)
 
-target_metadata = None
+
+def _register_model_modules() -> None:
+    """Load standalone model modules without importing the FastAPI application."""
+    for module_name in ("libs.common.valuation_models", "libs.common.trade_models"):
+        importlib.import_module(module_name)
+
+
+_register_model_modules()
+target_metadata = Base.metadata
 
 
 def _database_url() -> str:

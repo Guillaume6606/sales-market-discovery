@@ -125,10 +125,10 @@ async def fetch_ebay_sold(keyword: str, limit: int = 50) -> list[Listing]:
 async def fetch_ebay_listings(keyword: str, limit: int = 50) -> list[Listing]:
     """Fetch active listings from the Browse API ``item_summary/search``."""
     if not _credentials_ready():
-        return []
+        raise RuntimeError("eBay production credentials or token unavailable")
     token = await _get_app_token()
     if not token:
-        return []
+        raise RuntimeError("eBay production credentials or token unavailable")
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -138,6 +138,7 @@ async def fetch_ebay_listings(keyword: str, limit: int = 50) -> list[Listing]:
         "q": keyword,
         "limit": str(min(limit, 200)),  # Browse API max page size
         "filter": "priceCurrency:EUR",
+        "sort": "newlyListed",
     }
 
     try:
@@ -158,7 +159,7 @@ async def fetch_ebay_listings(keyword: str, limit: int = 50) -> list[Listing]:
         logger.error(f"eBay Browse API request error for '{keyword}': {e}")
     except Exception as e:
         logger.error(f"Unexpected error fetching eBay listings for '{keyword}': {e}", exc_info=True)
-    return []
+    raise RuntimeError("eBay Browse request failed")
 
 
 def _extract_brand_from_title(title: str) -> str | None:

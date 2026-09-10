@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -52,6 +54,10 @@ class Settings(BaseSettings):
     stale_listing_days: int = Field(default=7)
     connector_failure_threshold: int = Field(default=3)
     min_pmn_confidence: float = Field(default=0.3)
+    working_capital_eur: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    alert_freshness_minutes: int = Field(default=60, ge=1, le=1440)
+    alert_delivery_batch_size: int = Field(default=20, ge=1, le=100)
+    alert_max_attempts: int = Field(default=5, ge=1, le=10)
 
     # Connector audit
     audit_enabled: bool = False
@@ -61,7 +67,7 @@ class Settings(BaseSettings):
     audit_daily_token_budget: int = 100000
 
     # Enrichment pipeline
-    enrichment_enabled: bool = True
+    enrichment_enabled: bool = False
     enrichment_batch_size: int = 50
     enrichment_re_enrichment_batch_size: int = 20
     enrichment_re_enrichment_age_days: int = 7

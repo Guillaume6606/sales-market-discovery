@@ -1,11 +1,12 @@
-"""
-Alert rule evaluation engine for triggering Telegram notifications.
-"""
+"""Verified opportunity eligibility and a transactional Telegram delivery outbox."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import or_
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from libs.common.db import SessionLocal
@@ -19,7 +20,93 @@ from libs.common.models import (
 )
 from libs.common.settings import settings
 from libs.common.telegram_service import send_opportunity_alert
-from libs.common.utils import decimal_to_float as _decimal_to_float
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _rule_matches(
+    rule: AlertRule,
+    listing: ListingObservation,
+    product_template: ProductTemplate,
+    pmn_data: MarketPriceNormal | None,
+    metrics: ProductDailyMetrics | None,
+    *,
+    valuation: dict[str, Any] | None = None,
+) -> bool:
+    if rule.channels is not None and "telegram" not in rule.channels:
+        return False
+    if not valuation or not valuation.get("eligible"):
+        return False
+    if listing.is_sold or listing.is_stale or not product_template.is_active:
+        return False
+    if listing.currency != "EUR" or listing.price is None or listing.price <= 0:
+        return False
+    if not listing.last_seen_at or _aware(listing.last_seen_at) < datetime.now(UTC) - timedelta(
+        minutes=settings.alert_freshness_minutes
+    ):
+        return False
+    filters = rule.product_filter or {}
+    if "category_id" in filters and str(product_template.category_id) != str(
+        filters["category_id"]
+    ):
+        return False
+    if "brand" in filters and product_template.brand != filters["brand"]:
+        return False
+    if "product_id" in filters and str(product_template.product_id) != str(filters["product_id"]):
+        return False
+    exit_price = Decimal(str(valuation["estimated_sale_price_eur"]))
+    contribution = Decimal(str(valuation["contribution_eur"]))
+    if exit_price <= 0 or contribution <= 0:
+        return False
+    discount = (exit_price - Decimal(str(listing.price))) / exit_price * 100
+    if rule.threshold_pct is not None and discount < abs(Decimal(str(rule.threshold_pct))):
+        return False
+    if rule.min_margin_abs is not None and contribution < rule.min_margin_abs:
+        return False
+    if rule.min_liquidity_score is not None:
+        if (
+            metrics is None
+            or metrics.liquidity_score is None
+            or metrics.liquidity_score < rule.min_liquidity_score
+        ):
+            return False
+    if rule.min_seller_rating is not None:
+        # eBay feedbackScore is a count, not a star rating.
+        if (
+            listing.source == "ebay"
+            or listing.seller_rating is None
+            or listing.seller_rating < rule.min_seller_rating
+        ):
+            return False
+    return True
+
+
+def apply_capital_gate(valuation: dict[str, Any], committed: Decimal) -> dict[str, Any]:
+    result = dict(valuation)
+    reasons = list(result.get("reasons", []))
+    budget = settings.working_capital_eur
+    available = max(Decimal("0"), budget - committed) if budget is not None else None
+    result["capital_committed_eur"] = committed
+    result["capital_available_eur"] = available
+    if budget is None:
+        reasons.append("working_capital_unconfigured")
+    elif (
+        result.get("acquisition_cost_eur") is not None
+        and Decimal(str(result["acquisition_cost_eur"])) > available
+    ):
+        reasons.append("insufficient_available_capital")
+    result["reasons"] = reasons
+    result["eligible"] = bool(result.get("eligible")) and not reasons
+    return result
+
+
+def _alert_valuation(db: Session, listing: ListingObservation) -> dict[str, Any]:
+    from ingestion.valuation import evaluate_valuation
+    from libs.common.trades import query_capital_committed
+
+    return apply_capital_gate(evaluate_valuation(db, listing), query_capital_committed(db))
 
 
 def evaluate_alert_rules(
@@ -29,283 +116,205 @@ def evaluate_alert_rules(
     metrics: ProductDailyMetrics | None = None,
     db: Session | None = None,
 ) -> list[AlertRule]:
-    """
-    Evaluate all active alert rules against a listing.
 
-    Args:
-        listing: The listing observation to evaluate
-        product_template: Product template for the listing
-        pmn_data: PMN data for the product (optional)
-        metrics: Daily metrics for the product (optional)
-        db: Database session (optional, will create if not provided)
-
-    Returns:
-        List of AlertRule objects that match the listing
-    """
-    if db is None:
-        db = SessionLocal()
-        should_close = True
-    else:
-        should_close = False
-
+    owned = db is None
+    db = db or SessionLocal()
     try:
-        # Get all active alert rules
-        rules = db.query(AlertRule).filter(AlertRule.is_active.is_(True)).all()
-
-        matching_rules = []
-
-        for rule in rules:
-            if _rule_matches(rule, listing, product_template, pmn_data, metrics):
-                matching_rules.append(rule)
-
-        return matching_rules
-
+        valuation = _alert_valuation(db, listing)
+        return [
+            rule
+            for rule in db.query(AlertRule).filter(AlertRule.is_active.is_(True)).all()
+            if _rule_matches(
+                rule, listing, product_template, pmn_data, metrics, valuation=valuation
+            )
+        ]
     finally:
-        if should_close:
+        if owned:
             db.close()
 
 
-def _rule_matches(
-    rule: AlertRule,
-    listing: ListingObservation,
-    product_template: ProductTemplate,
-    pmn_data: MarketPriceNormal | None,
-    metrics: ProductDailyMetrics | None,
-) -> bool:
-    """
-    Check if an alert rule matches a listing.
-
-    Returns:
-        True if rule matches, False otherwise
-    """
-    # Check product filter (JSON criteria)
-    if rule.product_filter:
-        # Simple product filter matching (can be extended)
-        product_filter = rule.product_filter
-        if isinstance(product_filter, dict):
-            # Check category
-            if "category_id" in product_filter:
-                if str(product_template.category_id) != str(product_filter["category_id"]):
-                    return False
-
-            # Check brand
-            if "brand" in product_filter:
-                if product_template.brand != product_filter["brand"]:
-                    return False
-
-    # Skip if listing is sold
-    if listing.is_sold:
-        return False
-
-    # Check price and margin thresholds
-    if pmn_data and pmn_data.pmn and listing.price:
-        pmn_value = _decimal_to_float(pmn_data.pmn)
-        listing_price = _decimal_to_float(listing.price)
-
-        if pmn_value and listing_price:
-            # Calculate margin percentage
-            margin_pct = ((listing_price - pmn_value) / pmn_value) * 100
-
-            # Check threshold_pct (margin % below PMN)
-            if rule.threshold_pct is not None:
-                if margin_pct > rule.threshold_pct:
-                    return False
-
-            # Check min_margin_abs (absolute margin)
-            if rule.min_margin_abs is not None:
-                margin_abs = pmn_value - listing_price
-                if margin_abs < _decimal_to_float(rule.min_margin_abs):
-                    return False
-
-    # Check liquidity score
-    if rule.min_liquidity_score is not None and metrics:
-        liquidity = _decimal_to_float(metrics.liquidity_score)
-        min_liquidity = _decimal_to_float(rule.min_liquidity_score)
-        if liquidity is None or (min_liquidity and liquidity < min_liquidity):
-            return False
-
-    # Check seller rating
-    if rule.min_seller_rating is not None:
-        seller_rating = _decimal_to_float(listing.seller_rating)
-        min_rating = _decimal_to_float(rule.min_seller_rating)
-        if seller_rating is None or (min_rating and seller_rating < min_rating):
-            return False
-
-    return True
-
-
-def _check_duplicate_alert(
-    db: Session,
-    rule_id: str,
-    obs_id: int,
-) -> bool:
-    """
-    Check if an alert has already been sent for this rule and listing.
-
-    Returns:
-        True if duplicate exists, False otherwise
-    """
-    existing = (
-        db.query(AlertEvent)
+def _check_duplicate_alert(db: Session, rule_id: str, obs_id: int) -> bool:
+    return (
+        db.query(AlertEvent.alert_id)
         .filter(
             AlertEvent.rule_id == rule_id,
             AlertEvent.obs_id == obs_id,
             AlertEvent.suppressed.is_(False),
+            AlertEvent.delivery_status.in_(["sent", "legacy"]),
         )
         .first()
+        is not None
     )
 
-    return existing is not None
+
+def _snapshot(valuation: dict[str, Any]) -> dict[str, Any]:
+    import json
+
+    return json.loads(json.dumps(valuation, default=str))
 
 
 async def trigger_alerts(
-    opportunities: list[dict[str, Any]],
-    db: Session | None = None,
+    opportunities: list[dict[str, Any]], db: Session | None = None
 ) -> list[AlertEvent]:
-    """
-    Evaluate alert rules and send Telegram alerts for matching opportunities.
 
-    Args:
-        opportunities: List of dicts with keys:
-            - listing: ListingObservation object
-            - product_template: ProductTemplate object
-            - pmn_data: MarketPriceNormal object (optional)
-            - metrics: ProductDailyMetrics object (optional)
-        db: Database session (optional)
-
-    Returns:
-        List of AlertEvent objects created
-    """
-    if db is None:
-        db = SessionLocal()
-        should_close = True
-    else:
-        should_close = False
-
-    created_events = []
-
+    owned = db is None
+    db = db or SessionLocal()
+    ids = []
     try:
-        for opp in opportunities:
-            listing = opp.get("listing")
-            product_template = opp.get("product_template")
-            pmn_data = opp.get("pmn_data")
-            metrics = opp.get("metrics")
-
-            if not listing or not product_template:
+        rules = db.query(AlertRule).filter(AlertRule.is_active.is_(True)).all()
+        for opportunity in opportunities:
+            listing = opportunity.get("listing")
+            product = opportunity.get("product_template")
+            if listing is None or product is None:
                 continue
-
-            # Suppress alerts for low-confidence PMN
-            if pmn_data and pmn_data.confidence is not None:
-                conf = float(pmn_data.confidence)
-                if conf < settings.min_pmn_confidence:
-                    suppressed_event = AlertEvent(
-                        product_id=product_template.product_id,
-                        obs_id=listing.obs_id,
-                        sent_at=datetime.now(UTC),
-                        delivery={
-                            "suppressed_reason": "low_pmn_confidence",
-                            "confidence": conf,
-                        },
-                        suppressed=True,
-                    )
-                    db.add(suppressed_event)
-                    db.commit()
-                    created_events.append(suppressed_event)
+            valuation = _alert_valuation(db, listing)
+            for rule in rules:
+                if not _rule_matches(
+                    rule, listing, product, None, opportunity.get("metrics"), valuation=valuation
+                ):
                     continue
-
-            # Evaluate rules
-            matching_rules = evaluate_alert_rules(listing, product_template, pmn_data, metrics, db)
-
-            for rule in matching_rules:
-                # Check for duplicates
                 if _check_duplicate_alert(db, str(rule.rule_id), listing.obs_id):
-                    logger.debug(
-                        f"Skipping duplicate alert for rule {rule.rule_id} and listing {listing.obs_id}"
-                    )
                     continue
-
-                # Calculate opportunity details
-                margin_pct = None
-                margin_abs = None
-                pmn_value = None
-
-                if pmn_data and pmn_data.pmn and listing.price:
-                    pmn_value = _decimal_to_float(pmn_data.pmn)
-                    listing_price = _decimal_to_float(listing.price)
-                    if pmn_value and listing_price:
-                        margin_pct = ((listing_price - pmn_value) / pmn_value) * 100
-                        margin_abs = pmn_value - listing_price
-
-                # Prepare opportunity dict
-                opportunity_dict = {
-                    "margin_pct": margin_pct,
-                    "margin_abs": margin_abs,
-                    "pmn": pmn_value,
-                }
-
-                # Prepare listing dict
-                listing_dict = {
-                    "listing_id": listing.listing_id,
-                    "title": listing.title,
-                    "price": _decimal_to_float(listing.price),
-                    "url": listing.url,
-                    "condition": listing.condition,
-                    "seller_rating": _decimal_to_float(listing.seller_rating),
-                }
-
-                # Prepare product template dict
-                product_dict = {
-                    "product_id": str(product_template.product_id),
-                    "name": product_template.name,
-                    "brand": product_template.brand,
-                    "description": product_template.description,
-                }
-
-                # Create alert event first (to get alert_id for inline keyboard)
-                alert_event = AlertEvent(
-                    rule_id=rule.rule_id,
-                    product_id=product_template.product_id,
-                    obs_id=listing.obs_id,
-                    sent_at=datetime.now(UTC),
-                    delivery=None,
-                    suppressed=False,
+                stmt = (
+                    insert(AlertEvent)
+                    .values(
+                        rule_id=rule.rule_id,
+                        product_id=product.product_id,
+                        obs_id=listing.obs_id,
+                        idempotency_key=f"{rule.rule_id}:{listing.obs_id}",
+                        delivery_status="pending",
+                        delivery_attempts=0,
+                        suppressed=False,
+                        next_attempt_at=datetime.now(UTC),
+                        delivery={"valuation": _snapshot(valuation)},
+                    )
+                    .on_conflict_do_nothing(index_elements=["idempotency_key"])
+                    .returning(AlertEvent.alert_id)
                 )
-                db.add(alert_event)
-                db.flush()  # Get alert_id
+                event_id = db.execute(stmt).scalar_one_or_none()
+                if event_id is not None:
+                    ids.append(event_id)
+        db.commit()
+        if ids:
+            await deliver_pending_alerts(db=db, event_ids=ids)
+        return db.query(AlertEvent).filter(AlertEvent.alert_id.in_(ids)).all() if ids else []
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if owned:
+            db.close()
 
-                # Send Telegram alert with alert_id for inline keyboard
-                screenshot_path = listing.screenshot_path
-                pmn_conf = (
-                    float(pmn_data.confidence)
-                    if pmn_data and pmn_data.confidence is not None
+
+async def deliver_pending_alerts(
+    ctx: dict | None = None,
+    *,
+    db: Session | None = None,
+    event_ids: list[int] | None = None,
+) -> dict[str, int]:
+
+    owned = db is None
+    db = db or SessionLocal()
+    counts = {"sent": 0, "failed": 0, "suppressed": 0}
+    try:
+        for _ in range(settings.alert_delivery_batch_size):
+            query = db.query(AlertEvent).filter(
+                AlertEvent.delivery_status.in_(["pending", "failed"]),
+                AlertEvent.delivery_attempts < settings.alert_max_attempts,
+                or_(
+                    AlertEvent.next_attempt_at.is_(None),
+                    AlertEvent.next_attempt_at <= datetime.now(UTC),
+                ),
+            )
+            if event_ids is not None:
+                query = query.filter(AlertEvent.alert_id.in_(event_ids))
+            event = query.order_by(AlertEvent.alert_id).with_for_update(skip_locked=True).first()
+            if event is None:
+                break
+            listing = db.get(ListingObservation, event.obs_id)
+            product = db.get(ProductTemplate, event.product_id)
+            rule = db.get(AlertRule, event.rule_id)
+            metrics = (
+                db.query(ProductDailyMetrics)
+                .filter(ProductDailyMetrics.product_id == event.product_id)
+                .order_by(ProductDailyMetrics.date.desc())
+                .first()
+            )
+            valuation = _alert_valuation(db, listing) if listing is not None else None
+            if (
+                not listing
+                or not product
+                or not rule
+                or not rule.is_active
+                or not _rule_matches(rule, listing, product, None, metrics, valuation=valuation)
+            ):
+                event.delivery_status = "suppressed"
+                event.suppressed = True
+                event.delivery = {
+                    "manual_retries": (event.delivery or {}).get("manual_retries", []),
+                    "reason": "no_longer_eligible",
+                    "valuation": _snapshot(valuation or {}),
+                }
+                counts["suppressed"] += 1
+                db.commit()
+                continue
+            event.delivery_attempts += 1
+            try:
+                result = await send_opportunity_alert(
+                    {
+                        "margin_abs": float(valuation["contribution_eur"]),
+                        "margin_pct": (
+                            float(listing.price) / float(valuation["estimated_sale_price_eur"]) - 1
+                        )
+                        * 100,
+                        "pmn": float(valuation["estimated_sale_price_eur"]),
+                        "max_buy_price_eur": float(valuation["max_buy_price_eur"]),
+                        "reference_id": valuation["reference_id"],
+                        "destination_marketplace": valuation.get("destination_marketplace"),
+                    },
+                    {
+                        "listing_id": listing.listing_id,
+                        "title": listing.title,
+                        "price": float(listing.price),
+                        "url": listing.url,
+                        "condition": listing.condition,
+                        "seller_rating": listing.seller_rating,
+                    },
+                    {
+                        "product_id": str(product.product_id),
+                        "name": product.name,
+                        "brand": product.brand,
+                        "description": product.description,
+                    },
+                    screenshot_path=listing.screenshot_path,
+                    alert_id=event.alert_id,
+                )
+            except Exception as exc:
+                logger.warning("Alert {} delivery failed: {}", event.alert_id, type(exc).__name__)
+                result = {"status": "error", "error": type(exc).__name__}
+            event.delivery = {
+                "valuation": _snapshot(valuation),
+                "result": result,
+                "manual_retries": (event.delivery or {}).get("manual_retries", []),
+            }
+            if result.get("status") == "success":
+                event.delivery_status = "sent"
+                event.sent_at = datetime.now(UTC)
+                event.next_attempt_at = None
+                counts["sent"] += 1
+            else:
+                event.delivery_status = "failed"
+                event.next_attempt_at = (
+                    datetime.now(UTC) + timedelta(minutes=2**event.delivery_attempts)
+                    if event.delivery_attempts < settings.alert_max_attempts
                     else None
                 )
-                send_result = await send_opportunity_alert(
-                    opportunity_dict,
-                    listing_dict,
-                    product_dict,
-                    screenshot_path=screenshot_path,
-                    pmn_confidence=pmn_conf,
-                    alert_id=alert_event.alert_id,
-                )
-
-                # Update delivery result and commit immediately so the
-                # alert_id referenced in the Telegram callback_data is
-                # persisted even if a later iteration fails.
-                alert_event.delivery = send_result
-                db.commit()
-                created_events.append(alert_event)
-
-                logger.info(
-                    f"Triggered alert for rule {rule.name} (ID: {rule.rule_id}) "
-                    f"on listing {listing.obs_id}"
-                )
-        return created_events
-
-    except Exception as e:
-        logger.error(f"Error triggering alerts: {e}", exc_info=True)
+                counts["failed"] += 1
+            db.commit()
+        return counts
+    except Exception:
         db.rollback()
-        return []
+        raise
     finally:
-        if should_close:
+        if owned:
             db.close()

@@ -116,7 +116,7 @@ class LeBonCoinAPIConnector:
                 raw_response = await asyncio.to_thread(self._client.search, **filters)
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(f"LeBonCoin API search failed (page={page}): {exc}")
-                break
+                raise RuntimeError("LeBonCoin search failed") from exc
 
             ads = list(getattr(raw_response, "ads", []) or [])
             if not ads:
@@ -390,7 +390,7 @@ async def fetch_leboncoin_api_listings(
     limit: int = 50,
     **search_kwargs: Any,
 ) -> list[Listing]:
-    connector = LeBonCoinAPIConnector()
+    connector = await asyncio.to_thread(LeBonCoinAPIConnector)
     url = search_kwargs.pop("url", None)
     locations = search_kwargs.pop("locations", None)
     sort = search_kwargs.pop("sort", lbc.Sort.NEWEST)
@@ -410,10 +410,8 @@ async def fetch_leboncoin_api_listings(
 
 
 async def fetch_leboncoin_api_sold(keyword: str, limit: int = 50) -> list[Listing]:
-    logger.warning(
-        "LeBonCoin API does not expose sold listings; returning active listings as proxy."
-    )
-    return await fetch_leboncoin_api_listings(keyword, limit)
+    logger.warning("LeBonCoin has no verified sold feed; sold ingestion is disabled.")
+    return []
 
 
 def parse_leboncoin_api_ads(ads: Iterable[Any]) -> list[Listing]:

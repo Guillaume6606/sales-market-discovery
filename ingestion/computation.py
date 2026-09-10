@@ -100,7 +100,10 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
             .filter(
                 ListingObservation.product_id == product_id,
                 ListingObservation.is_sold.is_(True),
+                ListingObservation.evidence_type == "verified_sale",
                 ListingObservation.price.isnot(None),
+                ListingObservation.currency == "EUR",
+                ListingObservation.price > 0,
                 ListingObservation.observed_at >= ninety_days_ago,
             )
             .all()
@@ -122,7 +125,10 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
                 .filter(
                     ListingObservation.product_id == product_id,
                     ListingObservation.is_sold.is_(False),
+                    ListingObservation.is_stale.is_(False),
                     ListingObservation.price.isnot(None),
+                    ListingObservation.currency == "EUR",
+                    ListingObservation.price > 0,
                     ListingObservation.observed_at >= ninety_days_ago,
                 )
                 .all()
@@ -154,6 +160,8 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
 
         # Add data source to methodology
         pmn_result["methodology"]["data_source"] = data_source
+        pmn_result["methodology"]["verified_sales"] = data_source == "sold_items_90d"
+        pmn_result["methodology"]["purpose"] = "descriptive_market_statistics"
 
         # Compute confidence score
         newest_sale_age_days = 0.0
@@ -173,6 +181,9 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
             std_dev=std_dev,
             pmn=pmn_result["pmn"],
         )
+
+        if data_source != "sold_items_90d":
+            confidence = min(confidence, 0.2)
 
         # Persist to database
         existing_pmn = (
@@ -209,6 +220,7 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
             pmn_high=pmn_result["pmn_high"],
             confidence=confidence,
             sample_size=len(prices),
+            is_valid=data_source == "sold_items_90d",
         )
         db.add(history_row)
 
@@ -274,6 +286,7 @@ def compute_liquidity_score(product_id: str, db: Session | None = None) -> dict[
             .filter(
                 ListingObservation.product_id == product_id,
                 ListingObservation.is_sold.is_(True),
+                ListingObservation.evidence_type == "verified_sale",
                 ListingObservation.observed_at >= thirty_days_ago,
             )
             .scalar()
@@ -285,6 +298,7 @@ def compute_liquidity_score(product_id: str, db: Session | None = None) -> dict[
             .filter(
                 ListingObservation.product_id == product_id,
                 ListingObservation.is_sold.is_(True),
+                ListingObservation.evidence_type == "verified_sale",
                 ListingObservation.observed_at >= seven_days_ago,
             )
             .scalar()
@@ -298,7 +312,9 @@ def compute_liquidity_score(product_id: str, db: Session | None = None) -> dict[
         active_count = (
             db.query(func.count(ListingObservation.obs_id))
             .filter(
-                ListingObservation.product_id == product_id, ListingObservation.is_sold.is_(False)
+                ListingObservation.product_id == product_id,
+                ListingObservation.is_sold.is_(False),
+                ListingObservation.is_stale.is_(False),
             )
             .scalar()
             or 0
@@ -318,12 +334,8 @@ def compute_liquidity_score(product_id: str, db: Session | None = None) -> dict[
         # Calculate total liquidity score
         liquidity_score = velocity_score + depth_score + freshness_score
 
-        # Calculate average time to sell (hours) - placeholder for future enhancement
+        # Listing lifetime is not measured by the interval between market sales.
         avg_time_to_sell = None
-        if sold_count_30d > 0:
-            # Simple estimate: 30 days / number of sales = avg days between sales
-            avg_days_between = 30.0 / sold_count_30d
-            avg_time_to_sell = int(avg_days_between * 24)  # Convert to hours
 
         return {
             "liquidity_score": round(liquidity_score, 2),

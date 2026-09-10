@@ -104,7 +104,9 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 st.markdown("# Discovery")
-st.caption("Browse arbitrage opportunities ranked by margin, liquidity, and trend.")
+st.caption(
+    "Explore asking-price differences and market activity. These descriptive signals are not net profit estimates; use Valuation before buying."
+)
 
 # ---------------------------------------------------------------------------
 # Analytics KPI row
@@ -389,7 +391,10 @@ with tab_detail:
 
             # ---- Price history chart ----
             st.divider()
-            st.markdown("#### Price History")
+            st.markdown("#### Recorded Price Changes")
+            st.caption(
+                "Change events recorded since the history upgrade; daily full-market prices are not measured."
+            )
             price_history = fetch_price_history(product_id, days=30)
 
             if price_history and (

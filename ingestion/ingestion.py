@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import numpy as np
@@ -8,10 +9,9 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, make_transient
 
-from ingestion.connectors.ebay import fetch_ebay_listings, fetch_ebay_sold
+from ingestion.connectors.ebay import fetch_ebay_listings
 from ingestion.connectors.leboncoin_api import (
     fetch_leboncoin_api_listings,
-    fetch_leboncoin_api_sold,
 )
 from ingestion.connectors.vinted import fetch_vinted_listings
 from ingestion.constants import SUPPORTED_PROVIDERS
@@ -25,9 +25,11 @@ from libs.common.models import (
     IngestionRun,
     Listing,
     ListingObservation,
+    ListingObservationEvent,
     ProductDailyMetrics,
     ProductTemplate,
 )
+from libs.common.settings import settings
 from libs.common.utils import decimal_to_float as _decimal_to_float
 
 
@@ -93,6 +95,9 @@ def _upsert_listing(
     llm_validation_result: dict | None = None,
     screenshot_path: str | None = None,
 ) -> bool:
+    if (force_is_sold or listing.is_sold) and listing.evidence_type != "verified_sale":
+        logger.warning("Rejecting unverified sold observation: {}", listing.listing_id)
+        return False
     listing_source = listing.source
     now_utc = datetime.now(UTC)
 
@@ -116,7 +121,21 @@ def _upsert_listing(
 
         is_sold = force_is_sold if force_is_sold is not None else listing.is_sold
 
+        price = Decimal(str(listing.price)) if listing.price is not None else None
+        shipping = (
+            Decimal(str(listing.shipping_cost)) if listing.shipping_cost is not None else None
+        )
         if existing:
+            changed = (
+                existing.price != price
+                or existing.is_sold != is_sold
+                or existing.title != listing.title
+                or existing.condition != listing.condition_raw
+                or existing.shipping_cost != shipping
+                or existing.currency != listing.currency
+                or existing.evidence_type != listing.evidence_type
+                or existing.url != listing.url
+            )
             existing.price = listing.price
             existing.title = listing.title
             existing.currency = listing.currency
@@ -125,7 +144,10 @@ def _upsert_listing(
             existing.seller_rating = listing.seller_rating
             existing.shipping_cost = listing.shipping_cost
             existing.location = listing.location
-            existing.observed_at = observed_at
+            existing.first_seen_at = existing.first_seen_at or existing.observed_at or now_utc
+            existing.evidence_type = listing.evidence_type
+            if changed:
+                existing.updated_at = now_utc
             existing.url = listing.url
             existing.last_seen_at = now_utc
             existing.is_stale = False
@@ -152,6 +174,9 @@ def _upsert_listing(
                 location=listing.location,
                 observed_at=observed_at,
                 url=listing.url,
+                first_seen_at=now_utc,
+                updated_at=now_utc,
+                evidence_type=listing.evidence_type,
                 last_seen_at=now_utc,
                 llm_validated=llm_validation_result is not None,
                 llm_validation_result=llm_validation_result,
@@ -159,7 +184,27 @@ def _upsert_listing(
                 screenshot_path=screenshot_path,
             )
             db.add(observation)
+            db.flush()
+            existing = observation
+            changed = True
 
+        if changed:
+            db.add(
+                ListingObservationEvent(
+                    obs_id=existing.obs_id,
+                    recorded_at=now_utc,
+                    price=listing.price,
+                    currency=listing.currency,
+                    is_sold=is_sold,
+                    evidence_type=listing.evidence_type,
+                    payload={
+                        "title": listing.title,
+                        "condition": listing.condition_raw,
+                        "shipping_cost": listing.shipping_cost,
+                        "url": listing.url,
+                    },
+                )
+            )
         savepoint.commit()
         return True
     except IntegrityError:
@@ -243,74 +288,11 @@ def _persist_listings(
 
 
 async def ingest_ebay_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
-    """
-    Ingest sold items from eBay for a specific product.
-
-    The eBay connector now returns parsed Listing objects directly,
-    so no additional parsing is needed.
-    """
-    snapshot = _load_product_snapshot(product_id)
-    if not snapshot:
-        return {"status": "error", "error": "Product template not found or inactive"}
-
-    logger.info(
-        f"Starting eBay sold ingestion for product '{snapshot.name}' ({snapshot.product_id})"
-    )
-
-    try:
-        with track_ingestion_run(product_id, "ebay", "ingest_ebay_sold") as run:
-            listings = await fetch_ebay_sold(_compose_search_term(snapshot), limit)
-            run.listings_fetched = len(listings) if listings else 0
-
-            if not listings:
-                run.status = "no_data"
-                logger.info(f"No eBay sold items found for product {snapshot.product_id}")
-                return {"status": "success", "count": 0, "message": "No items found"}
-
-            with SessionLocal() as db:
-                product_template = (
-                    db.query(ProductTemplate)
-                    .filter(ProductTemplate.product_id == snapshot.product_id)
-                    .first()
-                )
-                if product_template:
-                    make_transient(product_template)
-
-            deduped = _dedupe_listings(listings)
-            run.listings_deduped = len(deduped)
-            filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
-                snapshot,
-                deduped,
-                product_template=product_template,
-                enable_llm=True,
-            )
-            run.filtering_stats = filtering_stats_to_dict(stats)
-
-            processed = _persist_listings(
-                snapshot.product_id,
-                filtered,
-                force_is_sold=True,
-                llm_validation_results=llm_results if llm_results else None,
-                screenshot_paths=screenshot_paths if screenshot_paths else None,
-                tracker=run,
-            )
-            run.listings_persisted = processed
-
-            if processed:
-                logger.info(
-                    f"Ingested {processed} eBay sold listings for product {snapshot.product_id}"
-                )
-                return {"status": "success", "count": processed}
-
-            run.status = "no_data"
-            logger.warning(
-                f"No eBay sold listings matched filters for product {snapshot.product_id}"
-            )
-            return {"status": "no_data", "count": 0}
-
-    except Exception as exc:
-        logger.error(f"Error in eBay sold ingestion for product {snapshot.product_id}: {exc}")
-        return {"status": "error", "error": str(exc)}
+    return {
+        "status": "unsupported",
+        "count": 0,
+        "reason": "No verified eBay sold feed is configured",
+    }
 
 
 async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -336,7 +318,7 @@ async def ingest_ebay_listings(product_id: str, limit: int = 50) -> dict[str, An
             if not listings:
                 run.status = "no_data"
                 logger.info(f"No eBay listings found for product {snapshot.product_id}")
-                return {"status": "success", "count": 0, "message": "No items found"}
+                return {"status": "no_data", "count": 0, "message": "No items found"}
 
             with SessionLocal() as db:
                 product_template = (
@@ -398,7 +380,7 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[st
 
             if not listings:
                 run.status = "no_data"
-                return {"status": "success", "count": 0, "message": "No items found"}
+                return {"status": "no_data", "count": 0, "message": "No items found"}
 
             with SessionLocal() as db:
                 product_template = (
@@ -449,69 +431,8 @@ async def ingest_leboncoin_listings(product_id: str, limit: int = 50) -> dict[st
 
 
 async def ingest_leboncoin_sold(product_id: str, limit: int = 50) -> dict[str, Any]:
-    snapshot = _load_product_snapshot(product_id)
-    if not snapshot:
-        return {"status": "error", "error": "Product template not found or inactive"}
-
-    logger.info(
-        f"Starting LeBonCoin 'sold' ingestion for product '{snapshot.name}' ({snapshot.product_id})"
-    )
-
-    try:
-        with track_ingestion_run(product_id, "leboncoin", "ingest_leboncoin_sold") as run:
-            listings = await fetch_leboncoin_api_sold(_compose_search_term(snapshot), limit)
-            run.listings_fetched = len(listings) if listings else 0
-
-            if not listings:
-                run.status = "no_data"
-                return {"status": "success", "count": 0, "message": "No items found"}
-
-            with SessionLocal() as db:
-                product_template = (
-                    db.query(ProductTemplate)
-                    .filter(ProductTemplate.product_id == snapshot.product_id)
-                    .first()
-                )
-                if product_template:
-                    make_transient(product_template)
-
-            deduped = _dedupe_listings(listings)
-            run.listings_deduped = len(deduped)
-            filtered, stats, llm_results, screenshot_paths = await filter_listings_multi_stage(
-                snapshot,
-                deduped,
-                product_template=product_template,
-                enable_llm=True,
-            )
-            run.filtering_stats = filtering_stats_to_dict(stats)
-
-            processed = _persist_listings(
-                snapshot.product_id,
-                filtered,
-                force_is_sold=True,
-                llm_validation_results=llm_results if llm_results else None,
-                screenshot_paths=screenshot_paths if screenshot_paths else None,
-                tracker=run,
-            )
-            run.listings_persisted = processed
-
-            if processed:
-                logger.info(
-                    f"Ingested {processed} LeBonCoin 'sold' listings for product {snapshot.product_id}"
-                )
-                return {"status": "success", "count": processed}
-
-            run.status = "no_data"
-            logger.warning(
-                f"No LeBonCoin 'sold' listings matched filters for product {snapshot.product_id}"
-            )
-            return {"status": "no_data", "count": 0}
-
-    except Exception as exc:
-        logger.error(
-            f"Error in LeBonCoin 'sold' ingestion for product {snapshot.product_id}: {exc}"
-        )
-        return {"status": "error", "error": str(exc)}
+    """No verified sold feed exists for LeBonCoin."""
+    return {"status": "unsupported", "count": 0, "reason": "no_verified_sold_feed"}
 
 
 async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
@@ -530,7 +451,7 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
 
             if not listings:
                 run.status = "no_data"
-                return {"status": "success", "count": 0, "message": "No items found"}
+                return {"status": "no_data", "count": 0, "message": "No items found"}
 
             with SessionLocal() as db:
                 product_template = (
@@ -590,6 +511,9 @@ def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
                 and_(
                     ListingObservation.product_id == product_id,
                     ListingObservation.is_sold == True,
+                    ListingObservation.evidence_type == "verified_sale",
+                    ListingObservation.currency == "EUR",
+                    ListingObservation.price > 0,
                     ListingObservation.observed_at >= thirty_days_ago,
                 )
             )
@@ -614,7 +538,7 @@ def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
         pmn_data = pmn_from_prices(prices)
 
         # Calculate liquidity score (based on number of sales in last 30 days)
-        liquidity_score = min(len(sold_items) / 30.0, 1.0)  # Normalize to 0-1
+        liquidity_score = min(len(sold_items) / 30.0, 1.0) * 100  # Match the 0-100 API scale
 
         # Calculate trend score (simple moving average comparison)
         recent_7d_cutoff = now_utc - timedelta(days=7)
@@ -684,6 +608,21 @@ def update_product_metrics(product_id: str) -> None:
 
 
 async def run_full_ingestion(
+    product_id: str, limits: dict[str, int] | None = None, sources: list[str] | None = None
+) -> dict[str, Any]:
+    from sqlalchemy import text
+
+    with SessionLocal() as lock_db, lock_db.begin():
+        locked = lock_db.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"ingest:{product_id}"},
+        ).scalar()
+        if not locked:
+            return {"status": "skipped", "reason": "product_ingestion_running"}
+        return await _run_full_ingestion(product_id, limits, sources)
+
+
+async def _run_full_ingestion(
     product_id: str,
     limits: dict[str, int] | None = None,
     sources: list[str] | None = None,
@@ -748,67 +687,134 @@ async def run_full_ingestion(
 
     logger.info(f"Full ingestion completed for product '{snapshot.name}' ({snapshot.product_id})")
 
-    # Trigger alerts for opportunities after ingestion
-    try:
-        from ingestion.alert_engine import trigger_alerts
-        from libs.common.models import MarketPriceNormal, ProductDailyMetrics
+    pipeline_result = await finish_product_pipeline(snapshot.product_id, candidate_sources)
+    results["pipeline"] = pipeline_result
+    results["status"] = pipeline_status(results)
+    return results
 
-        with SessionLocal() as db:
-            # Get opportunities (listings below PMN)
-            pmn_data = (
-                db.query(MarketPriceNormal)
-                .filter(MarketPriceNormal.product_id == snapshot.product_id)
-                .first()
+
+def pipeline_status(results: dict[str, Any]) -> str:
+    statuses = [
+        value.get("status")
+        for key, value in results.items()
+        if key != "pipeline" and isinstance(value, dict) and "status" in value
+    ]
+    errors = sum(status in {"error", "partial"} for status in statuses)
+    errors += results.get("pipeline", {}).get("status") in {"error", "partial"}
+    successes = sum(status == "success" for status in statuses)
+    if errors:
+        return "partial" if successes else "error"
+    return "success" if successes else "no_data"
+
+
+async def finish_product_pipeline(product_id: str, sources: list[str]) -> dict[str, Any]:
+    from ingestion.alert_engine import trigger_alerts
+    from ingestion.composite_scoring import run_scoring_batch
+    from ingestion.computation import compute_liquidity_score, compute_pmn_for_product
+    from ingestion.connectors.ebay import fetch_detail as ebay_detail
+    from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
+    from ingestion.connectors.vinted_api import VintedAPIConnector
+    from ingestion.detail_fetch import fetch_and_persist_details
+    from libs.common.models import ListingDetailORM
+
+    result: dict[str, Any] = {"status": "success", "details": 0, "alerts": 0}
+    with SessionLocal() as db:
+        product = db.get(ProductTemplate, product_id)
+        if product is None or not product.is_active:
+            return {"status": "error", "reason": "inactive_product"}
+        cutoff = datetime.now(UTC) - timedelta(minutes=settings.alert_freshness_minutes)
+        for source in sources:
+            observations = (
+                db.query(ListingObservation)
+                .outerjoin(ListingDetailORM, ListingDetailORM.obs_id == ListingObservation.obs_id)
+                .filter(
+                    ListingObservation.product_id == product_id,
+                    ListingObservation.source == source,
+                    ListingObservation.is_sold.is_(False),
+                    ListingObservation.is_stale.is_(False),
+                    ListingObservation.last_seen_at >= cutoff,
+                    (ListingDetailORM.obs_id.is_(None))
+                    | (ListingDetailORM.fetched_at < ListingObservation.updated_at),
+                )
+                .order_by(ListingObservation.price.asc())
+                .limit(20)
+                .all()
             )
+            if not observations or not settings.detail_fetch_enabled:
+                continue
+            try:
+                if source == "ebay":
+                    fetcher = ebay_detail
+                elif source == "leboncoin":
+                    import asyncio
 
+                    connector = await asyncio.to_thread(LeBonCoinAPIConnector)
+                    fetcher = connector.fetch_detail
+                elif source == "vinted":
+                    fetcher = VintedAPIConnector().fetch_detail
+                else:
+                    continue
+                persisted = await fetch_and_persist_details(
+                    db, observations, source, None, product.price_min, product.price_max, fetcher
+                )
+                result["details"] += persisted
+                if persisted < len(observations):
+                    result.setdefault("warnings", []).append(f"detail_incomplete:{source}")
+            except Exception as exc:
+                logger.warning("Detail pipeline failed for {}: {}", source, type(exc).__name__)
+                result.setdefault("warnings", []).append(f"detail_failed:{source}")
+        result["pmn"] = compute_pmn_for_product(product_id, db)
+        liquidity = compute_liquidity_score(product_id, db)
+        result["liquidity"] = liquidity
+        if "error" not in liquidity:
             metrics = (
                 db.query(ProductDailyMetrics)
-                .filter(ProductDailyMetrics.product_id == snapshot.product_id)
-                .order_by(ProductDailyMetrics.date.desc())
+                .filter(
+                    ProductDailyMetrics.product_id == product_id,
+                    ProductDailyMetrics.date == date.today(),
+                )
                 .first()
             )
-
-            if pmn_data and pmn_data.pmn:
-                # Get active listings below PMN
-                opportunities_list = (
-                    db.query(ListingObservation)
-                    .filter(
-                        ListingObservation.product_id == snapshot.product_id,
-                        ListingObservation.is_sold == False,
-                        ListingObservation.price.isnot(None),
-                        ListingObservation.price < pmn_data.pmn,
-                    )
-                    .limit(200)
-                    .all()
-                )
-
-                if opportunities_list:
-                    product_template = (
-                        db.query(ProductTemplate)
-                        .filter(ProductTemplate.product_id == snapshot.product_id)
-                        .first()
-                    )
-
-                    opportunities = [
-                        {
-                            "listing": listing,
-                            "product_template": product_template,
-                            "pmn_data": pmn_data,
-                            "metrics": metrics,
-                        }
-                        for listing in opportunities_list
-                    ]
-
-                    alert_events = await trigger_alerts(opportunities, db)
-                    if alert_events:
-                        logger.info(
-                            f"Triggered {len(alert_events)} alerts for product {snapshot.product_id}"
-                        )
-                        results["alerts_triggered"] = len(alert_events)
-    except Exception as exc:
-        logger.error(f"Error triggering alerts after ingestion: {exc}")
-        # Don't fail ingestion if alerts fail
-        results.setdefault("warnings", []).append(f"alert_trigger_failed: {exc}")
-
-    results["status"] = "success"
-    return results
+            if metrics is None:
+                metrics = ProductDailyMetrics(product_id=product_id, date=date.today())
+                db.add(metrics)
+            for field in ("liquidity_score", "sold_count_30d", "sold_count_7d"):
+                setattr(metrics, field, liquidity[field])
+            db.commit()
+    result["scoring"] = await run_scoring_batch(product_id=product_id)
+    with SessionLocal() as db:
+        product = db.get(ProductTemplate, product_id)
+        listings = (
+            db.query(ListingObservation)
+            .filter(
+                ListingObservation.product_id == product_id,
+                ListingObservation.is_sold.is_(False),
+                ListingObservation.is_stale.is_(False),
+                ListingObservation.last_seen_at >= cutoff,
+            )
+            .order_by(ListingObservation.last_seen_at.desc())
+            .limit(200)
+            .all()
+        )
+        metrics = (
+            db.query(ProductDailyMetrics)
+            .filter(ProductDailyMetrics.product_id == product_id)
+            .order_by(ProductDailyMetrics.date.desc())
+            .first()
+        )
+        events = await trigger_alerts(
+            [
+                {"listing": listing, "product_template": product, "metrics": metrics}
+                for listing in listings
+            ],
+            db,
+        )
+        result["alerts"] = sum(event.delivery_status == "sent" for event in events)
+    if (
+        result.get("warnings")
+        or "error" in result["liquidity"]
+        or result["scoring"].get("status") == "error"
+        or result["pmn"].get("status") == "error"
+    ):
+        result["status"] = "partial"
+    return result
