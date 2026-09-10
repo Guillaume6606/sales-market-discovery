@@ -2,6 +2,12 @@
 
 Mono‑repo for a Flip/Resell Market Discovery & Arbitrage Detection platform with **FastAPI**, **Streamlit**, **PostgreSQL**, **Redis**, **Arq**, **Alembic**, and **Advanced Web Scraping** across eBay, LeBonCoin, and Vinted.
 
+## Personal resale workflow
+
+Start with [the operating guide](docs/profit-workstreams-operations.md): reviewed valuation → verified alerts → inventory and realized P&L. Apply migrations before starting updated services and set `WORKING_CAPITAL_EUR` before enabling purchase alerts. Asking-price spreads are descriptive; they cannot authorize an alert. Use the **Valuation** and **Inventory & Profit** pages for decisions and results.
+
+The [code review and profit roadmap](docs/2026-09-10-code-review-profit-roadmap.md) records the pre-implementation audit. The [four-workstream implementation plan](docs/superpowers/plans/2026-09-10-profit-workstreams.md) tracks the resulting changes.
+
 ## Components
 - `backend/` — FastAPI REST API: product discovery, alert rules, health monitoring endpoints.
 - `ingestion/` — Marketplace connectors (eBay API, LeBonCoin API/scraping, Vinted scraping), PMN engine with confidence scoring, opportunity alerting, scheduled via Arq workers.
@@ -12,7 +18,7 @@ Mono‑repo for a Flip/Resell Market Discovery & Arbitrage Detection platform wi
 ## Features
 
 ### 🛒 Multi-Platform Integration
-- **eBay API Integration**: Direct API access for sold items and active listings
+- **eBay API Integration**: Browse API for active listings; sold feed unsupported until a verified source is configured
 - **LeBonCoin Web Scraping**: Advanced scraping with anti-bot detection bypass
 - **Vinted Web Scraping**: Fashion marketplace scraping with brand/size/color detection
 - **Unified Data Model**: Consistent data structure across all platforms

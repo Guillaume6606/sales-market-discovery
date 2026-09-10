@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Personal resale profit workstreams
+- Added reviewed valuation references with exact-token/condition checks, evidence expiry, explicit destination costs, net contribution and maximum buy price, plus an operator page and APIs.
+- Added a separate trade ledger, inventory capital, signed realized profit, monthly overhead, settlement workflow and CSV export.
+- Replaced PMN-only alert eligibility with current verified valuation, listing freshness and configured available-capital checks. Persisted delivery events now support bounded retries and duplicate enqueue prevention.
+- Connected manual and scheduled ingestion to detail fetching, scoring and alerts; added product scan intervals, overlap protection, truthful failure/no-data outcomes and worker-aware readiness.
+- Disabled unsupported sold ingestion, separated observation provenance, retained first-seen timestamps and change events, and added a dry-run-first archive/quarantine tool for historical LeBonCoin sold proxies.
+- Revalidated operator monetary displays at read time, allowed loss feedback, and excluded unknown sold evidence and foreign currencies from EUR statistics.
+- Replaced SQLite integration fixtures with isolated PostgreSQL schemas, removed network initialization from connector unit fixtures, registered migrations without importing the app, and added ingestion image builds to CI.
+
+
 ### Added
 - **20 new product templates in `scripts/seed.py`** — Batch 2 candidates selected for high absolute margin (BUSINESS_ROADMAP §5 criteria): MacBook Air M1/M2, Fujifilm X100V, iPhone 14, DJI Mini 4 Pro, Steam Deck OLED, Apple Watch Ultra 2, Bambu Lab P1S, Nintendo Switch 2, RTX 4070, Garmin Fenix 7, Technics SL-1200, iPad Air 5, Dyson V15/Airwrap, AirPods Max, Meta Quest 3, Tamron 28-75, Sonos Beam, Seiko Presage Cocktail Time. Six new categories (Computers, Smartphones, Tablets, Drones, Home, 3D Printing); per-product `words_to_avoid` tuned for substring matching (variant exclusion, iCloud locks, accessory-only listings).
 - **eBay Browse API connector** — Full rewrite of `ingestion/connectors/ebay.py` off the decommissioned Finding/Shopping APIs: OAuth2 client-credentials with token caching, `item_summary/search` on `EBAY_FR` for active listings, `getItem` for details. Sold data returns empty until Marketplace Insights is granted (PMN falls back to active-listing statistics). New `EBAY_CERT_ID` env var. Condition normalizer learned eBay FR labels ("Ouvert (jamais utilisé)" → like_new, "Reconditionné" → good).
