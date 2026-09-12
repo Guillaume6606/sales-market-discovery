@@ -18,11 +18,13 @@ from libs.common.settings import settings
 from libs.common.vision_schema import SCHEMA_VERSION, VisionExtraction, VisionResult
 from libs.common.vision_store import VisionStore
 
-PROMPT_VERSION = "factual-listing-v1"
+PROMPT_VERSION = "factual-listing-v2"
 PRICE_VERSION = "2026-09-12"
 PRICES = {
     ("gemini", "gemini-2.5-flash-lite"): ("USD", Decimal("0.10"), Decimal("0.40")),
     ("gemini", "gemini-2.5-flash"): ("USD", Decimal("0.30"), Decimal("2.50")),
+    ("gemini", "gemini-3.1-flash-lite"): ("USD", Decimal("0.25"), Decimal("1.50")),
+    ("gemini", "gemini-3.5-flash-lite"): ("USD", Decimal("0.30"), Decimal("2.50")),
     ("scaleway", "mistral-small-3.2-24b-instruct-2506"): ("EUR", Decimal("0.15"), Decimal("0.35")),
 }
 _SEMAPHORES: dict[tuple, asyncio.Semaphore] = {}
@@ -32,6 +34,10 @@ Classify relative to the supplied target; if identity or variant cannot be estab
 Separate seller claims from visible defects. Never infer authenticity, scam probability, price,
 shipping eligibility or financial value. Cite supporting image indexes (zero based) or exact
 quotes from listing text. With no images, do not make visual claims. Report unknown fields.
+Each evidence entry has exactly ONE source. For a photo, set image_index to its zero-based
+index and text_quote to null, including when reading a label in the photo. For listing text,
+set image_index to null and text_quote to an exact substring of the title or description.
+Never populate both source fields. Use separate entries when both sources support a fact.
 Return only JSON conforming to the supplied schema."""
 
 
@@ -101,9 +107,13 @@ async def _call_provider(prompt: str, images: list[ImageInput]) -> tuple[str, di
                     temperature=0,
                     max_output_tokens=settings.vision_max_output_tokens,
                     response_mime_type="application/json",
-                    response_schema=VisionExtraction,
+                    response_json_schema=VisionExtraction.model_json_schema(),
                     tools=[],
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    thinking_config=(
+                        types.ThinkingConfig(thinking_level="minimal")
+                        if settings.vision_model.startswith("gemini-3.")
+                        else types.ThinkingConfig(thinking_budget=0)
+                    ),
                 ),
             )
             usage = response.usage_metadata

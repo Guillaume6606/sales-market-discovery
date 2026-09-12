@@ -4,11 +4,32 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
-SCHEMA_VERSION = "listing-vision-v1"
+SCHEMA_VERSION = "listing-vision-v2"
 
 
 class Evidence(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "properties": {
+                        "image_index": {"type": "integer"},
+                        "text_quote": {"type": "null"},
+                    },
+                    "required": ["image_index", "text_quote"],
+                },
+                {
+                    "properties": {
+                        "image_index": {"type": "null"},
+                        "text_quote": {"type": "string"},
+                    },
+                    "required": ["image_index", "text_quote"],
+                },
+            ]
+        },
+    )
     field: str
     image_index: int | None = Field(default=None, ge=0)
     text_quote: str | None = None

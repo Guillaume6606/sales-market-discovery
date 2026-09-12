@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Validate Gemini vision JSON Schema through the correct SDK field, enforce exclusive evidence sources, and support tested Gemini 3.1/3.5 Flash-Lite models with explicit pricing and minimal thinking. Use 3.1 Flash-Lite as the provisional vision default.
+
 ### Listing photo analysis
 - Added factual photo/text extraction through Gemini, Scaleway Mistral Small or a configured local multimodal endpoint, with strict evidence validation and bounded image downloads.
 - Added migration `0012_listing_vision` for separate shadow results, durable request leases, cache reuse and atomic per-currency budget reservations with reconciliation.

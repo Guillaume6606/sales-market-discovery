@@ -1,5 +1,6 @@
 import json
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -65,6 +66,31 @@ def output():
             evidence=[],
         )
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model", ["gemini-2.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+)
+async def test_google_uses_json_schema_field_for_strict_objects(monkeypatch, model):
+    monkeypatch.setattr(module.settings, "vision_model", model)
+    monkeypatch.setattr(module.settings, "vision_provider", "gemini")
+    monkeypatch.setattr(module.settings, "gemini_api_key", "fake-test-key")
+    generate = AsyncMock(return_value=SimpleNamespace(text=output(), usage_metadata=None))
+    with patch.object(module.genai, "Client") as client_type:
+        client = client_type.return_value
+        client.aio.models.generate_content = generate
+        client.aio.aclose = AsyncMock()
+        await module._call_provider("test", [])
+    config = generate.call_args.kwargs["config"]
+    assert config.response_schema is None
+    assert config.response_json_schema["additionalProperties"] is False
+    assert config.response_json_schema["$defs"]["Evidence"]["additionalProperties"] is False
+    assert len(config.response_json_schema["$defs"]["Evidence"]["anyOf"]) == 2
+    if model.startswith("gemini-3."):
+        assert config.thinking_config.thinking_level == module.types.ThinkingLevel.MINIMAL
+    else:
+        assert config.thinking_config.thinking_budget == 0
 
 
 @pytest.mark.asyncio

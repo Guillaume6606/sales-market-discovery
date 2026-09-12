@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     # Listing vision (shadow extraction; currencies are budgeted independently).
     vision_enabled: bool = False
     vision_provider: str = "gemini"
-    vision_model: str = "gemini-2.5-flash-lite"
+    vision_model: str = "gemini-3.1-flash-lite"
     vision_local_model_revision: str | None = None
     vision_local_base_url: str = "http://localhost:8080/v1"
     scaleway_api_key: str | None = None
