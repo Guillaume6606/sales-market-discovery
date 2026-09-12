@@ -179,7 +179,7 @@ def _persist_enrichment(db: Session, obs_id: int, result: dict[str, Any]) -> boo
         "condition_confidence": result.get("condition_confidence"),
         "fakeness_probability": result.get("fakeness_probability"),
         "seller_motivation_score": result.get("seller_motivation_score"),
-        "llm_model": settings.enrichment_llm_model,
+        "llm_model": result.get("_model") or settings.enrichment_llm_model,
         "llm_raw_response": result.get("_raw_response"),
         "enriched_at": datetime.now(UTC),
         "cost_tokens": result.get("_tokens"),
@@ -213,6 +213,13 @@ async def run_enrichment_batch(ctx: dict[str, Any] | None = None) -> dict[str, A
         A result dict with keys ``status``, and on success: ``enriched``,
         ``failed``, ``total_tokens``.
     """
+    if settings.vision_enabled:
+        from ingestion.listing_vision import run_listing_vision_batch
+
+        vision_status = await run_listing_vision_batch()
+        if not settings.vision_shadow_mode or not settings.enrichment_enabled:
+            return vision_status
+
     if not settings.enrichment_enabled:
         logger.info("Enrichment disabled via settings — skipping batch")
         return {"status": "disabled"}

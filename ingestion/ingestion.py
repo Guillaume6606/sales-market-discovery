@@ -158,15 +158,30 @@ def _upsert_listing(
                     ValuationListingReview.is_active.is_(True),
                 ).update({"is_active": False}, synchronize_session="fetch")
                 existing.updated_at = now_utc
+                existing.vision_result = None
+                existing.vision_checked_at = None
+                if (existing.llm_validation_result or {}).get("pipeline") == "vision":
+                    existing.llm_validated = False
+                    existing.llm_validation_result = {"pipeline": "vision", "status": "pending"}
+                    existing.llm_validated_at = None
             existing.url = listing.url
             existing.last_seen_at = now_utc
             existing.is_stale = False
 
             # Update LLM validation fields if provided
             if llm_validation_result is not None:
-                existing.llm_validated = True
-                existing.llm_validation_result = llm_validation_result
-                existing.llm_validated_at = now_utc
+                pending_vision = (
+                    llm_validation_result.get("pipeline") == "vision"
+                    and llm_validation_result.get("status") == "pending"
+                )
+                if not (
+                    pending_vision
+                    and not changed
+                    and (existing.llm_validation_result or {}).get("pipeline") == "vision"
+                ):
+                    existing.llm_validated = not pending_vision
+                    existing.llm_validation_result = llm_validation_result
+                    existing.llm_validated_at = None if pending_vision else now_utc
             if screenshot_path:
                 existing.screenshot_path = screenshot_path
         else:
@@ -190,9 +205,12 @@ def _upsert_listing(
                 updated_at=now_utc,
                 evidence_type=listing.evidence_type,
                 last_seen_at=now_utc,
-                llm_validated=llm_validation_result is not None,
+                llm_validated=llm_validation_result is not None
+                and llm_validation_result.get("pipeline") != "vision",
                 llm_validation_result=llm_validation_result,
-                llm_validated_at=now_utc if llm_validation_result else None,
+                llm_validated_at=now_utc
+                if llm_validation_result and llm_validation_result.get("pipeline") != "vision"
+                else None,
                 screenshot_path=screenshot_path,
             )
             db.add(observation)
@@ -845,6 +863,12 @@ async def finish_product_pipeline(product_id: str, sources: list[str]) -> dict[s
             for field in ("liquidity_score", "sold_count_30d", "sold_count_7d"):
                 setattr(metrics, field, liquidity[field])
             db.commit()
+    if settings.vision_enabled:
+        from ingestion.listing_vision import run_listing_vision_batch
+
+        result["vision"] = await run_listing_vision_batch(product_id=product_id)
+        if result["vision"].get("status") == "partial":
+            result.setdefault("warnings", []).append("vision_incomplete")
     result["scoring"] = await run_scoring_batch(product_id=product_id)
     with SessionLocal() as db:
         product = db.get(ProductTemplate, product_id)

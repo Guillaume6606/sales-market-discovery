@@ -86,6 +86,7 @@ def get_listing_detail(obs_id: int, db: Session = Depends(get_db)) -> dict[str, 
             "is_stale": obs.is_stale,
             "llm_validated": obs.llm_validated,
             "llm_validation_result": obs.llm_validation_result,
+            "vision_result": obs.vision_result,
         },
         "detail": {
             "description": detail.description,

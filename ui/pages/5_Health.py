@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from ui.lib.api import (
+    api_get,
     fetch_audit_results,
     fetch_computation_status,
     fetch_health_overview,
@@ -49,6 +50,27 @@ if st.button("Refresh", key="health_refresh"):
     st.rerun()
 
 st.divider()
+
+st.subheader("Photo analysis")
+try:
+    vision_response = api_get("/health/vision")
+    vision_response.raise_for_status()
+    vision_health = vision_response.json()
+    st.write(
+        f"{'Enabled' if vision_health['enabled'] else 'Disabled'} · {vision_health['mode']} · {vision_health['model']}"
+    )
+    for warning in vision_health.get("warnings", []):
+        st.warning(warning.replace("_", " "))
+    st.json(
+        {
+            "requests": vision_health["requests"],
+            "spent_or_reserved": vision_health["budgets"],
+            "monthly_limits": vision_health["limits"],
+        },
+        expanded=False,
+    )
+except Exception:
+    st.info("Photo analysis health is unavailable.")
 
 # ---------------------------------------------------------------------------
 # Connector health cards

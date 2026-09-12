@@ -448,6 +448,19 @@ def evaluate_valuation(
     review = _get_listing_review(db, observation, evaluation_time)
     effective_observation = _effective_observation(observation, review)
     listing_reasons = _listing_reasons(effective_observation, evaluation_time)
+    if settings.vision_enabled and not settings.vision_shadow_mode:
+        from ingestion.listing_vision import vision_review_reasons
+        from libs.common.models import ListingDetailORM, ProductTemplate
+
+        detail = (
+            db.query(ListingDetailORM).filter(ListingDetailORM.obs_id == observation.obs_id).first()
+        )
+        product = db.get(ProductTemplate, observation.product_id)
+        listing_reasons.extend(
+            vision_review_reasons(observation, detail, product)
+            if product
+            else ["vision_product_missing"]
+        )
     if getattr(observation, "product_id", None) is None or not getattr(observation, "source", None):
         result = _empty_result(listing_reasons)
         if review is not None:

@@ -97,7 +97,8 @@ class TestParseResponse:
         result = parse_enrichment_response(raw)
         assert result["urgency_score"] == 1.0
         assert result["accessories_completeness"] == 0.0
-        assert result["fakeness_probability"] == 1.0
+        assert result["fakeness_probability"] is None
+        assert result["photo_quality_score"] is None
 
     def test_parse_invalid_json(self):
         assert parse_enrichment_response("not json {{{") is None

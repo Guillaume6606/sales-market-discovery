@@ -205,3 +205,36 @@ async def test_llm_failure_does_not_pass_listing(sample_snapshot, listing_factor
     assert filtered == []
     assert stats.rejected_llm == 1
     assert llm_results[listing.listing_id]["classification"] == "uncertain"
+
+
+@pytest.mark.asyncio
+async def test_vision_shadow_keeps_legacy_llm_gate(sample_snapshot, listing_factory, monkeypatch):
+    from libs.common.settings import settings
+
+    monkeypatch.setattr(settings, "vision_enabled", True)
+    monkeypatch.setattr(settings, "vision_shadow_mode", True)
+    product = type("Product", (), {"enable_llm_validation": True})()
+    listing = listing_factory(title="Apple iPhone 14 Pro 128GB")
+    with (
+        patch("ingestion.filtering.capture_listing_screenshot", return_value=None),
+        patch("ingestion.filtering.assess_listing_relevance", return_value={"is_relevant": False}),
+    ):
+        kept, _, _, _ = await filter_listings_multi_stage(sample_snapshot, [listing], product, True)
+    assert kept == []
+
+
+@pytest.mark.asyncio
+async def test_vision_keeps_ambiguous_active_candidate_but_not_sold(
+    sample_snapshot, listing_factory, monkeypatch
+):
+    from libs.common.settings import settings
+
+    monkeypatch.setattr(settings, "vision_enabled", True)
+    monkeypatch.setattr(settings, "vision_shadow_mode", False)
+    active = listing_factory(title="Apple iPhone en bon état")
+    sold = listing_factory(title="Apple iPhone en bon état", is_sold=True, listing_id="sold")
+    with patch("ingestion.filtering.assess_listing_relevance") as old_llm:
+        kept, _, results, _ = await filter_listings_multi_stage(sample_snapshot, [active, sold])
+    assert kept == [active]
+    assert results[active.listing_id]["status"] == "pending"
+    old_llm.assert_not_called()

@@ -424,6 +424,33 @@ try:
                 # ---- HEADER ----
                 listing_header(obs, score)
 
+                vision = obs.get("vision_result") or {}
+                if vision.get("pipeline") == "vision":
+                    with st.expander("Photo and description analysis", expanded=True):
+                        st.write(f"Status: {vision.get('status', 'pending')}")
+                        usage = vision.get("usage") or {}
+                        st.caption(
+                            f"{vision.get('provider') or usage.get('provider', '')} · {vision.get('model') or usage.get('model', '')}"
+                        )
+                        extraction = vision.get("extraction") or {}
+                        if extraction:
+                            st.write(
+                                f"Item: {extraction.get('item_class', 'uncertain')} · Model: {extraction.get('model') or 'Unknown'} · Variant: {extraction.get('variant') or 'Unknown'}"
+                            )
+                            for key, label in [
+                                ("included_accessories", "Included accessories"),
+                                ("seller_condition_claims", "Seller claims"),
+                                ("visible_defects", "Visible defects"),
+                                ("contradictions", "Contradictions"),
+                                ("unknown_fields", "Unknown"),
+                            ]:
+                                if extraction.get(key):
+                                    st.write(f"{label}: {', '.join(extraction[key])}")
+                            st.json(extraction.get("evidence", []), expanded=False)
+                        st.caption(
+                            "Visual evidence does not verify authenticity or delivery to France."
+                        )
+
                 st.divider()
 
                 # ---- PRICING & ARBITRAGE ----

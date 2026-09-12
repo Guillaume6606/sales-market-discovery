@@ -12,7 +12,7 @@ import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from ingestion.pricing import pmn_from_prices
@@ -130,6 +130,16 @@ def compute_pmn_for_product(product_id: str, db: Session | None = None) -> dict[
                     ListingObservation.currency == "EUR",
                     ListingObservation.price > 0,
                     ListingObservation.observed_at >= ninety_days_ago,
+                    or_(
+                        ListingObservation.llm_validation_result["pipeline"].as_string().is_(None),
+                        ListingObservation.llm_validation_result["pipeline"].as_string()
+                        != "vision",
+                        and_(
+                            ListingObservation.vision_result["status"].as_string() == "completed",
+                            ListingObservation.vision_result["extraction"]["item_class"].as_string()
+                            == "exact_device",
+                        ),
+                    ),
                 )
                 .all()
             )

@@ -7,11 +7,12 @@ from typing import Any
 
 from loguru import logger
 
-from ingestion.relevance import classify_listing_relevance
+from ingestion.relevance import RelevanceClass, classify_listing_relevance
 from ingestion.schemas import ProductTemplateSnapshot
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.models import Listing, ProductTemplate
 from libs.common.screenshot_service import capture_listing_screenshot
+from libs.common.settings import settings
 
 
 @dataclass
@@ -150,7 +151,14 @@ async def filter_listings_multi_stage(
         )
         classification = decision.classification.value
         stats.relevance_counts[classification] = stats.relevance_counts.get(classification, 0) + 1
-        if decision.is_relevant:
+        vision_candidate = (
+            settings.vision_enabled
+            and not settings.vision_shadow_mode
+            and not listing.is_sold
+            and decision.classification == RelevanceClass.UNCERTAIN
+            and len(after_relevance) < settings.vision_batch_size
+        )
+        if decision.is_relevant or vision_candidate:
             after_relevance.append(listing)
             stats.passed_relevance += 1
         else:
@@ -175,7 +183,15 @@ async def filter_listings_multi_stage(
     llm_results = {}
     screenshot_paths = {}
 
-    if enable_llm and product_template and product_template.enable_llm_validation:
+    if settings.vision_enabled and not settings.vision_shadow_mode:
+        final_listings = after_words
+        stats.passed_llm = 0
+        llm_results = {
+            listing.listing_id: {"pipeline": "vision", "status": "pending"}
+            for listing in after_words
+            if not listing.is_sold
+        }
+    elif enable_llm and product_template and product_template.enable_llm_validation:
         logger.info(f"Running LLM validation for {len(after_words)} listings")
         final_listings = []
 

@@ -23,6 +23,58 @@ from libs.common.settings import settings
 router = APIRouter(prefix="/health", tags=["health"])
 
 
+@router.get("/vision")
+def get_vision_health(db: Session = Depends(get_db)) -> dict[str, Any]:
+    from libs.common.models import VisionBudget, VisionRequest
+
+    warnings = []
+    retired = {"gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-2.0-flash-lite"}
+    if settings.enrichment_llm_model in retired:
+        warnings.append("retired_enrichment_model")
+    if (
+        settings.vision_enabled
+        and settings.vision_provider == "scaleway"
+        and not settings.scaleway_api_key
+    ):
+        warnings.append("scaleway_credentials_missing")
+    if (
+        settings.vision_enabled
+        and settings.vision_provider == "gemini"
+        and not (settings.gemini_api_key or settings.gcp_project_id)
+    ):
+        warnings.append("google_credentials_missing")
+    period = datetime.now(UTC).strftime("%Y-%m")
+    budgets = (
+        db.query(VisionBudget).filter(VisionBudget.period == period).all()
+        if settings.vision_enabled
+        else []
+    )
+    counts = (
+        db.query(VisionRequest.status, func.count(VisionRequest.request_key))
+        .group_by(VisionRequest.status)
+        .all()
+        if settings.vision_enabled
+        else []
+    )
+    return {
+        "enabled": settings.vision_enabled,
+        "mode": "shadow" if settings.vision_shadow_mode else "enforced",
+        "provider": settings.vision_provider,
+        "model": settings.vision_model,
+        "enrichment_model": settings.enrichment_llm_model,
+        "warnings": warnings,
+        "requests": dict(counts),
+        "period": period,
+        "budgets": [
+            {"currency": row.currency, "spent_or_reserved": float(row.reserved)} for row in budgets
+        ],
+        "limits": {
+            "EUR": float(settings.vision_monthly_budget_eur),
+            "USD": float(settings.vision_monthly_budget_usd),
+        },
+    }
+
+
 FETCH_SUCCESS = ("success", "no_data")
 FETCH_COMPLETED = (*FETCH_SUCCESS, "error")
 
