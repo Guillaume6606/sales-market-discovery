@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Listing photo analysis
+- Added factual photo/text extraction through Gemini, Scaleway Mistral Small or a configured local multimodal endpoint, with strict evidence validation and bounded image downloads.
+- Added migration `0012_listing_vision` for separate shadow results, durable request leases, cache reuse and atomic per-currency budget reservations with reconciliation.
+- Added vision status, evidence and spending visibility to listing details and Health; enforced mode blocks incomplete, contradictory, accessory and uncertain-variant results while preserving France delivery and financial gates.
+- Replaced the retired enrichment default with Gemini 2.5 Flash-Lite and removed unsupported text-only photo-quality/authenticity scores.
+- Added a private evaluation export/runner with duplicate-split checks, field metrics, baseline deltas and explicit unknown results when human labels are absent.
+
 ### Provider quality and France delivery
 - Added Cash Converters individual-store offers to product selection, scheduled ingestion and purchase valuation.
 - Added explicit France delivery evidence, expiring operator confirmation and migration `0011_france_delivery`; unknown delivery or shipping blocks actionable valuation.
