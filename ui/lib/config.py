@@ -7,7 +7,7 @@ import streamlit as st
 
 APP_VERSION = "0.2.0"
 
-SUPPORTED_PROVIDERS: list[str] = ["ebay", "leboncoin", "vinted"]
+SUPPORTED_PROVIDERS: list[str] = ["ebay", "leboncoin", "vinted", "cashconverters"]
 DEFAULT_TIMEOUT: float = 15.0
 
 

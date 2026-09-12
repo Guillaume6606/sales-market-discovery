@@ -98,12 +98,12 @@ class TestOverview:
         assert "precision" in data
 
     @patch("backend.routers.health.compute_precision_summary", return_value={"precision": None})
-    def test_green_status_when_healthy(self, mock_precision, client, db_session):
-        """System status is green when no stale products and no red connectors."""
+    def test_unknown_status_without_runs(self, mock_precision, client, db_session):
+        """Ingestion status is unknown without observed runs."""
         db_session.query.return_value.filter.return_value.distinct.return_value.all.return_value = []
         db_session.query.return_value.filter.return_value.all.return_value = []
         db_session.query.return_value.order_by.return_value.limit.return_value.all.return_value = []
         response = client.get("/health/overview")
         data = response.json()
-        assert data["system_status"] == "green"
+        assert data["system_status"] == "gray"
         assert data["stale_product_count"] == 0

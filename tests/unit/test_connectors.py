@@ -33,7 +33,11 @@ def _make_browse_item(
         "itemLocation": {"postalCode": "75001", "country": "FR"},
         "seller": {"username": "seller1", "feedbackScore": 1500},
         "shippingOptions": [
-            {"shippingCostType": "FIXED", "shippingCost": {"value": "5.99", "currency": "EUR"}}
+            {
+                "shippingCostType": "FIXED",
+                "shippingCost": {"value": "5.99", "currency": "EUR"},
+                "shipToLocationUsedForEstimate": {"country": "FR"},
+            }
         ],
     }
 

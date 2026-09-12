@@ -2,11 +2,12 @@
 Multi-stage filtering pipeline for listings.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
 
+from ingestion.relevance import classify_listing_relevance
 from ingestion.schemas import ProductTemplateSnapshot
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.models import Listing, ProductTemplate
@@ -20,12 +21,15 @@ class FilteringStats:
     total_listings: int = 0
     passed_price: int = 0
     passed_brand: int = 0
+    passed_relevance: int = 0
     passed_words_avoid: int = 0
     passed_llm: int = 0
     rejected_price: int = 0
     rejected_brand: int = 0
+    rejected_relevance: int = 0
     rejected_words_avoid: int = 0
     rejected_llm: int = 0
+    relevance_counts: dict[str, int] = field(default_factory=dict)
 
 
 def _matches_price(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
@@ -48,19 +52,18 @@ def _matches_brand(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
 
     brand_lower = snapshot.brand.lower()
 
-    # If brand is in search term, trust search API results
-    if brand_lower in snapshot.search_query.lower():
-        return True  # Brand already in search query, trust API results
-
-    # Check listing brand field
-    if listing.brand and listing.brand.lower() == brand_lower:
-        return True
+    # Provider brand fields are stronger evidence than the search query. An
+    # explicit mismatch must not be bypassed because a provider received the brand.
+    if listing.brand:
+        return listing.brand.casefold() == snapshot.brand.casefold()
 
     # Check title
     if listing.title and brand_lower in listing.title.lower():
         return True
 
-    return False
+    # Missing provider brand is inconclusive; exact-product relevance handles
+    # title identity in the following stage.
+    return True
 
 
 def _matches_words_to_avoid(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
@@ -104,8 +107,9 @@ async def filter_listings_multi_stage(
     Stages:
     1. Price filter
     2. Brand filter
-    3. Words-to-avoid filter
-    4. LLM validation (optional)
+    3. Exact-product relevance filter
+    4. Words-to-avoid filter
+    5. LLM validation (optional)
 
     Args:
         snapshot: Product template snapshot
@@ -136,16 +140,38 @@ async def filter_listings_multi_stage(
         else:
             stats.rejected_brand += 1
 
-    # Stage 3: Words-to-avoid filter
-    after_words = []
+    # Stage 3: Exact-product relevance filter
+    after_relevance = []
     for listing in after_brand:
+        decision = classify_listing_relevance(
+            snapshot.name,
+            snapshot.search_query,
+            listing.title or "",
+        )
+        classification = decision.classification.value
+        stats.relevance_counts[classification] = stats.relevance_counts.get(classification, 0) + 1
+        if decision.is_relevant:
+            after_relevance.append(listing)
+            stats.passed_relevance += 1
+        else:
+            stats.rejected_relevance += 1
+            logger.debug(
+                "Listing '{}' rejected for relevance: {} ({})",
+                (listing.title or "")[:50],
+                classification,
+                decision.reason,
+            )
+
+    # Stage 4: Words-to-avoid filter
+    after_words = []
+    for listing in after_relevance:
         if _matches_words_to_avoid(snapshot, listing):
             after_words.append(listing)
             stats.passed_words_avoid += 1
         else:
             stats.rejected_words_avoid += 1
 
-    # Stage 4: LLM validation (if enabled)
+    # Stage 5: LLM validation (if enabled)
     llm_results = {}
     screenshot_paths = {}
 
@@ -176,7 +202,7 @@ async def filter_listings_multi_stage(
                 # Store validation result
                 llm_results[listing.listing_id] = validation_result
 
-                if validation_result.get("is_relevant", True):
+                if validation_result.get("is_relevant") is True:
                     final_listings.append(listing)
                     stats.passed_llm += 1
                 else:
@@ -187,9 +213,14 @@ async def filter_listings_multi_stage(
                     )
             except Exception as e:
                 logger.error(f"Error in LLM validation for {listing.listing_id}: {e}")
-                # On error, include listing (fail open)
-                final_listings.append(listing)
-                stats.passed_llm += 1
+                llm_results[listing.listing_id] = {
+                    "classification": "uncertain",
+                    "is_relevant": False,
+                    "confidence": 0.0,
+                    "reasoning": f"LLM validation failed: {e}",
+                    "flags": ["validation_error"],
+                }
+                stats.rejected_llm += 1
     else:
         final_listings = after_words
         stats.passed_llm = len(after_words)
@@ -200,6 +231,7 @@ async def filter_listings_multi_stage(
         f"{len(final_listings)} kept, "
         f"{stats.rejected_price} rejected (price), "
         f"{stats.rejected_brand} rejected (brand), "
+        f"{stats.rejected_relevance} rejected (relevance), "
         f"{stats.rejected_words_avoid} rejected (words to avoid), "
         f"{stats.rejected_llm} rejected (LLM)"
     )

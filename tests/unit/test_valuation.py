@@ -56,6 +56,8 @@ def _observation(**overrides: object) -> SimpleNamespace:
         "url": "https://example.com/listing/41",
         "price": Decimal("300.00"),
         "shipping_cost": Decimal("10.00"),
+        "delivery_to_france": True,
+        "delivery_evidence": "France checkout confirmed",
         "currency": "EUR",
         "condition": "Très bon état",
         "is_sold": False,
@@ -112,9 +114,12 @@ def _review(**overrides: object) -> SimpleNamespace:
         "expires_at": NOW + timedelta(hours=2),
         "notes": "Checked the live listing.",
         "raw_title": "Sony headset",
+        "raw_url": "https://example.com/listing/41",
         "raw_price_eur": Decimal("300.00"),
         "raw_condition": None,
         "raw_shipping_cost_eur": None,
+        "raw_delivery_to_france": True,
+        "raw_delivery_evidence": "France checkout confirmed",
         "is_active": True,
     }
     values.update(overrides)
@@ -221,6 +226,8 @@ def test_evaluate_valuation_uses_reviewed_inputs_without_overwriting_raw_listing
     assert result["eligible"] is True
     assert result["listing_review_snapshot"] == {
         "review_id": ANY,
+        "reviewed_delivery_to_france": None,
+        "delivery_evidence": None,
         "reviewed_title": "Sony WH-1000XM5 casque noir",
         "reviewed_condition": "like_new",
         "reviewed_shipping_cost_eur": Decimal("10.00"),
@@ -388,3 +395,13 @@ def test_reference_api_rejects_non_auditable_review_window() -> None:
     response = client.post("/valuation/references", json=payload)
 
     assert response.status_code == 422
+
+
+def test_existing_accessory_observation_cannot_pass_verified_reference():
+    result = evaluate_valuation(
+        _Session([_reference()]),
+        _observation(title="Housse pour Sony WH-1000XM5 casque noir"),
+        now=NOW,
+    )
+    assert result["eligible"] is False
+    assert "relevance_accessory" in result["reasons"]

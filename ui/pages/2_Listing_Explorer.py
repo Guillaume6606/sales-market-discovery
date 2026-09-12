@@ -31,7 +31,7 @@ fc1, fc2, fc3, fc4 = st.columns(4)
 
 with fc1:
     filter_source = st.selectbox(
-        "Source", ["All", "ebay", "leboncoin", "vinted"], key="explorer_source"
+        "Source", ["All", "ebay", "leboncoin", "vinted", "cashconverters"], key="explorer_source"
     )
 with fc2:
     filter_status = st.selectbox("Status", ["All", "Active", "Sold"], key="explorer_status")

@@ -27,13 +27,14 @@ with st.spinner("Loading health data..."):
     overview = fetch_health_overview()
 
 if overview:
-    sys_status = overview.get("system_status", "red")
+    st.caption("Backend health endpoint reachable")
+    sys_status = overview.get("ingestion_status", overview.get("system_status", "gray"))
     if sys_status == "green":
-        st.success("All systems operational")
-    elif sys_status == "yellow":
-        st.warning("System degraded")
+        st.success("Ingestion healthy — completed fetches and product freshness checked")
+    elif sys_status in {"yellow", "red"}:
+        st.warning("Ingestion degraded — connector failures or stale product data")
     else:
-        st.error("Issues detected")
+        st.info("Ingestion health unknown — no completed fetches in the last 24 hours")
 else:
     st.warning("Could not reach backend — health data unavailable")
 
@@ -67,22 +68,30 @@ if ingestion_health:
                         conn_status = c.get("status", "gray")
                         break
 
+            conn_label = {
+                "green": "Healthy",
+                "yellow": "Degraded",
+                "red": "Fetch failures",
+                "gray": "Unknown",
+            }.get(conn_status, "Unknown")
             st.markdown(
-                f"### {source.title()} &nbsp; {status_badge(conn_status)}",
+                f"### {source.title()} &nbsp; {status_badge(conn_status, {'green': 'Healthy', 'yellow': 'Degraded', 'red': 'Fetch failures', 'gray': 'Unknown'}.get(conn_status, 'Unknown'))}",
                 unsafe_allow_html=True,
             )
 
             sr24 = conn.get("success_rate_24h")
             sr7 = conn.get("success_rate_7d")
             st.metric(
-                "Success Rate 24h",
+                "Fetch Success 24h",
                 f"{sr24:.0%}" if sr24 is not None else "N/A",
             )
             st.metric(
-                "Success Rate 7d",
+                "Fetch Success 7d",
                 f"{sr7:.0%}" if sr7 is not None else "N/A",
             )
 
+            st.caption(f"Completed fetches: {conn.get('completed_runs_24h', 0)} (24h)")
+            st.caption("Successful fetches include empty results; skipped runs are excluded.")
             avg_dur = conn.get("avg_duration_s")
             st.caption(f"Avg duration: {avg_dur:.1f}s" if avg_dur else "No duration data")
             st.caption(f"Persisted: {conn.get('total_listings_persisted', 0)}")

@@ -23,6 +23,35 @@ from libs.common.settings import settings
 router = APIRouter(prefix="/health", tags=["health"])
 
 
+FETCH_SUCCESS = ("success", "no_data")
+FETCH_COMPLETED = (*FETCH_SUCCESS, "error")
+
+
+def _fetch_outcomes(db: Session, source: str, since: datetime) -> Any:
+    return (
+        db.query(
+            func.count(IngestionRun.run_id).label("total"),
+            func.count(
+                case((IngestionRun.status.in_(FETCH_SUCCESS), IngestionRun.run_id), else_=None)
+            ).label("successes"),
+        )
+        .filter(
+            IngestionRun.source == source,
+            IngestionRun.started_at >= since,
+            IngestionRun.status.in_(FETCH_COMPLETED),
+        )
+        .first()
+    )
+
+
+def _ingestion_status(connectors: list[dict[str, Any]], stale_count: int) -> str:
+    if stale_count or any(c["status"] in {"red", "yellow"} for c in connectors):
+        return "yellow"
+    if not connectors or any(c["status"] == "gray" for c in connectors):
+        return "gray"
+    return "green"
+
+
 @router.get("/ingestion")
 def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     """Per-connector ingestion summary."""
@@ -37,7 +66,7 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
         # Last success/failure
         last_success = (
             db.query(IngestionRun)
-            .filter(IngestionRun.source == source, IngestionRun.status == "success")
+            .filter(IngestionRun.source == source, IngestionRun.status.in_(FETCH_SUCCESS))
             .order_by(desc(IngestionRun.finished_at))
             .first()
         )
@@ -49,47 +78,17 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
         )
 
         # Success rate 24h
-        runs_24h = (
-            db.query(
-                func.count(IngestionRun.run_id).label("total"),
-                func.count(
-                    case(
-                        (IngestionRun.status == "success", IngestionRun.run_id),
-                        else_=None,
-                    )
-                ).label("successes"),
-            )
-            .filter(
-                IngestionRun.source == source,
-                IngestionRun.started_at >= twenty_four_h_ago,
-            )
-            .first()
-        )
+        runs_24h = _fetch_outcomes(db, source, twenty_four_h_ago)
 
         # Success rate 7d
-        runs_7d = (
-            db.query(
-                func.count(IngestionRun.run_id).label("total"),
-                func.count(
-                    case(
-                        (IngestionRun.status == "success", IngestionRun.run_id),
-                        else_=None,
-                    )
-                ).label("successes"),
-            )
-            .filter(
-                IngestionRun.source == source,
-                IngestionRun.started_at >= seven_d_ago,
-            )
-            .first()
-        )
+        runs_7d = _fetch_outcomes(db, source, seven_d_ago)
 
         # Avg duration
         avg_duration = (
             db.query(func.avg(IngestionRun.duration_s))
             .filter(
                 IngestionRun.source == source,
-                IngestionRun.status == "success",
+                IngestionRun.status.in_(FETCH_SUCCESS),
                 IngestionRun.started_at >= seven_d_ago,
             )
             .scalar()
@@ -100,7 +99,7 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
             db.query(func.sum(IngestionRun.listings_persisted))
             .filter(
                 IngestionRun.source == source,
-                IngestionRun.status == "success",
+                IngestionRun.status.in_(FETCH_SUCCESS),
             )
             .scalar()
         ) or 0
@@ -134,6 +133,8 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
                 "last_failure_at": last_failure.finished_at.isoformat()
                 if last_failure and last_failure.finished_at
                 else None,
+                "completed_runs_24h": total_24h,
+                "completed_runs_7d": total_7d,
                 "success_rate_24h": round(successes_24h / total_24h, 2) if total_24h > 0 else None,
                 "success_rate_7d": round(successes_7d / total_7d, 2) if total_7d > 0 else None,
                 "avg_duration_s": round(float(avg_duration), 2) if avg_duration else None,
@@ -195,35 +196,29 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
 
     connectors = []
     for (source,) in sources:
-        runs_24h = (
-            db.query(
-                func.count(IngestionRun.run_id).label("total"),
-                func.count(
-                    case(
-                        (IngestionRun.status == "success", IngestionRun.run_id),
-                        else_=None,
-                    )
-                ).label("successes"),
-            )
-            .filter(
-                IngestionRun.source == source,
-                IngestionRun.started_at >= twenty_four_h_ago,
-            )
-            .first()
-        )
+        runs_24h = _fetch_outcomes(db, source, twenty_four_h_ago)
 
         total = runs_24h.total if runs_24h else 0
         successes = runs_24h.successes if runs_24h else 0
-        rate = successes / total if total > 0 else 0.0
+        rate = successes / total if total > 0 else None
 
-        if rate >= 0.8:
+        if rate is None:
+            color = "gray"
+        elif rate >= 0.8:
             color = "green"
         elif rate >= 0.5:
             color = "yellow"
         else:
             color = "red"
 
-        connectors.append({"source": source, "status": color, "success_rate_24h": round(rate, 2)})
+        connectors.append(
+            {
+                "source": source,
+                "status": color,
+                "success_rate_24h": round(rate, 2) if rate is not None else None,
+                "completed_runs_24h": total,
+            }
+        )
 
     # Stale product count
     products = db.query(ProductTemplate).filter(ProductTemplate.is_active.is_(True)).all()
@@ -252,8 +247,7 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
     ]
 
     # System status
-    any_red = any(c["status"] == "red" for c in connectors)
-    system_status = "red" if (any_red or stale_count > 0) else "green"
+    system_status = _ingestion_status(connectors, stale_count)
 
     # Connector audit quality (last 7 days)
     audit_cutoff = datetime.now(UTC) - timedelta(days=7)
@@ -267,6 +261,7 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
 
     return {
         "system_status": system_status,
+        "ingestion_status": system_status,
         "connectors": connectors,
         "stale_product_count": stale_count,
         "recent_runs": recent_runs_data,

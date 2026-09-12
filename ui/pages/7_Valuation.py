@@ -92,7 +92,9 @@ today = datetime.now(UTC).date()
 with st.form("create_valuation_reference", clear_on_submit=True):
     source_col, destination_col, condition_col = st.columns(3)
     with source_col:
-        purchase_source = st.selectbox("Purchase source", ["leboncoin", "ebay", "vinted"])
+        purchase_source = st.selectbox(
+            "Purchase source", ["leboncoin", "ebay", "vinted", "cashconverters"]
+        )
     with destination_col:
         destination = st.selectbox("Destination marketplace", ["ebay", "leboncoin", "vinted"])
     with condition_col:
@@ -217,6 +219,13 @@ if review_listing and review_listing["obs_id"] == int(obs_id):
             step=1.0,
             format="%.2f",
         )
+        delivery_choice = st.selectbox(
+            "Delivery to your address in France",
+            ["Unknown", "Confirmed available", "Not available / pickup only"],
+        )
+        delivery_evidence = st.text_input(
+            "Delivery evidence (checkout/address or seller confirmation)"
+        )
         listing_reviewer = st.text_input("Reviewer", key="listing_review_reviewer")
         review_notes = st.text_area(
             "Review evidence notes",
@@ -233,6 +242,12 @@ if review_listing and review_listing["obs_id"] == int(obs_id):
                     "reviewed_title": reviewed_title,
                     "reviewed_condition": reviewed_condition,
                     "reviewed_shipping_cost_eur": reviewed_shipping,
+                    "reviewed_delivery_to_france": {
+                        "Unknown": None,
+                        "Confirmed available": True,
+                        "Not available / pickup only": False,
+                    }[delivery_choice],
+                    "delivery_evidence": delivery_evidence or None,
                     "reviewed_by": listing_reviewer,
                     "reviewed_at": reviewed_at.isoformat(),
                     "expires_at": (

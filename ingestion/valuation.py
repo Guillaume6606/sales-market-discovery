@@ -82,6 +82,14 @@ def _empty_result(reasons: list[str]) -> dict[str, Any]:
 
 def _listing_reasons(observation: ListingObservation, now: datetime) -> list[str]:
     reasons: list[str] = []
+    delivery = getattr(observation, "delivery_to_france", None)
+    if delivery is False:
+        reasons.append("france_delivery_unavailable")
+    elif (
+        delivery is not True
+        or not str(getattr(observation, "delivery_evidence", None) or "").strip()
+    ):
+        reasons.append("france_delivery_unconfirmed")
     if getattr(observation, "product_id", None) is None:
         reasons.append("listing_product_unknown")
     if not getattr(observation, "source", None):
@@ -144,7 +152,12 @@ def _review_matches_observation(
     return (
         review.is_active is True
         and review.obs_id == observation.obs_id
+        and getattr(review, "raw_url", None) == getattr(observation, "url", None)
         and review.raw_title == observation.title
+        and getattr(review, "raw_delivery_to_france", None)
+        == getattr(observation, "delivery_to_france", None)
+        and getattr(review, "raw_delivery_evidence", None)
+        == getattr(observation, "delivery_evidence", None)
         and review.raw_condition == observation.condition
         and _same_decimal(review.raw_price_eur, observation.price)
         and _same_decimal(review.raw_shipping_cost_eur, observation.shipping_cost)
@@ -192,6 +205,8 @@ def _effective_observation(
         "url",
         "price",
         "shipping_cost",
+        "delivery_to_france",
+        "delivery_evidence",
         "currency",
         "condition",
         "is_sold",
@@ -207,12 +222,17 @@ def _effective_observation(
                 "shipping_cost": review.reviewed_shipping_cost_eur,
             }
         )
+    if review is not None and getattr(review, "reviewed_delivery_to_france", None) is not None:
+        values["delivery_to_france"] = review.reviewed_delivery_to_france
+        values["delivery_evidence"] = review.delivery_evidence
     return SimpleNamespace(**values)
 
 
 def _listing_review_snapshot(review: ValuationListingReview) -> dict[str, Any]:
     return {
         "review_id": str(review.review_id),
+        "reviewed_delivery_to_france": getattr(review, "reviewed_delivery_to_france", None),
+        "delivery_evidence": getattr(review, "delivery_evidence", None),
         "reviewed_title": review.reviewed_title,
         "reviewed_condition": review.reviewed_condition,
         "reviewed_shipping_cost_eur": review.reviewed_shipping_cost_eur,
@@ -233,6 +253,12 @@ def _reference_reasons(
     now: datetime,
 ) -> list[str]:
     reasons: list[str] = []
+    from ingestion.relevance import classify_listing_relevance
+
+    target = " ".join(reference.required_tokens or [])
+    relevance = classify_listing_relevance(target, target, str(observation.title or ""))
+    if not relevance.is_relevant:
+        reasons.append(f"relevance_{relevance.classification.value}")
     title_tokens = _tokens(str(observation.title or ""))
     required = _reference_tokens(reference.required_tokens)
     excluded = _reference_tokens(reference.excluded_tokens)

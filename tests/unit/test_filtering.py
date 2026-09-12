@@ -1,4 +1,13 @@
-from ingestion.filtering import _matches_brand, _matches_price, _matches_words_to_avoid
+from unittest.mock import patch
+
+import pytest
+
+from ingestion.filtering import (
+    _matches_brand,
+    _matches_price,
+    _matches_words_to_avoid,
+    filter_listings_multi_stage,
+)
 from ingestion.schemas import ProductTemplateSnapshot
 
 
@@ -60,6 +69,26 @@ class TestMatchesBrand:
         # Brand is in search query, so filter is skipped
         assert _matches_brand(snapshot, listing) is True
 
+    def test_explicit_brand_mismatch_is_not_bypassed_by_search_query(self, listing_factory) -> None:
+        snapshot = ProductTemplateSnapshot(
+            product_id="00000000-0000-0000-0000-000000000001",
+            name="Apple iPhone 14",
+            description=None,
+            search_query="Apple iPhone 14",
+            category_id="00000000-0000-0000-0000-000000000010",
+            category_name="Smartphones",
+            brand="Apple",
+            price_min=None,
+            price_max=None,
+            providers=[],
+            words_to_avoid=[],
+            enable_llm_validation=False,
+            is_active=True,
+        )
+        listing = listing_factory(title="Samsung Galaxy S24", brand="Samsung")
+
+        assert _matches_brand(snapshot, listing) is False
+
     def test_no_brand_configured(self, listing_factory) -> None:
         snapshot = ProductTemplateSnapshot(
             product_id="00000000-0000-0000-0000-000000000001",
@@ -117,3 +146,62 @@ class TestMatchesWordsToAvoid:
     def test_case_insensitive(self, sample_snapshot, listing_factory) -> None:
         listing = listing_factory(title="COQUE iPhone 14 Pro")
         assert _matches_words_to_avoid(sample_snapshot, listing) is False
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_device_bundle_and_rejects_accessory(listing_factory) -> None:
+    snapshot = ProductTemplateSnapshot(
+        product_id="00000000-0000-0000-0000-000000000001",
+        name="Sony PlayStation 5",
+        description=None,
+        search_query="PlayStation 5",
+        category_id="00000000-0000-0000-0000-000000000010",
+        category_name="Gaming",
+        brand="Sony",
+        price_min=None,
+        price_max=None,
+        providers=[],
+        words_to_avoid=[],
+        enable_llm_validation=False,
+        is_active=True,
+    )
+    bundle = listing_factory(listing_id="bundle", title="PS5 avec 2 manettes")
+    accessory = listing_factory(listing_id="accessory", title="Manette DualSense pour PS5")
+
+    filtered, stats, llm_results, _ = await filter_listings_multi_stage(
+        snapshot, [bundle, accessory]
+    )
+
+    assert filtered == [bundle]
+    assert stats.passed_relevance == 1
+    assert stats.rejected_relevance == 1
+    assert stats.relevance_counts == {"device_bundle": 1, "accessory": 1}
+    assert llm_results == {}
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_does_not_pass_listing(sample_snapshot, listing_factory) -> None:
+    snapshot = ProductTemplateSnapshot(
+        **{**sample_snapshot.__dict__, "enable_llm_validation": True}
+    )
+    product_template = type(
+        "Product",
+        (),
+        {"enable_llm_validation": True, "words_to_avoid": []},
+    )()
+    listing = listing_factory(title="Apple iPhone 14 Pro 128GB")
+
+    with (
+        patch("ingestion.filtering.capture_listing_screenshot", return_value=None),
+        patch("ingestion.filtering.assess_listing_relevance", side_effect=RuntimeError("offline")),
+    ):
+        filtered, stats, llm_results, _ = await filter_listings_multi_stage(
+            snapshot,
+            [listing],
+            product_template=product_template,
+            enable_llm=True,
+        )
+
+    assert filtered == []
+    assert stats.rejected_llm == 1
+    assert llm_results[listing.listing_id]["classification"] == "uncertain"

@@ -16,11 +16,21 @@ from ui.lib.theme import status_badge
 # System status header
 # ---------------------------------------------------------------------------
 overview = fetch_health_overview()
-sys_status = overview.get("system_status", "gray") if overview else "gray"
+sys_status = (
+    overview.get("ingestion_status", overview.get("system_status", "gray")) if overview else "gray"
+)
+
+ingestion_label = "Ingestion " + {
+    "green": "healthy",
+    "yellow": "degraded",
+    "red": "degraded",
+    "gray": "unknown",
+}.get(sys_status, "unknown")
+ingestion_badge = status_badge(sys_status, ingestion_label)
 
 st.markdown("# Market Discovery")
 st.markdown(
-    f"Arbitrage Detection Platform &nbsp; {status_badge(sys_status)}",
+    f"Arbitrage Detection Platform &nbsp; {status_badge(sys_status, 'Ingestion ' + {'green': 'healthy', 'yellow': 'degraded', 'red': 'degraded', 'gray': 'unknown'}.get(sys_status, 'unknown'))}",
     unsafe_allow_html=True,
 )
 st.divider()
@@ -71,9 +81,9 @@ with qa2:
 
 with qa3:
     with st.container(border=True):
-        st.markdown("**System Health**")
+        st.markdown("**Ingestion Health**")
         st.markdown(
-            f"Status: {status_badge(sys_status)}",
+            f"Status: {status_badge(sys_status, 'Ingestion ' + {'green': 'healthy', 'yellow': 'degraded', 'red': 'degraded', 'gray': 'unknown'}.get(sys_status, 'unknown'))}",
             unsafe_allow_html=True,
         )
         st.page_link("pages/5_Health.py", label="Open Health", icon=":material/monitor_heart:")
@@ -118,7 +128,7 @@ with col_connectors:
             # Determine status color
             if sr24 is None:
                 conn_status = "gray"
-            elif sr24 >= 0.9:
+            elif sr24 >= 0.8:
                 conn_status = "green"
             elif sr24 >= 0.5:
                 conn_status = "yellow"

@@ -18,6 +18,7 @@ from libs.common.valuation_models import ValuationListingReview, VerifiedValuati
 router = APIRouter(prefix="/valuation", tags=["valuation"])
 
 Marketplace = Literal["ebay", "leboncoin", "vinted"]
+PurchaseMarketplace = Literal["ebay", "leboncoin", "vinted", "cashconverters"]
 Condition = Literal["new", "like_new", "good", "fair"]
 Money = Annotated[Decimal, Field(ge=Decimal("0"), max_digits=12, decimal_places=2)]
 PositiveMoney = Annotated[Decimal, Field(gt=Decimal("0"), max_digits=12, decimal_places=2)]
@@ -35,7 +36,7 @@ def _normalize_tokens(values: list[str]) -> list[str]:
 
 class ReferencePayload(BaseModel):
     product_id: UUID
-    purchase_source: Marketplace
+    purchase_source: PurchaseMarketplace
     destination_marketplace: Marketplace
     required_tokens: list[str] = Field(min_length=1)
     excluded_tokens: list[str]
@@ -97,6 +98,8 @@ class ListingReviewPayload(BaseModel):
     reviewed_title: str = Field(min_length=1)
     reviewed_condition: Condition
     reviewed_shipping_cost_eur: Money
+    reviewed_delivery_to_france: bool | None = None
+    delivery_evidence: str | None = Field(default=None, max_length=2000)
     reviewed_by: str = Field(min_length=1, max_length=200)
     reviewed_at: datetime
     expires_at: datetime
@@ -119,6 +122,11 @@ class ListingReviewPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_review_window(self) -> "ListingReviewPayload":
+        if (
+            self.reviewed_delivery_to_france is not None
+            and not (self.delivery_evidence or "").strip()
+        ):
+            raise ValueError("delivery_evidence is required for a delivery decision")
         if self.reviewed_at >= self.expires_at:
             raise ValueError("expires_at must be after reviewed_at")
         if self.reviewed_at > datetime.now(UTC):
@@ -166,6 +174,8 @@ def _serialize(reference: VerifiedValuationReference) -> dict[str, Any]:
 def _serialize_listing_review(review: ValuationListingReview) -> dict[str, Any]:
     return {
         "review_id": str(review.review_id),
+        "reviewed_delivery_to_france": review.reviewed_delivery_to_france,
+        "delivery_evidence": review.delivery_evidence,
         "obs_id": review.obs_id,
         "reviewed_title": review.reviewed_title,
         "reviewed_condition": review.reviewed_condition,
@@ -204,7 +214,7 @@ def create_reference(payload: ReferencePayload, db: Session = Depends(get_db)) -
 @router.get("/references")
 def list_references(
     product_id: UUID | None = None,
-    purchase_source: Marketplace | None = None,
+    purchase_source: PurchaseMarketplace | None = None,
     include_inactive: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -295,6 +305,11 @@ def review_listing(
         reviewed_title=payload.reviewed_title,
         reviewed_condition=payload.reviewed_condition,
         reviewed_shipping_cost_eur=payload.reviewed_shipping_cost_eur,
+        reviewed_delivery_to_france=payload.reviewed_delivery_to_france,
+        delivery_evidence=payload.delivery_evidence,
+        raw_delivery_to_france=observation.delivery_to_france,
+        raw_delivery_evidence=observation.delivery_evidence,
+        raw_url=observation.url,
         reviewed_by=payload.reviewed_by,
         reviewed_at=payload.reviewed_at,
         expires_at=payload.expires_at,

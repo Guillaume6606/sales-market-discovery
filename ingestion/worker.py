@@ -101,6 +101,10 @@ async def scheduled_leboncoin_ingestion(ctx: dict) -> dict:
     return await scheduled_source_ingestion(ctx, "leboncoin")
 
 
+async def scheduled_cashconverters_ingestion(ctx: dict) -> dict:
+    return await scheduled_source_ingestion(ctx, "cashconverters")
+
+
 async def scheduled_vinted_ingestion(ctx: dict) -> dict:
     return await scheduled_source_ingestion(ctx, "vinted")
 
@@ -130,7 +134,7 @@ async def trigger_full_ingestion(
 ):
     """Trigger full ingestion pipeline for a specific product template."""
     if sources is None:
-        sources = ["ebay", "leboncoin", "vinted"]
+        sources = ["ebay", "leboncoin", "vinted", "cashconverters"]
     logger.info(f"Triggering full ingestion for product {product_id} from sources: {sources}")
     result = await run_full_ingestion(
         product_id,
@@ -140,6 +144,7 @@ async def trigger_full_ingestion(
             "leboncoin_listings": listings_limit,
             "leboncoin_sold": sold_limit,
             "vinted_listings": listings_limit,
+            "cashconverters_listings": listings_limit,
         },
         sources,
     )
@@ -700,6 +705,7 @@ class WorkerSettings:
         scheduled_ebay_ingestion,
         scheduled_leboncoin_ingestion,
         scheduled_vinted_ingestion,
+        scheduled_cashconverters_ingestion,
         trigger_ebay_sold_ingestion,
         trigger_ebay_listings_ingestion,
         trigger_leboncoin_listings_ingestion,
@@ -737,6 +743,7 @@ class WorkerSettings:
         cron(mark_stale_listings, hour=6, minute=45),  # Mark stale listings before ingestion
         cron(scheduled_ebay_ingestion, minute=set(range(0, 60, 5))),  # eBay ingestion daily 07:00
         cron(scheduled_leboncoin_ingestion, minute=set(range(1, 60, 5))),  # LeBonCoin daily 07:20
+        cron(scheduled_cashconverters_ingestion, minute=set(range(3, 60, 5))),
         cron(scheduled_vinted_ingestion, minute=set(range(2, 60, 5))),  # Vinted daily 07:40
         cron(scheduled_computation, hour=8, minute=0),  # Computation daily 08:00 (after ingest)
         cron(

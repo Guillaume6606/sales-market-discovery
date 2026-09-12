@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Provider quality and France delivery
+- Added Cash Converters individual-store offers to product selection, scheduled ingestion and purchase valuation.
+- Added explicit France delivery evidence, expiring operator confirmation and migration `0011_france_delivery`; unknown delivery or shipping blocks actionable valuation.
+- Added target-model classification for devices, bundles, accessories, empty packaging, parts and wrong variants; LLM failures no longer pass automatically.
+- Wired Vinted proxy/session handling with bounded retries and cooldowns; corrected ingestion health labels and completed-fetch denominators.
+- Restricted eBay searches to fixed-price offers deliverable to France and use only supported France/EUR shipping quotes.
+- See `docs/provider-quality-france.md` for setup, measured probes and limitations.
+
 ### Personal resale profit workstreams
 - Added reviewed valuation references with exact-token/condition checks, evidence expiry, explicit destination costs, net contribution and maximum buy price, plus an operator page and APIs.
 - Added a separate trade ledger, inventory capital, signed realized profit, monthly overhead, settlement workflow and CSV export.

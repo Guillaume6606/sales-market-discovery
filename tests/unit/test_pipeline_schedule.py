@@ -52,3 +52,30 @@ async def test_scheduler_reports_duplicate_enqueue_as_already_queued(monkeypatch
     pool.enqueue_job.return_value = None
     result = await worker.scheduled_source_ingestion({"redis": pool}, "ebay")
     assert result["product"] == "already_queued"
+
+
+async def test_cashconverters_runs_full_pipeline(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from ingestion.constants import SUPPORTED_PROVIDERS
+
+    assert "cashconverters" in SUPPORTED_PROVIDERS
+    monkeypatch.setattr(
+        ingestion,
+        "_load_product_snapshot",
+        lambda _: SimpleNamespace(
+            name="Sony", product_id="p", category_name="Photo", providers=["cashconverters"]
+        ),
+    )
+    fetch = AsyncMock(return_value={"status": "success", "count": 2})
+    monkeypatch.setattr(ingestion, "ingest_cashconverters_listings", fetch)
+    monkeypatch.setattr(ingestion, "update_product_metrics", lambda _: None)
+    finish = AsyncMock(return_value={"status": "success"})
+    monkeypatch.setattr(ingestion, "finish_product_pipeline", finish)
+    result = await ingestion._run_full_ingestion(
+        "p", {"cashconverters_listings": 5}, ["cashconverters"]
+    )
+    fetch.assert_awaited_once_with("p", 5)
+    finish.assert_awaited_once_with("p", ["cashconverters"])
+    assert result["status"] == "success"

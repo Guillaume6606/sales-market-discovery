@@ -126,9 +126,9 @@ async def readiness(db: Session = Depends(get_db)) -> dict[str, str]:
     try:
         db.execute(
             text(
-                "SELECT o.evidence_type, a.delivery_status, p.ingestion_interval_minutes "
+                "SELECT o.evidence_type, o.delivery_to_france, o.delivery_evidence, r.reviewed_delivery_to_france, a.delivery_status, p.ingestion_interval_minutes "
                 "FROM listing_observation o, alert_event a, product_template p, "
-                "verified_valuation_reference v, trade t LIMIT 0"
+                "verified_valuation_reference v, valuation_listing_review r, trade t LIMIT 0"
             )
         )
         if arq_pool is None:

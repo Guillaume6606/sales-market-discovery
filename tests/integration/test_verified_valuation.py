@@ -88,6 +88,8 @@ def test_verified_reference_and_listing_review_flow(
             "reviewed_title": "Sony WH-1000XM5 headset",
             "reviewed_condition": "like_new",
             "reviewed_shipping_cost_eur": "10.00",
+            "reviewed_delivery_to_france": True,
+            "delivery_evidence": "Checkout confirms delivery to France address",
             "reviewed_by": "operator@example.com",
             "reviewed_at": (now - timedelta(minutes=1)).isoformat(),
             "expires_at": (now + timedelta(hours=2)).isoformat(),

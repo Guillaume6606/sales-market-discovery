@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from loguru import logger
 
+from ingestion.connectors.vinted_transport import ReliableVintedScraper
 from libs.common.condition import normalize_condition
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingUtils
+from libs.common.settings import settings
 
 if TYPE_CHECKING:
     from libs.common.models import ListingDetail
@@ -19,14 +25,41 @@ class VintedAPIConnector:
     """Wrapper around ``AsyncVintedScraper`` that returns project ``Listing`` models.
 
     The ``vinted-scraper`` package calls ``/api/v2/catalog/items`` with automatic
-    cookie management via ``httpx``, bypassing DataDome's web protection for search.
+    cookie management via ``httpx``. Access remains subject to Vinted protection.
     """
 
     BASE_URL = "https://www.vinted.fr"
     SOURCE = "vinted"
+    _cooldown_until = 0.0
 
     def __init__(self) -> None:
         self._scraping_utils = ScrapingUtils()
+
+    @asynccontextmanager
+    async def _session(self) -> AsyncIterator[ReliableVintedScraper]:
+        if monotonic() < self._cooldown_until:
+            raise RuntimeError("Vinted cooldown after access denial or rate limit")
+        config: dict[str, Any] = {"timeout": 30.0}
+        if settings.scraping_proxy_url:
+            config["proxy"] = settings.scraping_proxy_url
+        async with ReliableVintedScraper(self.BASE_URL, config=config) as scraper:
+            try:
+                scraper.session_cookie = await scraper.refresh_cookie()
+                yield scraper
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in {401, 403, 429}:
+                    type(self)._cooldown_until = monotonic() + 300
+                raise
+
+    @staticmethod
+    def _failure_reason(exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return f"HTTP {exc.response.status_code}"
+        if isinstance(exc, httpx.TransportError):
+            return type(exc).__name__
+        if isinstance(exc, RuntimeError) and str(exc).startswith("Vinted cooldown"):
+            return "cooldown after access denial or rate limit"
+        return type(exc).__name__
 
     async def search_items(self, keyword: str, limit: int = 50) -> list[Listing]:
         """Search Vinted via the REST API and return ``Listing`` objects.
@@ -43,14 +76,10 @@ class VintedAPIConnector:
 
         logger.info("Searching Vinted API for: {}", keyword)
 
-        from vinted_scraper import AsyncVintedScraper
-
         results: list[Listing] = []
 
         try:
-            scraper = await AsyncVintedScraper.create(self.BASE_URL)
-
-            async with scraper:
+            async with self._session() as scraper:
                 params: dict[str, Any] = {
                     "search_text": keyword,
                     "per_page": min(limit, 96),
@@ -69,8 +98,9 @@ class VintedAPIConnector:
                             break
 
         except Exception as exc:
-            logger.error(f"Vinted API search failed for '{keyword}': {exc}")
-            raise RuntimeError("Vinted API search failed") from exc
+            reason = self._failure_reason(exc)
+            logger.error("Vinted API search failed: {}", reason)
+            raise RuntimeError(f"Vinted API search failed: {reason}") from None
 
         return results
 
@@ -93,16 +123,13 @@ class VintedAPIConnector:
             requests due to DataDome rate limiting.  Failures are logged and
             ``None`` is returned rather than raising.
         """
-        from vinted_scraper import AsyncVintedScraper
-
         from libs.common.models import ListingDetail
 
         try:
-            scraper = await AsyncVintedScraper.create(self.BASE_URL)
-            async with scraper:
+            async with self._session() as scraper:
                 item = await scraper.item(listing_id)
-        except Exception:
-            logger.exception("Vinted item fetch failed for %s", listing_id)
+        except Exception as exc:
+            logger.warning("Vinted item fetch failed: {}", self._failure_reason(exc))
             return None
 
         if item is None:

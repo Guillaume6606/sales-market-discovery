@@ -12,6 +12,7 @@ from google.genai.types import Part
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from ingestion.relevance import RelevanceClass
 from libs.common.models import Listing, ProductTemplate
 from libs.common.settings import settings
 
@@ -71,10 +72,11 @@ def assess_listing_relevance(
     if not client:
         logger.warning("LLM validation disabled, skipping assessment")
         return {
-            "is_relevant": True,
+            "classification": RelevanceClass.UNCERTAIN.value,
+            "is_relevant": False,
             "confidence": 0.0,
             "reasoning": "LLM validation disabled",
-            "flags": [],
+            "flags": ["validation_unavailable"],
         }
 
     try:
@@ -112,20 +114,26 @@ LISTING DETAILS:
 {words_to_avoid_text}
 
 TASK:
-1. Determine if this listing is relevant to the product template
-2. Check if any words to avoid are present (in title or description)
-3. Verify the listing matches the product description and brand
-4. Assess if the price is reasonable for this product
+Classify the item being sold as exactly one of:
+- exact_device: the exact requested working product
+- device_bundle: the exact requested working product plus accessories
+- accessory: accessories only, including controllers, cases, batteries, mounts, or games
+- parts_broken: broken, repair, or parts-only product
+- wrong_variant: a different model, generation, capacity, or variant
+- uncertain: the title and image do not establish what is being sold
+
+Retain working devices sold with accessories. A lens is the product, not an accessory,
+when the product template itself targets that exact lens. Reject mixed-device lots.
 
 Respond in JSON format:
 {{
-    "is_relevant": true/false,
+    "classification": "exact_device/device_bundle/accessory/parts_broken/wrong_variant/uncertain",
     "confidence": 0.0-1.0,
     "reasoning": "brief explanation",
     "flags": ["list", "of", "any", "issues"]
 }}
 
-If words to avoid are found, set is_relevant to false and add them to flags."""
+If words to avoid are found, use parts_broken or accessory as appropriate and add them to flags."""
 
         content_parts: list[Any] = []
 
@@ -143,7 +151,7 @@ If words to avoid are found, set is_relevant to false and add them to flags."""
             model=settings.gemini_model,
             contents=content_parts,
             config={
-                "temperature": 0.1,
+                "temperature": 0,
                 "response_mime_type": "application/json",
             },
         )
@@ -162,7 +170,16 @@ If words to avoid are found, set is_relevant to false and add them to flags."""
             else:
                 result = _parse_response_fallback(response_text)
 
-        result.setdefault("is_relevant", True)
+        classification = str(result.get("classification", "")).strip().lower()
+        valid_classes = {member.value for member in RelevanceClass}
+        if classification not in valid_classes:
+            classification = RelevanceClass.UNCERTAIN.value
+            result.setdefault("flags", []).append("invalid_classification")
+        result["classification"] = classification
+        result["is_relevant"] = classification in {
+            RelevanceClass.EXACT_DEVICE.value,
+            RelevanceClass.DEVICE_BUNDLE.value,
+        }
         result.setdefault("confidence", 0.5)
         result.setdefault("reasoning", response_text[:200])
         result.setdefault("flags", [])
@@ -180,7 +197,8 @@ If words to avoid are found, set is_relevant to false and add them to flags."""
     except Exception as e:
         logger.error("Error in LLM assessment: {}", e, exc_info=True)
         return {
-            "is_relevant": True,
+            "classification": RelevanceClass.UNCERTAIN.value,
+            "is_relevant": False,
             "confidence": 0.0,
             "reasoning": f"Error during validation: {str(e)}",
             "flags": ["validation_error"],
@@ -190,15 +208,11 @@ If words to avoid are found, set is_relevant to false and add them to flags."""
 def _parse_response_fallback(response_text: str) -> dict[str, Any]:
     """Fallback parser for non-JSON responses."""
     result = {
-        "is_relevant": True,
-        "confidence": 0.5,
+        "classification": RelevanceClass.UNCERTAIN.value,
+        "is_relevant": False,
+        "confidence": 0.0,
         "reasoning": response_text[:200],
         "flags": [],
     }
-
-    rejection_keywords = ["not relevant", "does not match", "incorrect", "wrong product"]
-    if any(keyword in response_text.lower() for keyword in rejection_keywords):
-        result["is_relevant"] = False
-        result["confidence"] = 0.7
 
     return result

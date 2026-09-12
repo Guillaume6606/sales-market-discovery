@@ -135,6 +135,8 @@ def _upsert_listing(
                 or existing.currency != listing.currency
                 or existing.evidence_type != listing.evidence_type
                 or existing.url != listing.url
+                or existing.delivery_to_france != listing.delivery_to_france
+                or existing.delivery_evidence != listing.delivery_evidence
             )
             existing.price = listing.price
             existing.title = listing.title
@@ -143,10 +145,18 @@ def _upsert_listing(
             existing.is_sold = is_sold
             existing.seller_rating = listing.seller_rating
             existing.shipping_cost = listing.shipping_cost
+            existing.delivery_to_france = listing.delivery_to_france
+            existing.delivery_evidence = listing.delivery_evidence
             existing.location = listing.location
             existing.first_seen_at = existing.first_seen_at or existing.observed_at or now_utc
             existing.evidence_type = listing.evidence_type
             if changed:
+                from libs.common.valuation_models import ValuationListingReview
+
+                db.query(ValuationListingReview).filter(
+                    ValuationListingReview.obs_id == existing.obs_id,
+                    ValuationListingReview.is_active.is_(True),
+                ).update({"is_active": False}, synchronize_session="fetch")
                 existing.updated_at = now_utc
             existing.url = listing.url
             existing.last_seen_at = now_utc
@@ -171,6 +181,8 @@ def _upsert_listing(
                 is_sold=is_sold,
                 seller_rating=listing.seller_rating,
                 shipping_cost=listing.shipping_cost,
+                delivery_to_france=listing.delivery_to_france,
+                delivery_evidence=listing.delivery_evidence,
                 location=listing.location,
                 observed_at=observed_at,
                 url=listing.url,
@@ -201,6 +213,8 @@ def _upsert_listing(
                         "title": listing.title,
                         "condition": listing.condition_raw,
                         "shipping_cost": listing.shipping_cost,
+                        "delivery_to_france": listing.delivery_to_france,
+                        "delivery_evidence": listing.delivery_evidence,
                         "url": listing.url,
                     },
                 )
@@ -497,6 +511,50 @@ async def ingest_vinted_listings(product_id: str, limit: int = 50) -> dict[str, 
         return {"status": "error", "error": str(exc)}
 
 
+async def ingest_cashconverters_listings(product_id: str, limit: int = 50) -> dict[str, Any]:
+    from ingestion.connectors.cashconverters import fetch_cashconverters_listings
+
+    snapshot = _load_product_snapshot(product_id)
+    if not snapshot:
+        return {"status": "error", "error": "Product template not found or inactive"}
+    try:
+        with track_ingestion_run(
+            product_id, "cashconverters", "ingest_cashconverters_listings"
+        ) as run:
+            listings = await fetch_cashconverters_listings(
+                _compose_search_term(snapshot), limit=limit
+            )
+            run.listings_fetched = len(listings)
+            deduped = _dedupe_listings(listings)
+            run.listings_deduped = len(deduped)
+            with SessionLocal() as db:
+                product = (
+                    db.query(ProductTemplate)
+                    .filter(ProductTemplate.product_id == snapshot.product_id)
+                    .first()
+                )
+                if product:
+                    make_transient(product)
+            filtered, stats, llm_results, screenshots = await filter_listings_multi_stage(
+                snapshot, deduped, product_template=product, enable_llm=settings.llm_enabled
+            )
+            run.filtering_stats = filtering_stats_to_dict(stats)
+            processed = _persist_listings(
+                snapshot.product_id,
+                filtered,
+                force_is_sold=False,
+                llm_validation_results=llm_results,
+                screenshot_paths=screenshots,
+                tracker=run,
+            )
+            run.listings_persisted = processed
+            run.status = "success" if processed else "no_data"
+            return {"status": run.status, "count": processed}
+    except Exception as exc:
+        logger.error("Cash Converters ingestion failed: {}", type(exc).__name__)
+        return {"status": "error", "error": str(exc)}
+
+
 def calculate_daily_metrics(product_id: str) -> dict[str, Any]:
     """Calculate daily metrics for a product"""
     with SessionLocal() as db:
@@ -640,6 +698,7 @@ async def _run_full_ingestion(
             "leboncoin_listings": 50,
             "leboncoin_sold": 50,
             "vinted_listings": 50,
+            "cashconverters_listings": 50,
         }
 
     candidate_sources = sources or snapshot.providers or SUPPORTED_PROVIDERS
@@ -678,6 +737,11 @@ async def _run_full_ingestion(
             results["vinted_listings"] = await ingest_vinted_listings(
                 snapshot.product_id, limits.get("vinted_listings", 50)
             )
+
+    if "cashconverters" in candidate_sources and "cashconverters_listings" in limits:
+        results["cashconverters_listings"] = await ingest_cashconverters_listings(
+            snapshot.product_id, limits.get("cashconverters_listings", 50)
+        )
 
     try:
         update_product_metrics(snapshot.product_id)

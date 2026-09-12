@@ -11,6 +11,7 @@ module talks to the Buy Browse API instead:
 """
 
 import base64
+import math
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -137,7 +138,7 @@ async def fetch_ebay_listings(keyword: str, limit: int = 50) -> list[Listing]:
     params = {
         "q": keyword,
         "limit": str(min(limit, 200)),  # Browse API max page size
-        "filter": "priceCurrency:EUR",
+        "filter": "priceCurrency:EUR,deliveryCountry:FR,buyingOptions:{FIXED_PRICE}",
         "sort": "newlyListed",
     }
 
@@ -149,7 +150,7 @@ async def fetch_ebay_listings(keyword: str, limit: int = 50) -> list[Listing]:
                 params=params,
             )
             r.raise_for_status()
-            return parse_ebay_browse_response(r.json(), is_sold=False)
+            return parse_ebay_browse_response(r.json(), is_sold=False, delivery_country="FR")
     except httpx.HTTPStatusError as e:
         logger.error(
             f"eBay Browse API HTTP error for '{keyword}': "
@@ -196,12 +197,19 @@ def _extract_brand_from_title(title: str) -> str | None:
 def _shipping_cost_from_options(item: dict[str, Any]) -> float | None:
     for option in item.get("shippingOptions") or []:
         cost = (option or {}).get("shippingCost") or {}
-        value = cost.get("value")
-        if value is not None:
-            try:
-                return float(value)
-            except (ValueError, TypeError):
-                continue
+        destination = (option or {}).get("shipToLocationUsedForEstimate") or {}
+        if (
+            cost.get("currency") != "EUR"
+            or destination.get("country") != "FR"
+            or option.get("shippingCostType") != "FIXED"
+        ):
+            continue
+        try:
+            value = float(cost.get("value"))
+        except (ValueError, TypeError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            return value
     return None
 
 
@@ -212,7 +220,9 @@ def _location_from_item(item: dict[str, Any]) -> str | None:
     return joined or None
 
 
-def parse_ebay_browse_response(response_data: dict, is_sold: bool = False) -> list[Listing]:
+def parse_ebay_browse_response(
+    response_data: dict, is_sold: bool = False, *, delivery_country: str | None = None
+) -> list[Listing]:
     """Parse a Browse API ``item_summary/search`` response into ``Listing`` objects."""
     if not response_data:
         return []
@@ -276,6 +286,10 @@ def parse_ebay_browse_response(response_data: dict, is_sold: bool = False) -> li
                 location=_location_from_item(item),
                 seller_rating=seller_rating,
                 shipping_cost=_shipping_cost_from_options(item),
+                delivery_to_france=True if delivery_country == "FR" else None,
+                delivery_evidence="eBay Browse search filter deliveryCountry:FR; confirm address at checkout"
+                if delivery_country == "FR"
+                else None,
                 observed_at=datetime.now(UTC),
                 is_sold=is_sold,
                 url=url,

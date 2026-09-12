@@ -76,6 +76,8 @@ class ListingObservation(Base):
     is_sold = Column(Boolean)
     seller_rating = Column(Numeric)
     shipping_cost = Column(Numeric)
+    delivery_to_france = Column(Boolean)
+    delivery_evidence = Column(Text)
     location = Column(Text)
     observed_at = Column(TIMESTAMP(timezone=True))
     url = Column(Text)  # Listing URL for direct access
@@ -359,7 +361,7 @@ ProductTemplate.pmn_history = relationship("PMNHistory", back_populates="product
 
 # Standardized Listing model for all connectors
 class Listing(BaseModel):
-    source: Literal["ebay", "leboncoin", "vinted"]
+    source: Literal["ebay", "leboncoin", "vinted", "cashconverters"]
     listing_id: str
     title: str
     price: float | None
@@ -369,6 +371,8 @@ class Listing(BaseModel):
     location: str | None
     seller_rating: float | None
     shipping_cost: float | None
+    delivery_to_france: bool | None = None
+    delivery_evidence: str | None = None
     observed_at: datetime  # sold_at or seen_at
     is_sold: bool
     evidence_type: Literal["asking", "verified_sale", "unknown"] = "asking"
