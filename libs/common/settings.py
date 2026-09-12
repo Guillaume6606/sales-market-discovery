@@ -67,13 +67,29 @@ class Settings(BaseSettings):
     audit_daily_token_budget: int = 100000
 
     # Enrichment pipeline
+    vision_shadow_mode: bool = True
+    vision_batch_size: int = Field(default=50, ge=1, le=200)
     enrichment_enabled: bool = False
     enrichment_batch_size: int = 50
     enrichment_re_enrichment_batch_size: int = 20
     enrichment_re_enrichment_age_days: int = 7
-    enrichment_llm_model: str = "gemini-2.0-flash"
+    enrichment_llm_model: str = "gemini-2.5-flash-lite"
     enrichment_max_tokens_per_day: int = 500_000
     enrichment_budget_cap_eur_per_month: float = 120.0
+
+    # Listing vision (shadow extraction; currencies are budgeted independently).
+    vision_enabled: bool = False
+    vision_provider: str = "gemini"
+    vision_model: str = "gemini-2.5-flash-lite"
+    vision_local_model_revision: str | None = None
+    vision_local_base_url: str = "http://localhost:8080/v1"
+    scaleway_api_key: str | None = None
+    vision_monthly_budget_usd: Decimal = Field(default=Decimal("10"), ge=0)
+    vision_monthly_budget_eur: Decimal = Field(default=Decimal("10"), ge=0)
+    vision_max_output_tokens: int = Field(default=1200, ge=128, le=4096)
+    vision_image_hosts: str = (
+        "ebayimg.com,lbcpics.com,leboncoin.fr,vinted.net,vinted.com,cashconverters.fr"
+    )
 
     # Detail fetch
     detail_fetch_enabled: bool = True

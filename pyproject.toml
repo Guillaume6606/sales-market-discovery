@@ -44,6 +44,7 @@ dependencies = [
     "lbc>=1.0.9",
     "google-genai>=1.67.0",
     "vinted-scraper>=3.0.0b2",
+    "pillow>=12.1.1",
 ]
 
 [project.optional-dependencies]

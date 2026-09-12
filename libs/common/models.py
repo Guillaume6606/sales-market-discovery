@@ -88,6 +88,8 @@ class ListingObservation(Base):
     is_stale = Column(Boolean, server_default="false", default=False)
     llm_validated = Column(Boolean, default=False)
     llm_validation_result = Column(JSON)
+    vision_result = Column(JSONB)
+    vision_checked_at = Column(TIMESTAMP(timezone=True))
     llm_validated_at = Column(TIMESTAMP(timezone=True))
     screenshot_path = Column(Text)
 
@@ -402,3 +404,33 @@ class ListingDetail(BaseModel):
         if self.photo_count is None and self.photo_urls:
             self.photo_count = len(self.photo_urls)
         return self
+
+
+class VisionRequest(Base):
+    __tablename__ = "vision_request"
+    request_key = Column(Text, primary_key=True)
+    status = Column(Text, nullable=False)
+    owner_token = Column(Text, nullable=False)
+    lease_expires_at = Column(TIMESTAMP(timezone=True), nullable=False)
+    result = Column(JSONB)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+
+class VisionBudget(Base):
+    __tablename__ = "vision_budget"
+    period = Column(Text, primary_key=True)
+    currency = Column(Text, primary_key=True)
+    reserved = Column(Numeric(18, 8), nullable=False, server_default="0")
+    __table_args__ = (CheckConstraint("reserved >= 0"),)
+
+
+class VisionAttempt(Base):
+    __tablename__ = "vision_attempt"
+    attempt_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    request_key = Column(Text, ForeignKey("vision_request.request_key"), nullable=False)
+    period = Column(Text, nullable=False)
+    currency = Column(Text, nullable=False)
+    reserved = Column(Numeric(18, 8), nullable=False)
+    metadata_json = Column(JSONB)
+    actual_cost = Column(Numeric(18, 8))
+    reconciled_at = Column(TIMESTAMP(timezone=True))
