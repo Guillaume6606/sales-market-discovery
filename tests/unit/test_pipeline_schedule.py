@@ -49,6 +49,7 @@ async def test_scheduler_reports_duplicate_enqueue_as_already_queued(monkeypatch
 
     monkeypatch.setattr(worker, "_active_product_ids", lambda source: ["product"])
     pool = AsyncMock()
+    pool.exists.return_value = 0
     pool.enqueue_job.return_value = None
     result = await worker.scheduled_source_ingestion({"redis": pool}, "ebay")
     assert result["product"] == "already_queued"

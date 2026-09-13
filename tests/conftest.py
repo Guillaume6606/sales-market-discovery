@@ -6,6 +6,26 @@ from ingestion.schemas import ProductTemplateSnapshot
 from libs.common.models import Listing
 
 
+class _InMemoryRedis:
+    """Minimal async Redis stand-in so unit tests never open a network connection."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, tuple[str, int | None]] = {}
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self.store[key] = (value, ex)
+
+    async def exists(self, key: str) -> int:
+        return int(key in self.store)
+
+
+@pytest.fixture(autouse=True)
+def _offline_cooldown_redis(monkeypatch):
+    from ingestion.connectors import vinted_api
+
+    monkeypatch.setattr(vinted_api, "_get_redis", lambda: _InMemoryRedis())
+
+
 @pytest.fixture
 def sample_listing() -> Listing:
     return Listing(

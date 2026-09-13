@@ -18,6 +18,7 @@ from ingestion.ingestion import (
     ingest_leboncoin_sold,
     run_full_ingestion,
 )
+from libs.common.cooldown import source_cooldown_active
 from libs.common.db import SessionLocal
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.log import logger
@@ -80,6 +81,9 @@ async def scheduled_source_ingestion(ctx: dict, source: str) -> dict:
     pool = ctx.get("redis") or ctx.get("pool")
     if pool is None:
         return {"status": "error", "reason": "redis_unavailable"}
+    if await source_cooldown_active(pool, source):
+        logger.info(f"Skipping {source} ingestion: source is in cooldown")
+        return {"status": "cooldown", "source": source}
     results = {}
     for product_id in _active_product_ids(source):
         job = await pool.enqueue_job(
