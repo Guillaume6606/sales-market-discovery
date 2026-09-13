@@ -250,11 +250,12 @@ def parse_ebay_browse_response(response_data: dict, is_sold: bool = False) -> li
 
             currency = price_data.get("currency") or "EUR"
 
+            # feedbackPercentage is 0-100; alert rules compare seller_rating on a 0-5 scale.
             seller_rating = None
-            feedback_score = (item.get("seller") or {}).get("feedbackScore")
-            if feedback_score is not None:
+            feedback_percentage = (item.get("seller") or {}).get("feedbackPercentage")
+            if feedback_percentage is not None:
                 try:
-                    seller_rating = float(feedback_score)
+                    seller_rating = round(float(feedback_percentage) / 20.0, 2)
                 except (ValueError, TypeError):
                     pass
 

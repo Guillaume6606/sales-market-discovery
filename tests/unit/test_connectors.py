@@ -138,10 +138,11 @@ class TestEbayParsing:
 
     def test_seller_rating_extraction(self):
         item = _make_browse_item()
+        item["seller"]["feedbackPercentage"] = "99.0"
         response = _make_browse_response([item])
         listings = parse_ebay_browse_response(response, is_sold=True)
 
-        assert listings[0].seller_rating == 1500.0
+        assert listings[0].seller_rating == 4.95
 
     def test_shipping_cost_extraction(self):
         item = _make_browse_item()

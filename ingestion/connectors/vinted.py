@@ -422,7 +422,6 @@ class VintedConnector:
 
             # Extract condition - look in element text or specific elements
             condition = ""
-            element_text = element.get_text() if not price else ""  # Get text if we haven't already
 
             condition_keywords = [
                 "neuf",
