@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Human VLM review
+- Added a local Streamlit review interface for five hosted models on 30 shared selection listings, with blinded per-field judgments, saved human assessments, JSON export and measured timing / derived cost comparison.
+
 ### Simplified VLM extraction
 - Completed 12-model development/selection comparison, four-finalist holdout and seeded runtime repetitions; retained Gemini 3.1 as the practical default and identified Scaleway Gemma 4 as the cheaper strong alternative.
 - Replaced generated evidence and unknown-field lists with seven bounded factual fields and a directive prompt.
