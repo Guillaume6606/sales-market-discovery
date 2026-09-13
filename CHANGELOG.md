@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Simplified VLM extraction
+- Replaced generated evidence and unknown-field lists with seven bounded factual fields and a directive prompt.
+- Added expanded Scaleway pricing, explicit reasoning controls, historical V2 display, conservative V3 gates and a resumable benchmark runner.
+- Added frozen development/selection/holdout evaluation with assessor provenance and paired group confidence intervals.
+
 ### Fixed
 - Validate Gemini vision JSON Schema through the correct SDK field, enforce exclusive evidence sources, and support tested Gemini 3.1/3.5 Flash-Lite models with explicit pricing and minimal thinking. Use 3.1 Flash-Lite as the provisional vision default.
 
