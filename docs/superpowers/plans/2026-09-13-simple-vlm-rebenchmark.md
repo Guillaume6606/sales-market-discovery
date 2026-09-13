@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Execute task-by-task using superpowers:executing-plans. Steps use checkbox syntax. This document plans the work; it does not claim a new benchmark has run.
 
-**Execution status (September 13):** Contract/gates committed (`abeead6`); 501 unit and 35 PostgreSQL integration tests passed. Corpus and prompt frozen. All 12 development candidates and development ablation complete; local selection in progress. Selection/holdout, controlled performance repeats and final recommendation remain incomplete. See `docs/listing-vision-benchmark-v3.md`.
+**Execution status (September 13):** Contract/gates committed (`abeead6`); 501 unit and 35 PostgreSQL integration tests passed. Corpus and prompt frozen. All 12 development candidates, development ablation, four local selection runs and the frozen Qwen 8B local holdout are complete. The local three-order timing experiment is complete. Hosted selection/holdout, controlled hosted timings and the final recommendation remain incomplete because data-sharing approval is pending. See `docs/listing-vision-benchmark-v3.md`.
 
 **Goal:** Replace the verbose extraction contract with a directive small-model-friendly prompt, then compare extraction quality, latency and cost across local, Gemini and Scaleway vision options.
 

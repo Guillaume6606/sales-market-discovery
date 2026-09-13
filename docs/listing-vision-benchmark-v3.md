@@ -1,4 +1,4 @@
-# V3 development benchmark: hosted Qwen leads provisionally; holdout pending
+# V3 benchmark: local evaluation complete; hosted holdout pending
 
 Status: implementation complete; benchmark incomplete. Development results below are measured against frozen assistant-assessed references, not independent human ground truth. Selection and untouched holdout are required before choosing a production model. No production settings were changed.
 
@@ -141,6 +141,8 @@ Measured class predictions of exact_device/device_bundle on the negative cases b
 | gemini-3.5-flash-lite | 0/2 | 0/1 | 0/1 |
 | local-gemma3_4b | 2/2 | 1/1 | 1/1 |
 | local-qwen3-vl_4b-instruct | 0/2 | 1/1 | 1/1 |
+| local-qwen3-vl_8b-instruct | 0/2 | 1/1 | 1/1 |
+| local-smolvlm2-2.2b-q4_k_m | 1/2 | 1/1 | 1/1 |
 | scaleway-gemma-4-26b-a4b-it | 0/2 | 0/1 | 0/1 |
 | scaleway-mistral-medium-3.5-128b | 0/2 | 0/1 | 1/1 |
 | scaleway-mistral-small-3.2-24b-instruct-2506 | 0/2 | 1/1 | 1/1 |
@@ -165,7 +167,7 @@ Do not upgrade the OVH VPS based on this Mac benchmark: Apple Metal does not mea
 
 Private inputs, references, photos, model artifacts, raw failures, usage and the atomic budget ledger remain under gitignored `data/vision-eval/v3/`. Manifest SHA-256: `edd3b65c5f50c41218f047bd3fac6360455d50d1888788a6eec808f7f50076bf`. Reference SHA-256: `858285d822fc54067260ba30b1631922a4ebb93a23d59403961111254575927c`. The reusable runner is `scripts/benchmark_listing_vision.py`; use `--help` and a single shared ledger across every run.
 
-Remaining: complete selection and freeze finalists; run untouched holdout once; controlled randomized performance repeats; final memory/cost accounting. Hosted selection/holdout is paused because automatic approval review requested explicit permission for the text/photo payloads and splits. Gemini selection had already completed under a separate approval; it is not mixed into this development table.
+Remaining: complete hosted selection, freeze hosted finalists, run their untouched holdout once and finish controlled hosted timing comparisons. Local selection, its frozen holdout and repeated timing measurements are complete. Hosted selection/holdout is paused because automatic approval review requested explicit permission for the text/photo payloads and splits. Gemini selection had already completed under a separate approval; it is not mixed into this development table.
 
 The community SmolVLM Ollama artifact lacked a vision projector and failed image inference; it is not counted as a valid VLM benchmark. The official SmolVLM model plus matching projector completed all 30 development cases and is included above. Local swap was already about 25 GiB when monitoring began; no clean pre-task baseline exists. Reported local latency must therefore be treated as performance under the current desktop workload.
 
@@ -191,3 +193,54 @@ Sampled maximum Ollama allocated model memory: Qwen 4B 3.88 GiB, Gemma 3 3.62 Gi
 Estimated energy only: assuming an additional 20–40 W at €0.25/kWh, 72 compute-hours costs €0.36–€0.72. Keeping a machine drawing that additional power on for 720 hours costs €3.60–€7.20. Neither power consumption nor electricity tariff was measured; these exclude hardware, maintenance and idle behavior.
 
 All development local prompt counts were below 3,806 tokens. One Smol selection request exceeded the fixed 8,192 context and failed; the error remains in the denominator. Native Ollama records context saturation risk, which must be reviewed before treating selection outputs as complete-input comparisons.
+
+Official SmolVLM measurement: 259 one-second server RSS samples, sampled peak 8.09 GiB; cold server health-ready time 1.040–1.061 seconds. These are process RSS/startup measurements, not total Metal allocation or cold first-listing latency.
+
+Detailed field and source/product slice metrics are saved in private `data/vision-eval/v3/detailed-metrics.json`, generated from the frozen inputs by `export_metrics.py`. This file contains aggregate metrics, while original photos/text and outputs remain separate.
+
+The local control is selected using unsafe class-error count, then scorable class matches, then median latency. Literal free-text field scores are not suitable as a semantic ranking criterion here. The choice is frozen before local holdout inference in private `local-finalist.json`; it is not a production recommendation. Runtime repetitions use a seeded ten-case development subset and are excluded from prediction-quality sample counts.
+
+Corpus provider coverage: 20 ebay, 70 leboncoin. No Vinted or Cash Converters examples are represented; these connector-specific input conditions are unmeasured.
+
+## Completed selection results
+
+Measured on the separate 30-listing selection split. One class reference is unscored, leaving 29 class assessments. No broken-device class examples exist in this split; the accessory/wrong-variant denominator is only three. These results were not used to tune the prompt.
+
+| Model | Valid outputs | Class matches | Unsafe class errors / 3 | Median seconds |
+| --- | ---: | ---: | ---: | ---: |
+| gemini-3.1-flash-lite | 30/30 | 28/29 | 0/3 | 2.16 |
+| gemini-3.5-flash-lite | 29/30 | 27/29 | 0/3 | 2.18 |
+| local-gemma3_4b | 30/30 | 20/29 | 3/3 | 9.60 |
+| local-qwen3-vl_4b-instruct | 30/30 | 23/29 | 1/3 | 10.78 |
+| local-qwen3-vl_8b-instruct | 30/30 | 22/29 | 0/3 | 16.73 |
+| local-smolvlm2-2.2b-q4_k_m | 29/30 | 8/29 | 2/3 | 4.70 |
+
+Qwen 8B is frozen as the local holdout control: zero unsafe class errors versus one for Qwen 4B, despite Qwen 4B matching one more class and running faster. This is a tradeoff on a very small sample, not a statistically established safety advantage. The full native request/response configurations are unchanged from development.
+
+Scaleway selection is not run: automatic approval review requested explicit permission to send the frozen selection/holdout text and photos to the hosted providers. Gemini selection had already completed under its separate approval. The remaining hosted matrix and final production recommendation are pending.
+
+## Local holdout: bundles and photo coverage remain weak
+
+Measured once after freezing Qwen 8B as the local control: 29/30 validated outputs, 22/29 scorable class matches, median observed request time 15.37 seconds across 29 timed inference calls. The oversized HTML listing was rejected before inference and remains an input failure. The title-only heuristic matched 17/29 classes; the paired group bootstrap delta is +17.24 percentage points, 95% interval [0.00, +34.48], seed 42 and 2,000 resamples. This small sample does not establish a clear statistical improvement.
+
+The model correctly classified all 19 ordinary devices and both wrong variants. It mislabeled six of seven bundles as ordinary devices and the single accessory as broken parts. It did not accept any of the three accessory/wrong-variant cases, but no broken-device class examples exist in this holdout. Zero observed false acceptance is not proof of safety.
+
+Among 29 validated outputs, visible_damage was null for 21 and text_photo_conflict was null for 19. These are unassessed fields, not evidence of clean or consistent photos. The production gate would require review for those unknowns. Class-level results do not measure the full alert pipeline or purchase profitability. Six missed bundles also prevent recommending this model as an automatic bundle filter.
+
+The local result therefore supports retaining hosted inference as the provisional approach and avoiding a RAM purchase for this model. Hosted finalists still need their selection and holdout comparisons before a final model choice.
+
+## Repeated inputs are faster because the runtime reuses prompt state
+
+Measured Qwen 8B timing experiment: one untimed-for-summary warmup, then the same ten development inputs in three seeded randomized orders. All 31 fresh endpoint calls returned schema-valid outputs. They bypassed the application's result cache; repeats are not additional prediction-quality cases.
+
+| Pass | Calls | Median request time | p95 nearest rank | Median prompt-evaluation time |
+| --- | ---: | ---: | ---: | ---: |
+| First ordered pass | 10 | 16.032 s | 17.293 s | 11.197 s |
+| Second ordered pass | 10 | 3.538 s | 5.177 s | 0.050 s |
+| Third ordered pass | 10 | 3.239 s | 4.266 s | 0.050 s |
+
+One first-pass input had also served as warmup. The dramatic later-pass reduction is consistent with native prompt/KV-state reuse; it is not fresh-listing throughput. For the 29 distinct timed holdout calls, mean request time was 15.700 seconds, median 15.374 seconds, and measured sequential throughput was 3.82 validated outputs/minute. Request timing excludes model download and external application scheduling. System load and swap were not controlled.
+
+Derived capacity, assuming the holdout's mean time transfers to production and ignoring retries: approximately 21.8 compute-hours for 5,000 calls, or 87.2 hours for 20,000. These are planning estimates, not OVH measurements. Retaining all cached states can affect memory; the application should normally avoid identical inference through its own durable result cache.
+
+Final token-derived benchmark charges in the shared ledger: $0.1545174 and €0.2727708, versus authorized planning caps of $5 and €10. No monetary reservation remains outstanding. These are recorded usage charges, not reconciled invoices; prior historical benchmark budgets are separate. Local calls incur no API charge. The dedicated Ollama server and official SmolVLM server were stopped after measurement; model files and private results remain available for reproduction.
