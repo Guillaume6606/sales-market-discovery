@@ -22,6 +22,77 @@ from libs.common.settings import settings
 
 router = APIRouter(prefix="/health", tags=["health"])
 
+FETCH_COMPLETED = ("success", "no_data", "error")
+
+
+def _status_count(status: str) -> Any:
+    return func.count(case((IngestionRun.status == status, IngestionRun.run_id), else_=None))
+
+
+def _fetch_outcomes(db: Session, source: str, since: datetime) -> Any:
+    """Count completed runs for a source since ``since``, split by outcome."""
+    return (
+        db.query(
+            func.count(IngestionRun.run_id).label("total"),
+            _status_count("success").label("successes"),
+            _status_count("no_data").label("no_data"),
+            _status_count("error").label("errors"),
+        )
+        .filter(
+            IngestionRun.source == source,
+            IngestionRun.started_at >= since,
+            IngestionRun.status.in_(FETCH_COMPLETED),
+        )
+        .first()
+    )
+
+
+def summarize_outcomes(row: Any) -> dict[str, Any]:
+    """Turn an outcome count row into rates. ``no_data`` is never a success."""
+    total = int(row.total or 0) if row else 0
+    if total == 0:
+        return {"runs": 0, "success_rate": None, "no_data_rate": None, "error_rate": None}
+    return {
+        "runs": total,
+        "success_rate": round(int(row.successes or 0) / total, 2),
+        "no_data_rate": round(int(row.no_data or 0) / total, 2),
+        "error_rate": round(int(row.errors or 0) / total, 2),
+    }
+
+
+@router.get("/ingestion/errors")
+def get_ingestion_errors(
+    days: int = 7, limit: int = 50, db: Session = Depends(get_db)
+) -> list[dict[str, Any]]:
+    """Error messages grouped by source, most frequent first."""
+    since = datetime.now(UTC) - timedelta(days=max(1, min(days, 90)))
+    rows = (
+        db.query(
+            IngestionRun.source,
+            IngestionRun.error_message,
+            func.count(IngestionRun.run_id).label("count"),
+            func.max(IngestionRun.finished_at).label("last_seen_at"),
+        )
+        .filter(
+            IngestionRun.status == "error",
+            IngestionRun.started_at >= since,
+            IngestionRun.error_message.isnot(None),
+        )
+        .group_by(IngestionRun.source, IngestionRun.error_message)
+        .order_by(desc("count"))
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+    return [
+        {
+            "source": source,
+            "error_message": message,
+            "count": int(count),
+            "last_seen_at": last_seen.isoformat() if last_seen else None,
+        }
+        for source, message, count, last_seen in rows
+    ]
+
 
 @router.get("/ingestion")
 def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
@@ -48,41 +119,8 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
             .first()
         )
 
-        # Success rate 24h
-        runs_24h = (
-            db.query(
-                func.count(IngestionRun.run_id).label("total"),
-                func.count(
-                    case(
-                        (IngestionRun.status == "success", IngestionRun.run_id),
-                        else_=None,
-                    )
-                ).label("successes"),
-            )
-            .filter(
-                IngestionRun.source == source,
-                IngestionRun.started_at >= twenty_four_h_ago,
-            )
-            .first()
-        )
-
-        # Success rate 7d
-        runs_7d = (
-            db.query(
-                func.count(IngestionRun.run_id).label("total"),
-                func.count(
-                    case(
-                        (IngestionRun.status == "success", IngestionRun.run_id),
-                        else_=None,
-                    )
-                ).label("successes"),
-            )
-            .filter(
-                IngestionRun.source == source,
-                IngestionRun.started_at >= seven_d_ago,
-            )
-            .first()
-        )
+        outcomes_24h = summarize_outcomes(_fetch_outcomes(db, source, twenty_four_h_ago))
+        outcomes_7d = summarize_outcomes(_fetch_outcomes(db, source, seven_d_ago))
 
         # Avg duration
         avg_duration = (
@@ -104,11 +142,6 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
             )
             .scalar()
         ) or 0
-
-        total_24h = runs_24h.total if runs_24h else 0
-        successes_24h = runs_24h.successes if runs_24h else 0
-        total_7d = runs_7d.total if runs_7d else 0
-        successes_7d = runs_7d.successes if runs_7d else 0
 
         # 7d missing data aggregation (single query for both columns)
         missing_data = (
@@ -134,8 +167,14 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
                 "last_failure_at": last_failure.finished_at.isoformat()
                 if last_failure and last_failure.finished_at
                 else None,
-                "success_rate_24h": round(successes_24h / total_24h, 2) if total_24h > 0 else None,
-                "success_rate_7d": round(successes_7d / total_7d, 2) if total_7d > 0 else None,
+                "runs_24h": outcomes_24h["runs"],
+                "success_rate_24h": outcomes_24h["success_rate"],
+                "no_data_rate_24h": outcomes_24h["no_data_rate"],
+                "error_rate_24h": outcomes_24h["error_rate"],
+                "runs_7d": outcomes_7d["runs"],
+                "success_rate_7d": outcomes_7d["success_rate"],
+                "no_data_rate_7d": outcomes_7d["no_data_rate"],
+                "error_rate_7d": outcomes_7d["error_rate"],
                 "avg_duration_s": round(float(avg_duration), 2) if avg_duration else None,
                 "total_listings_persisted": int(total_persisted),
                 "missing_price_total": int(missing_price_total),
