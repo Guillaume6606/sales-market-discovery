@@ -122,7 +122,8 @@ async def test_vinted_failure_is_not_reported_as_empty_market(monkeypatch):
     from ingestion.connectors.vinted_api import VintedAPIConnector
 
     monkeypatch.setattr(
-        "vinted_scraper.AsyncVintedScraper.create", AsyncMock(side_effect=RuntimeError("offline"))
+        "ingestion.connectors.vinted_api.ReliableVintedScraper.refresh_cookie",
+        AsyncMock(side_effect=RuntimeError("offline")),
     )
     with pytest.raises(RuntimeError):
         await VintedAPIConnector().search_items("test product")
