@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Connector reliability
+- Vinted API requests now go through `SCRAPING_PROXY_URL` with bounded bootstrap retries; the deployed release sent them from the VPS datacenter IP and DataDome answered 403 on every scheduled run.
+- A Vinted 401/403/429 sets a 5-minute cooldown in Redis (`ingestion:cooldown:vinted`); the scheduler skips enqueueing while it holds, so a block costs one request per window and survives worker restarts.
+- LeBonCoin API paging is capped at 10 pages and stops on a page with no mappable ads (previously an infinite loop).
+- eBay `seller_rating` now derives from `feedbackPercentage` on the 0-5 scale alert rules use, instead of the raw feedback count.
+- Vinted HTML parser extracts condition for priced items again.
+- `/health/ingestion` reports `runs`, `success_rate`, `no_data_rate` and `error_rate` per window over completed runs only; new `/health/ingestion/errors` groups error messages by source.
+
 ### Personal resale profit workstreams
 - Added reviewed valuation references with exact-token/condition checks, evidence expiry, explicit destination costs, net contribution and maximum buy price, plus an operator page and APIs.
 - Added a separate trade ledger, inventory capital, signed realized profit, monthly overhead, settlement workflow and CSV export.
