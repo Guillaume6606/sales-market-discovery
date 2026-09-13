@@ -90,3 +90,114 @@ async def test_actual_image_hashes_check_cross_split_duplicates(tmp_path, monkey
     ]
     with pytest.raises(ValueError, match="Actual duplicate"):
         await module.frozen_images(tmp_path / "m.jsonl", rows)
+
+
+def test_selection_split_and_frozen_input_hash(tmp_path):
+    from scripts.evaluate_listing_vision import input_fingerprint
+
+    row = {"id": "one", "group_id": "one", "split": "selection", "title": "Camera"}
+    row["input_hash"] = input_fingerprint(row)
+    path = tmp_path / "manifest.jsonl"
+    path.write_text(json.dumps(row))
+    assert read_manifest(path) == [row]
+    row["title"] = "Changed"
+    path.write_text(json.dumps(row))
+    with pytest.raises(ValueError, match="input hash"):
+        read_manifest(path)
+
+
+def test_null_references_are_unscored_and_empty_lists_are_scored():
+    row = {
+        "expected": {"model": None, "visible_damage": [], "text_photo_conflict": False},
+        "result": {
+            "status": "completed",
+            "extraction": {
+                "model": "invented",
+                "visible_damage": [],
+                "text_photo_conflict": False,
+            },
+        },
+    }
+    fields = summarize([row])["fields"]
+    assert fields["model"]["scored_rows"] == 0
+    assert fields["model"]["precision"] is None
+    assert fields["visible_damage"]["exact_match"] == 1
+    assert fields["visible_damage"]["precision"] is None
+    assert fields["text_photo_conflict"]["exact_match"] == 1
+
+
+def test_failed_output_is_not_a_correct_uncertain_prediction_or_empty_list():
+    report = summarize(
+        [
+            {
+                "expected": {"item_class": "uncertain", "visible_damage": []},
+                "result": {
+                    "status": "validation_error",
+                    "extraction": {
+                        "item_class": "uncertain",
+                        "visible_damage": [],
+                    },
+                },
+            }
+        ]
+    )
+    assert report["class_accuracy"] == 0
+    assert report["validated_response_rate"] == 0
+    assert report["coverage"] == 0
+    assert report["fields"]["visible_damage"]["exact_match"] == 0
+    assert report["fields"]["visible_damage"]["conditional_exact_match"] is None
+
+
+def test_canonical_matching_is_conservative():
+    from scripts.evaluate_listing_vision import canonical
+
+    assert canonical("  USB   CABLE ") == canonical("usb cable")
+    assert canonical(["Case", "USB cable"]) == canonical(["usb cable", "case"])
+    assert canonical("PS5") != canonical("PlayStation 5")
+    assert canonical("3 batteries") != canonical("batteries")
+
+
+def test_paired_bootstrap_uses_groups_and_is_reproducible():
+    from scripts.evaluate_listing_vision import paired_group_bootstrap
+
+    rows = [
+        {
+            "id": str(index),
+            "group_id": str(index // 2),
+            "expected": {"item_class": "exact_device"},
+            "heuristic_class": "accessory",
+            "result": {"status": "completed", "extraction": {"item_class": "exact_device"}},
+        }
+        for index in range(4)
+    ]
+    result = paired_group_bootstrap(rows)
+    assert result == paired_group_bootstrap(rows)
+    assert result["groups"] == 2
+    assert result["rows"] == 4
+    assert result["delta"] == 1
+    assert result["ci95"] == [1, 1]
+    assert result["resamples"] == 2000
+    baseline = [{**row, "title": "Changed"} for row in rows]
+    with pytest.raises(ValueError, match="identical IDs and inputs"):
+        paired_group_bootstrap(rows, baseline)
+
+
+def test_failed_attempts_remain_in_safety_denominator():
+    report = summarize(
+        [
+            {
+                "expected": {"item_class": "wrong_variant"},
+                "result": {"status": "error"},
+            },
+            {
+                "expected": {"item_class": "wrong_variant"},
+                "result": {"status": "completed", "extraction": {"item_class": "exact_device"}},
+            },
+        ]
+    )
+    assert report["unsafe_false_acceptance"]["wrong_variant"] == {
+        "rate": 0.5,
+        "denominator": 2,
+        "accepted": 1,
+    }
+    assert report["validated_response_rate"] == 0.5

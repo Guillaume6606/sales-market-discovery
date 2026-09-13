@@ -1,10 +1,10 @@
 """Factual listing extraction: seller claims remain separate from visible evidence."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
-SCHEMA_VERSION = "listing-vision-v2"
+SCHEMA_VERSION = "listing-vision-v3"
 
 
 class Evidence(BaseModel):
@@ -48,7 +48,7 @@ class Evidence(BaseModel):
         return self
 
 
-class VisionExtraction(BaseModel):
+class VisionExtractionV2(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     item_class: Literal[
         "exact_device", "device_bundle", "accessory", "parts_broken", "wrong_variant", "uncertain"
@@ -63,7 +63,7 @@ class VisionExtraction(BaseModel):
     evidence: list[Evidence]
 
     @model_validator(mode="after")
-    def require_visual_evidence(self, info: ValidationInfo) -> "VisionExtraction":
+    def require_visual_evidence(self, info: ValidationInfo) -> "VisionExtractionV2":
         if self.item_class in ("exact_device", "device_bundle", "wrong_variant") and (
             not self.model or not any(e.field in ("model", "item_class") for e in self.evidence)
         ):
@@ -75,6 +75,33 @@ class VisionExtraction(BaseModel):
         return self
 
 
+ShortPhrase = Annotated[str, Field(min_length=1, max_length=60)]
+
+
+class VisionExtractionV3(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    item_class: Literal[
+        "exact_device", "device_bundle", "accessory", "parts_broken", "wrong_variant", "uncertain"
+    ]
+    model: Annotated[str, Field(min_length=1, max_length=100)] | None
+    variant: ShortPhrase | None
+    included_accessories: list[ShortPhrase] = Field(max_length=6)
+    seller_reported_faults: list[ShortPhrase] | None = Field(max_length=6)
+    visible_damage: list[ShortPhrase] | None = Field(max_length=6)
+    text_photo_conflict: bool | None
+
+    @model_validator(mode="after")
+    def reject_unavailable_visual_claims(self, info: ValidationInfo) -> "VisionExtractionV3":
+        if (info.context or {}).get("image_count") == 0 and (
+            self.visible_damage is not None or self.text_photo_conflict is not None
+        ):
+            raise ValueError("Absent photos require null damage and conflict")
+        return self
+
+
+VisionExtraction = VisionExtractionV3
+
+
 class VisionResult(BaseModel):
     status: Literal["disabled", "completed", "text_only", "pending", "budget_exhausted", "error"]
     provider: str | None = None
@@ -82,7 +109,7 @@ class VisionResult(BaseModel):
     prompt_version: str | None = None
     schema_version: str = SCHEMA_VERSION
     request_key: str | None = None
-    extraction: VisionExtraction | None = None
+    extraction: VisionExtractionV3 | VisionExtractionV2 | None = None
     usage: dict = Field(default_factory=dict)
     cache_hit: bool = False
     error: str | None = None

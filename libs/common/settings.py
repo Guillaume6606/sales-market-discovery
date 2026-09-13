@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -86,7 +87,8 @@ class Settings(BaseSettings):
     scaleway_api_key: str | None = None
     vision_monthly_budget_usd: Decimal = Field(default=Decimal("10"), ge=0)
     vision_monthly_budget_eur: Decimal = Field(default=Decimal("10"), ge=0)
-    vision_max_output_tokens: int = Field(default=1200, ge=128, le=4096)
+    vision_response_mode: Literal["json_schema", "json_object"] = "json_schema"
+    vision_max_output_tokens: int = Field(default=512, ge=128, le=4096)
     vision_image_hosts: str = (
         "ebayimg.com,lbcpics.com,leboncoin.fr,vinted.net,vinted.com,cashconverters.fr"
     )

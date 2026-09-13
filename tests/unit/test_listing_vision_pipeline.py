@@ -5,6 +5,7 @@ import pytest
 
 from ingestion.listing_vision import input_fingerprint, vision_review_reasons
 from libs.common.settings import settings
+from libs.common.vision_schema import SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -17,13 +18,17 @@ def vision_listing(monkeypatch):
     obs.vision_result = {
         "pipeline": "vision",
         "status": "completed",
+        "schema_version": SCHEMA_VERSION,
         "input_fingerprint": input_fingerprint(obs, detail, product),
         "checked_at": datetime.now(UTC).isoformat(),
         "extraction": {
             "item_class": "exact_device",
             "model": "PS5",
-            "variant": "standard disc edition",
-            "contradictions": [],
+            "variant": None,
+            "included_accessories": [],
+            "seller_reported_faults": [],
+            "visible_damage": [],
+            "text_photo_conflict": False,
         },
     }
     return obs, detail, product
@@ -52,22 +57,101 @@ def test_changed_description_invalidates_vision(vision_listing):
     assert vision_review_reasons(*vision_listing) == ["vision_stale"]
 
 
-def test_contradictory_photos_block_alerts(vision_listing):
-    vision_listing[0].vision_result["extraction"]["contradictions"] = ["Photo PS4"]
-    assert vision_review_reasons(*vision_listing) == ["vision_contradictions"]
+@pytest.mark.parametrize(
+    "field,value,reason",
+    [
+        ("text_photo_conflict", True, "vision_text_photo_conflict"),
+        ("text_photo_conflict", None, "vision_conflict_unknown"),
+        ("visible_damage", None, "vision_photos_unassessed"),
+        ("visible_damage", ["cracked screen"], "vision_visible_damage_review_required"),
+        ("seller_reported_faults", None, "vision_seller_faults_unknown"),
+        ("seller_reported_faults", ["does not turn on"], "vision_seller_faults_review_required"),
+        ("model", None, "vision_model_unknown"),
+    ],
+)
+def test_unsafe_or_unassessed_fields_block(vision_listing, field, value, reason):
+    vision_listing[0].vision_result["extraction"][field] = value
+    assert vision_review_reasons(*vision_listing) == [reason]
 
 
-def test_unknown_variant_blocks_alerts(vision_listing):
-    vision_listing[0].vision_result["extraction"]["unknown_fields"] = ["variant"]
+def test_variant_not_required_for_generic_target(vision_listing):
+    vision_listing[0].vision_result["extraction"]["variant"] = None
+    assert vision_review_reasons(*vision_listing) == []
+
+
+@pytest.mark.parametrize("variant", [None, "black", "256GB"])
+def test_required_capacity_cannot_be_replaced_by_colour(vision_listing, variant):
+    obs, detail, product = vision_listing
+    product.name = "iPhone 14 Pro 128GB"
+    product.search_query = "iPhone 14 Pro"
+    obs.vision_result["input_fingerprint"] = input_fingerprint(obs, detail, product)
+    obs.vision_result["extraction"].update(model="iPhone 14 Pro", variant=variant)
     assert vision_review_reasons(*vision_listing) == ["vision_identity_uncertain"]
 
 
-def test_null_variant_without_unknown_flag_blocks_alerts(vision_listing):
-    vision_listing[0].vision_result["extraction"]["variant"] = None
-    assert vision_review_reasons(*vision_listing) == ["vision_variant_unknown"]
+def test_capacity_in_model_satisfies_required_identity(vision_listing):
+    obs, detail, product = vision_listing
+    product.name = "iPhone 14 Pro 128GB"
+    product.search_query = "iPhone 14 Pro"
+    obs.vision_result["input_fingerprint"] = input_fingerprint(obs, detail, product)
+    obs.vision_result["extraction"].update(model="iPhone 14 Pro 128GB", variant=None)
+    assert vision_review_reasons(*vision_listing) == []
+
+
+def test_historical_version_cannot_clear_listing(vision_listing):
+    vision_listing[0].vision_result["schema_version"] = "listing-vision-v2"
+    assert vision_review_reasons(*vision_listing) == ["vision_stale"]
+
+
+def test_missing_v3_fields_are_not_optimistically_defaulted(vision_listing):
+    del vision_listing[0].vision_result["extraction"]["visible_damage"]
+    assert vision_review_reasons(*vision_listing) == ["vision_invalid_extraction"]
 
 
 def test_shadow_mode_preserves_existing_eligibility(vision_listing, monkeypatch):
     monkeypatch.setattr(settings, "vision_shadow_mode", True)
     vision_listing[0].vision_result = None
     assert vision_review_reasons(*vision_listing) == []
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Montre pas authentique.",
+        "Réplique de montre.",
+        "Cette montre est une contrefaçon.",
+        "Replica watch",
+        "Produit non authentique",
+    ],
+)
+def test_seller_explicit_non_authentic_cannot_be_cleared(vision_listing, description):
+    obs, detail, product = vision_listing
+    detail.description = description
+    obs.vision_result["input_fingerprint"] = input_fingerprint(obs, detail, product)
+    assert vision_review_reasons(*vision_listing) == ["seller_declared_non_authentic"]
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Ce n'est pas une contrefaçon.",
+        "Ce n'est pas une réplique.",
+        "Aucune contrefaçon.",
+    ],
+)
+def test_negated_counterfeit_claim_is_not_positive_flag(vision_listing, description):
+    obs, detail, product = vision_listing
+    detail.description = description
+    obs.vision_result["input_fingerprint"] = input_fingerprint(obs, detail, product)
+    assert vision_review_reasons(*vision_listing) == []
+
+
+@pytest.mark.parametrize("enabled,shadow", [(False, True), (True, True), (True, False)])
+def test_seller_counterfeit_guard_preserves_shadow_behavior(
+    vision_listing, monkeypatch, enabled, shadow
+):
+    monkeypatch.setattr(settings, "vision_enabled", enabled)
+    monkeypatch.setattr(settings, "vision_shadow_mode", shadow)
+    vision_listing[1].description = "Montre pas authentique"
+    expected = ["seller_declared_non_authentic"] if enabled and not shadow else []
+    assert vision_review_reasons(*vision_listing) == expected

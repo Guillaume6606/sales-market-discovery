@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import re
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -18,15 +20,15 @@ def _description(obs: ListingObservation, detail: ListingDetailORM | None) -> st
     )
 
 
-def _target(product: ProductTemplate) -> str:
-    return f"{product.name}\n{product.search_query}"
+def _target(product: ProductTemplate) -> dict[str, str]:
+    return {"name": product.name, "search_query": product.search_query}
 
 
 def input_fingerprint(
     obs: ListingObservation, detail: ListingDetailORM | None, product: ProductTemplate
 ) -> str:
     from libs.common.vision_schema import SCHEMA_VERSION
-    from libs.common.vision_service import PROMPT_VERSION
+    from libs.common.vision_service import PROMPT_VERSION, reasoning_mode
 
     payload = [
         obs.title,
@@ -36,6 +38,10 @@ def input_fingerprint(
         settings.vision_provider,
         settings.vision_model,
         settings.vision_local_model_revision,
+        settings.vision_max_output_tokens,
+        settings.vision_response_mode,
+        reasoning_mode(),
+        settings.vision_local_base_url if settings.vision_provider == "local" else None,
         PROMPT_VERSION,
         SCHEMA_VERSION,
     ]
@@ -45,7 +51,11 @@ def input_fingerprint(
 def _current_result(
     obs: ListingObservation, detail: ListingDetailORM | None, product: ProductTemplate
 ) -> bool:
+    from libs.common.vision_schema import SCHEMA_VERSION
+
     result = obs.vision_result or {}
+    if result.get("schema_version") != SCHEMA_VERSION:
+        return False
     if result.get("pipeline") != "vision" or result.get("input_fingerprint") != input_fingerprint(
         obs, detail, product
     ):
@@ -57,11 +67,31 @@ def _current_result(
         return False
 
 
+def _seller_declares_non_authentic(text: str) -> bool:
+    normalized = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", text.casefold())
+        if not unicodedata.combining(char)
+    )
+    normalized = re.sub(r"<[^>]*>", " ", normalized)
+    normalized = re.sub(
+        r"\b(?:pas|non)\s+(?:une?\s+)?(?:contrefacon|replique|replica)\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(r"\b(?:sans|aucune?)\s+(?:contrefacon|replique|replica)\b", "", normalized)
+    return bool(
+        re.search(r"\b(?:(?:pas|non)\s+authentique|contrefacon|replica|replique)\b", normalized)
+    )
+
+
 def vision_review_reasons(
     obs: ListingObservation, detail: ListingDetailORM | None, product: ProductTemplate
 ) -> list[str]:
     if not settings.vision_enabled or settings.vision_shadow_mode:
         return []
+    if _seller_declares_non_authentic(f"{obs.title or ''}\n{_description(obs, detail)}"):
+        return ["seller_declared_non_authentic"]
     result = obs.vision_result or {}
     if result.get("pipeline") != "vision":
         return ["vision_pending"]
@@ -69,29 +99,45 @@ def vision_review_reasons(
         return ["vision_stale"]
     if result.get("status") != "completed":
         return [f"vision_{result.get('status', 'pending')}"]
-    extraction = result.get("extraction") or {}
+    from pydantic import ValidationError
+
+    from ingestion.relevance import RelevanceClass, classify_listing_relevance
+    from libs.common.vision_schema import VisionExtraction
+
+    try:
+        extraction = VisionExtraction.model_validate(result.get("extraction"))
+    except ValidationError:
+        return ["vision_invalid_extraction"]
     reasons = []
-    item_class = extraction.get("item_class", "uncertain")
+    item_class = extraction.item_class
     if item_class != "exact_device":
         reasons.append(
             "vision_bundle_review_required"
             if item_class == "device_bundle"
             else f"vision_{item_class}"
         )
-    if not extraction.get("model"):
+    if not extraction.model or not extraction.model.strip():
         reasons.append("vision_model_unknown")
-    if item_class == "exact_device" and not str(extraction.get("variant") or "").strip():
-        reasons.append("vision_variant_unknown")
-    identity_unknown = {"model", "variant", "generation", "capacity", "storage", "mount"}
-    if any(
-        any(word in field.casefold() for word in identity_unknown)
-        for field in extraction.get("unknown_fields", [])
-    ):
-        reasons.append("vision_identity_uncertain")
-    if extraction.get("contradictions"):
-        reasons.append("vision_contradictions")
-    if extraction.get("visible_defects"):
-        reasons.append("vision_visible_defects_review_required")
+    else:
+        identity = classify_listing_relevance(
+            product.name,
+            product.search_query,
+            f"{extraction.model} {extraction.variant or ''}",
+        )
+        if identity.classification != RelevanceClass.EXACT_DEVICE:
+            reasons.append("vision_identity_uncertain")
+    if extraction.seller_reported_faults is None:
+        reasons.append("vision_seller_faults_unknown")
+    elif extraction.seller_reported_faults:
+        reasons.append("vision_seller_faults_review_required")
+    if extraction.visible_damage is None:
+        reasons.append("vision_photos_unassessed")
+    elif extraction.visible_damage:
+        reasons.append("vision_visible_damage_review_required")
+    if extraction.text_photo_conflict is None:
+        reasons.append("vision_conflict_unknown")
+    elif extraction.text_photo_conflict:
+        reasons.append("vision_text_photo_conflict")
     return reasons
 
 

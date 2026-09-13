@@ -437,16 +437,41 @@ try:
                             st.write(
                                 f"Item: {extraction.get('item_class', 'uncertain')} · Model: {extraction.get('model') or 'Unknown'} · Variant: {extraction.get('variant') or 'Unknown'}"
                             )
-                            for key, label in [
-                                ("included_accessories", "Included accessories"),
-                                ("seller_condition_claims", "Seller claims"),
-                                ("visible_defects", "Visible defects"),
-                                ("contradictions", "Contradictions"),
-                                ("unknown_fields", "Unknown"),
-                            ]:
-                                if extraction.get(key):
-                                    st.write(f"{label}: {', '.join(extraction[key])}")
-                            st.json(extraction.get("evidence", []), expanded=False)
+                            is_current = vision.get("schema_version") == "listing-vision-v3"
+                            if not is_current:
+                                st.caption(
+                                    "Historical analysis: reanalysis required for current gates."
+                                )
+                            fields = (
+                                [
+                                    ("included_accessories", "Included accessories"),
+                                    ("seller_reported_faults", "Seller-reported faults"),
+                                    ("visible_damage", "Visible damage"),
+                                ]
+                                if is_current
+                                else [
+                                    ("included_accessories", "Included accessories"),
+                                    ("seller_condition_claims", "Seller claims"),
+                                    ("visible_defects", "Visible defects"),
+                                    ("contradictions", "Contradictions"),
+                                ]
+                            )
+                            for key, label in fields:
+                                values = extraction.get(key)
+                                value = (
+                                    "Not assessed"
+                                    if values is None
+                                    else ", ".join(values) or "None identified"
+                                )
+                                st.write(f"{label}: {value}")
+                            if is_current:
+                                conflict = extraction.get("text_photo_conflict")
+                                st.write(
+                                    "Text/photo conflict: "
+                                    + {True: "Yes", False: "No", None: "Not assessed"}[conflict]
+                                )
+                        if vision.get("input_fingerprint"):
+                            st.caption(f"Input fingerprint: {vision['input_fingerprint']}")
                         st.caption(
                             "Visual evidence does not verify authenticity or delivery to France."
                         )

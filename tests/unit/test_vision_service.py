@@ -59,11 +59,9 @@ def output():
             model=None,
             variant=None,
             included_accessories=[],
-            seller_condition_claims=[],
-            visible_defects=[],
-            contradictions=[],
-            unknown_fields=["model"],
-            evidence=[],
+            seller_reported_faults=[],
+            visible_damage=None,
+            text_photo_conflict=None,
         )
     )
 
@@ -85,8 +83,8 @@ async def test_google_uses_json_schema_field_for_strict_objects(monkeypatch, mod
     config = generate.call_args.kwargs["config"]
     assert config.response_schema is None
     assert config.response_json_schema["additionalProperties"] is False
-    assert config.response_json_schema["$defs"]["Evidence"]["additionalProperties"] is False
-    assert len(config.response_json_schema["$defs"]["Evidence"]["anyOf"]) == 2
+    assert len(config.response_json_schema["required"]) == 7
+    assert "evidence" not in config.response_json_schema["properties"]
     if model.startswith("gemini-3."):
         assert config.thinking_config.thinking_level == module.types.ThinkingLevel.MINIMAL
     else:
@@ -165,3 +163,85 @@ async def test_cancelled_call_finishes_claim_but_retains_reservation(configured)
     assert configured.remaining == 9
     assert configured.attempts == []
     assert next(iter(configured.claims.values()))["status"] == "error"
+
+
+def test_prompt_contains_only_listing_and_target():
+    target = {"name": "GoPro Hero 11", "critical_attributes": {"edition": "Black"}}
+    assert json.loads(module.build_prompt("Title", "Description", target)) == {
+        "target": target,
+        "title": "Title",
+        "description": "Description",
+    }
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("vision_max_output_tokens", 768),
+        ("vision_response_mode", "json_object"),
+        ("vision_local_model_revision", "sha256:another"),
+    ],
+)
+def test_fingerprint_changes_with_generation_config(monkeypatch, field, value):
+    original = module.request_key("a", "b", [], None)
+    monkeypatch.setattr(module.settings, field, value)
+    assert original != module.request_key("a", "b", [], None)
+
+
+@pytest.mark.asyncio
+async def test_truncation_is_failure_even_if_json_is_valid(configured):
+    with patch.object(
+        module,
+        "_call_provider",
+        new=AsyncMock(
+            return_value=(
+                output(),
+                {
+                    "finish_reason": "length",
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                },
+            )
+        ),
+    ) as call:
+        result = await module.extract_listing("a", "b", [])
+    assert result.status == "error"
+    assert call.await_count == 1
+    assert configured.attempts[0][2] == Decimal("0.000009")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("gemma-4-26b-a4b-it", "none"),
+        ("qwen3.6-35b-a3b", "none"),
+        ("qwen3.5-397b-a17b", "none"),
+        ("pixtral-12b-2409", None),
+    ],
+)
+async def test_scaleway_reasoning_is_explicit_only_for_supported_models(
+    monkeypatch, model, expected
+):
+    monkeypatch.setattr(module.settings, "vision_provider", "scaleway")
+    monkeypatch.setattr(module.settings, "vision_model", model)
+    monkeypatch.setattr(module.settings, "scaleway_api_key", "fake-test-key")
+    response = SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"choices": [{"message": {"content": output()}, "finish_reason": "stop"}]},
+    )
+    post = AsyncMock(return_value=response)
+    with patch.object(module.httpx, "AsyncClient") as client:
+        client.return_value.__aenter__.return_value.post = post
+        await module._call_provider("test", [])
+    assert post.call_args.kwargs["json"].get("reasoning_effort") == expected
+
+
+def test_reasoning_mode_and_local_endpoint_invalidate_cache(monkeypatch):
+    original = module.request_key("a", "b", [], None)
+    with patch.object(module, "reasoning_mode", return_value="changed"):
+        assert original != module.request_key("a", "b", [], None)
+    monkeypatch.setattr(module.settings, "vision_provider", "local")
+    original = module.request_key("a", "b", [], None)
+    monkeypatch.setattr(module.settings, "vision_local_base_url", "http://localhost:9999/v1")
+    assert original != module.request_key("a", "b", [], None)

@@ -14,7 +14,7 @@ from libs.common.vision_schema import VisionExtraction, VisionResult
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shadow", [True, False])
-async def test_pipeline_persists_evidence_and_preserves_shadow_baseline(
+async def test_pipeline_persists_v3_and_preserves_shadow_baseline(
     integration_db, seed_product, monkeypatch, shadow
 ):
     monkeypatch.setattr(settings, "vision_enabled", True)
@@ -51,11 +51,9 @@ async def test_pipeline_persists_evidence_and_preserves_shadow_baseline(
         model=None,
         variant=None,
         included_accessories=[],
-        seller_condition_claims=[],
-        visible_defects=[],
-        contradictions=[],
-        unknown_fields=["model"],
-        evidence=[{"field": "item_class", "text_quote": "Boite vide"}],
+        seller_reported_faults=[],
+        visible_damage=[],
+        text_photo_conflict=False,
     )
     call = AsyncMock(
         return_value=VisionResult(status="completed", extraction=extraction, model="test-model")
@@ -78,3 +76,29 @@ async def test_pipeline_persists_evidence_and_preserves_shadow_baseline(
     integration_db.commit()
     await listing_vision.run_listing_vision_batch(seed_product)
     assert call.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_historical_jsonb_result_is_stale(integration_db, seed_product, monkeypatch):
+    monkeypatch.setattr(settings, "vision_enabled", True)
+    monkeypatch.setattr(settings, "vision_shadow_mode", False)
+    product = integration_db.get(ProductTemplate, seed_product)
+    obs = ListingObservation(
+        product_id=seed_product,
+        source="ebay",
+        listing_id="historical-vision",
+        title="iPhone 14 Pro 128GB",
+        vision_result={
+            "pipeline": "vision",
+            "schema_version": "listing-vision-v2",
+            "status": "completed",
+            "checked_at": datetime.now(UTC).isoformat(),
+            "extraction": {"model": "iPhone 14 Pro", "evidence": [], "unknown_fields": []},
+        },
+    )
+    obs.vision_result["input_fingerprint"] = listing_vision.input_fingerprint(obs, None, product)
+    integration_db.add(obs)
+    integration_db.commit()
+    integration_db.refresh(obs)
+    assert obs.vision_result["extraction"]["evidence"] == []
+    assert listing_vision.vision_review_reasons(obs, None, product) == ["vision_stale"]
