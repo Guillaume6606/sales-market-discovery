@@ -1,8 +1,23 @@
-# V3 benchmark: local evaluation complete; hosted holdout pending
+# Gemini is the pragmatic default; Gemma is the cheapest strong candidate
 
-Status: implementation complete; benchmark incomplete. Development results below are measured against frozen assistant-assessed references, not independent human ground truth. Selection and untouched holdout are required before choosing a production model. No production settings were changed.
+Completed September 13, 2026: all 12 candidates on development and selection, four frozen finalists on holdout, and ten-case/three-order timing experiments for those finalists. References are frozen assistant assessments, not independent human ground truth. No production settings were changed.
 
-The seven-field directive contract replaces evidence and unknown-field generation. Validation: 501 unit tests and 35 real PostgreSQL integration tests passed. Implementation commit: `abeead6`.
+**Decision:** Keep Gemini 3.1 Flash-Lite as the single extraction model, after deterministic relevance filtering and durable content-hash cache lookup. It matched Gemma's holdout classification while returning fewer unassessed photo fields. Recommend a $10/month vision budget initially; this is separate from buying capital. Gemma 4 on Scaleway is the cheapest strong alternative if additional abstentions/review are acceptable. Do not add a multi-model cascade or buy more VPS RAM at the current volume.
+
+| Finalist | Measured holdout class matches | Bundles correctly classified | Accessory/wrong-variant accepted | Unassessed damage | Median timed inference | Estimated 5,000 calls/month | Estimated 20,000 calls/month |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Scaleway Gemma 4 26B A4B | 28/29 | 7/7 | 0/3 | 7/29 | 1.09 s | €2.16 | €8.65 |
+| Gemini 3.1 Flash-Lite | 28/29 | 7/7 | 0/3 | 0/29 | 2.59 s | $5.24 | $20.95 |
+| Scaleway Qwen 3.5 397B | 25/29 | 5/7 | 1/3 | 0/29 | 1.84 s | €7.55 | €30.20 |
+| Local Qwen 8B | 22/29 | 1/7 | 0/3 | 21/29 | 15.37 s | No API charge | No API charge |
+
+Each finalist had 29 validated inference outputs and one oversized input rejected before inference. Class references exclude that unscored repair-service case. Monthly costs are derived from each hosted finalist's reported usage across 89 actual calls over the three splits, excluding performance repeats, free allowances and taxes. They assume production inputs have the same token distribution; currency conversion is not applied. Local electricity, hardware and availability are not free.
+
+Gemma's class-score difference against Qwen is +10.34 percentage points, paired group bootstrap 95% interval [-3.45, +24.14]. Against Gemini it is 0 points, interval [-10.34, +10.34]. The sample does not establish population-level superiority. No broken-device class examples exist in the holdout, and the three other negative cases are too few to certify safety. A model filling a photo field is not proof that the answer is correct.
+
+The earlier provisional Qwen recommendation was based on development 29/30. Its held-out result 25/29 changes the practical recommendation. Gemini/Gemma identify the bundles better in this sample. Gemma often puts edition information in model rather than variant, so low literal variant scores must not be treated as equivalent to missing product identity. The model and variant fields must be assessed together for operational identity checks; no post-hoc alias repairs were applied to the frozen metrics.
+
+Validation of implementation: 501 unit tests and 35 PostgreSQL integration tests passed. Implementation commit: `abeead6`. This turn added measurements/documentation, not production activation.
 
 ## Measured development results
 
@@ -161,13 +176,13 @@ Measured class predictions of exact_device/device_bundle on the negative cases b
 
 Estimated scenarios are 5,000 and 20,000 new analyses/month. Historical measurement was 478 new active listings over August 13–September 11; a partial September 12 day had 139. The base scenario uses 139 × 30 × 1.2 ≈ 5,000; expansion assumes four times that. These are not measured unique eligible photo-input cache misses. At the historical 478-listing monthly volume, multiply the per-1,000 rate by 0.478. Cost per correctly eligible production alert is not measured; it requires replaying the full gates on production-equivalent inputs and reviewed references. A 328-listing active backlog, retries and changed descriptions/photos add calls; multiply their counts by the measured per-attempt rate. Currency conversion is intentionally omitted.
 
-Do not upgrade the OVH VPS based on this Mac benchmark: Apple Metal does not measure OVH CPU inference. Hosted costs are low enough at these volume assumptions that quality and operational reliability should decide. Keep Gemini 3.1 Flash-Lite as the existing provisional configuration until selection/holdout is complete; Scaleway Qwen 3.6 and Qwen 3.5 are candidates for that comparison. Pixtral was actually tested, but its announced October 1 retirement makes it a comparison candidate rather than a new deployment choice.
+Do not upgrade the OVH VPS based on this Mac benchmark: Apple Metal does not measure OVH CPU inference. Hosted costs are low enough at these volume assumptions that quality and operational reliability should decide. Keep Gemini 3.1 Flash-Lite as the existing default for the complete extraction path; Gemma 4 is the cheaper strong alternative, with more unassessed damage fields. Pixtral was actually tested, but its announced October 1 retirement makes it a comparison candidate rather than a new deployment choice.
 
-## Reproducibility and remaining work
+## Reproducibility and limitations
 
 Private inputs, references, photos, model artifacts, raw failures, usage and the atomic budget ledger remain under gitignored `data/vision-eval/v3/`. Manifest SHA-256: `edd3b65c5f50c41218f047bd3fac6360455d50d1888788a6eec808f7f50076bf`. Reference SHA-256: `858285d822fc54067260ba30b1631922a4ebb93a23d59403961111254575927c`. The reusable runner is `scripts/benchmark_listing_vision.py`; use `--help` and a single shared ledger across every run.
 
-Remaining: complete hosted selection, freeze hosted finalists, run their untouched holdout once and finish controlled hosted timing comparisons. Local selection, its frozen holdout and repeated timing measurements are complete. Hosted selection/holdout is paused because automatic approval review requested explicit permission for the text/photo payloads and splits. Gemini selection had already completed under a separate approval; it is not mixed into this development table.
+Hosted data-sharing approval was supplied explicitly by the user, and the remaining calls completed. No approval blocker remains. Four finalists were frozen before their holdout: existing Gemini baseline, Qwen 3.5 quality control, Gemma 4 low-cost candidate and local Qwen 8B control. The quality control was preselected from development; the cheaper candidate was chosen from selection. No prompt or reference changes followed holdout inspection.
 
 The community SmolVLM Ollama artifact lacked a vision projector and failed image inference; it is not counted as a valid VLM benchmark. The official SmolVLM model plus matching projector completed all 30 development cases and is included above. Local swap was already about 25 GiB when monitoring began; no clean pre-task baseline exists. Reported local latency must therefore be treated as performance under the current desktop workload.
 
@@ -204,9 +219,9 @@ Corpus provider coverage: 20 ebay, 70 leboncoin. No Vinted or Cash Converters ex
 
 ## Completed selection results
 
-Measured on the separate 30-listing selection split. One class reference is unscored, leaving 29 class assessments. No broken-device class examples exist in this split; the accessory/wrong-variant denominator is only three. These results were not used to tune the prompt.
+Measured on the separate 30-listing split, with 29 scorable class references. No broken-device class cases exist; accessory/wrong-variant denominator is three. Prompts and references stayed frozen.
 
-| Model | Valid outputs | Class matches | Unsafe class errors / 3 | Median seconds |
+| Model | Valid / 30 | Class matches / 29 | Unsafe class errors / 3 | Median seconds |
 | --- | ---: | ---: | ---: | ---: |
 | gemini-3.1-flash-lite | 30/30 | 28/29 | 0/3 | 2.16 |
 | gemini-3.5-flash-lite | 29/30 | 27/29 | 0/3 | 2.18 |
@@ -214,10 +229,14 @@ Measured on the separate 30-listing selection split. One class reference is unsc
 | local-qwen3-vl_4b-instruct | 30/30 | 23/29 | 1/3 | 10.78 |
 | local-qwen3-vl_8b-instruct | 30/30 | 22/29 | 0/3 | 16.73 |
 | local-smolvlm2-2.2b-q4_k_m | 29/30 | 8/29 | 2/3 | 4.70 |
+| scaleway-gemma-4-26b-a4b-it | 30/30 | 28/29 | 0/3 | 1.67 |
+| scaleway-mistral-medium-3.5-128b | 30/30 | 27/29 | 0/3 | 2.52 |
+| scaleway-mistral-small-3.2-24b-instruct-2506 | 30/30 | 26/29 | 1/3 | 1.66 |
+| scaleway-pixtral-12b-2409 | 30/30 | 21/29 | 2/3 | 1.73 |
+| scaleway-qwen3.5-397b-a17b | 30/30 | 28/29 | 0/3 | 1.96 |
+| scaleway-qwen3.6-35b-a3b | 30/30 | 27/29 | 0/3 | 1.07 |
 
-Qwen 8B is frozen as the local holdout control: zero unsafe class errors versus one for Qwen 4B, despite Qwen 4B matching one more class and running faster. This is a tradeoff on a very small sample, not a statistically established safety advantage. The full native request/response configurations are unchanged from development.
-
-Scaleway selection is not run: automatic approval review requested explicit permission to send the frozen selection/holdout text and photos to the hosted providers. Gemini selection had already completed under its separate approval. The remaining hosted matrix and final production recommendation are pending.
+Qwen 8B was frozen as the local control because it made zero unsafe class errors, versus one for faster Qwen 4B. Gemma was selected as the cheaper hosted finalist: 28/29 classes, 0/3 unsafe errors and lower cost than Qwen 3.6 (27/29, 0/3). Mistral Small missed one wrong variant; Mistral Medium cost more without better selection classification. Pixtral was retained in the comparison despite its retirement schedule.
 
 ## Local holdout: bundles and photo coverage remain weak
 
@@ -227,7 +246,7 @@ The model correctly classified all 19 ordinary devices and both wrong variants. 
 
 Among 29 validated outputs, visible_damage was null for 21 and text_photo_conflict was null for 19. These are unassessed fields, not evidence of clean or consistent photos. The production gate would require review for those unknowns. Class-level results do not measure the full alert pipeline or purchase profitability. Six missed bundles also prevent recommending this model as an automatic bundle filter.
 
-The local result therefore supports retaining hosted inference as the provisional approach and avoiding a RAM purchase for this model. Hosted finalists still need their selection and holdout comparisons before a final model choice.
+The local result therefore supports retaining hosted inference as the provisional approach and avoiding a RAM purchase for this model. The completed hosted comparison supports the default/alternative decision at the top of this report.
 
 ## Repeated inputs are faster because the runtime reuses prompt state
 
@@ -243,4 +262,18 @@ One first-pass input had also served as warmup. The dramatic later-pass reductio
 
 Derived capacity, assuming the holdout's mean time transfers to production and ignoring retries: approximately 21.8 compute-hours for 5,000 calls, or 87.2 hours for 20,000. These are planning estimates, not OVH measurements. Retaining all cached states can affect memory; the application should normally avoid identical inference through its own durable result cache.
 
-Final token-derived benchmark charges in the shared ledger: $0.1545174 and €0.2727708, versus authorized planning caps of $5 and €10. No monetary reservation remains outstanding. These are recorded usage charges, not reconciled invoices; prior historical benchmark budgets are separate. Local calls incur no API charge. The dedicated Ollama server and official SmolVLM server were stopped after measurement; model files and private results remain available for reproduction.
+Final token-derived benchmark charges in the shared ledger: $0.2171849 and €0.65404685, within the $5/€10 caps. No reservation remains pending. These are reported-usage/list-price calculations, not reconciled invoices. The dedicated local servers were stopped after local measurements. Model artifacts, raw outputs, failures and reference notes remain private and gitignored.
+
+## Hosted repetitions show latency variation rather than a guaranteed SLA
+
+Measured on the identical seeded ten-input subset and three orders used locally, with one separate warmup per model. All 93 hosted endpoint calls returned valid outputs. Repeats do not increase quality sample size. No application output-cache hits were used; provider-side caching and shared-service load are not controlled.
+
+| Model | Pass 1 median / p95 | Pass 2 median / p95 | Pass 3 median / p95 |
+| --- | ---: | ---: | ---: |
+| Gemma 4 | 1.011 / 1.128 s | 1.280 / 1.889 s | 2.444 / 7.222 s |
+| Qwen 3.5 | 2.700 / 9.602 s | 1.803 / 2.495 s | 2.170 / 5.047 s |
+| Gemini 3.1 | 2.337 / 2.785 s | 2.123 / 2.315 s | 2.158 / 3.846 s |
+
+p95 uses nearest rank on ten calls and is therefore the maximum in each pass. Model download and local model loading are separate. Gemini times measure provider round trips from the existing VPS and exclude the SSH relay to this Mac; Scaleway times measure Mac-to-provider round trips. These are not interchangeable end-user latency measurements.
+
+The practical cost reduction is to filter clear non-candidates before inference and reuse unchanged content, not to stack models. A hypothetical Qwen 3.6-first cascade escalating 20% to Qwen 3.5 would have cost about €4.66 per 5,000 using development token rates, saving about €3.08 versus Qwen 3.5 alone; that routing policy was not evaluated and may fail to escalate confident mistakes. No cascade is recommended at this volume.

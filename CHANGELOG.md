@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Simplified VLM extraction
+- Completed 12-model development/selection comparison, four-finalist holdout and seeded runtime repetitions; retained Gemini 3.1 as the practical default and identified Scaleway Gemma 4 as the cheaper strong alternative.
 - Replaced generated evidence and unknown-field lists with seven bounded factual fields and a directive prompt.
 - Added expanded Scaleway pricing, explicit reasoning controls, historical V2 display, conservative V3 gates and a resumable benchmark runner.
 - Added frozen development/selection/holdout evaluation with assessor provenance and paired group confidence intervals.

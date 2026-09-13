@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Execute task-by-task using superpowers:executing-plans. Steps use checkbox syntax. This document plans the work; it does not claim a new benchmark has run.
 
-**Execution status (September 13):** Contract/gates committed (`abeead6`); 501 unit and 35 PostgreSQL integration tests passed. Corpus and prompt frozen. All 12 development candidates, development ablation, four local selection runs and the frozen Qwen 8B local holdout are complete. The local three-order timing experiment is complete. Hosted selection/holdout, controlled hosted timings and the final recommendation remain incomplete because data-sharing approval is pending. See `docs/listing-vision-benchmark-v3.md`.
+**Execution status (September 13):** Contract/gates committed; 501 unit and 35 PostgreSQL integration tests passed. All 12 development/selection candidates, four frozen finalists on holdout and repeated timing experiments are complete. User approved hosted data sharing; calls finished within $5/€10 caps. Final recommendation: retain Gemini 3.1 for complete extraction; Gemma 4 is cheapest strong alternative. Important deviations/limits: negative-class quotas unmet, free-text scoring is literal rather than semantic, references are assistant-assessed with documented ambiguities, and this is not an end-to-end production or OVH CPU benchmark. See `docs/listing-vision-benchmark-v3.md`.
 
 **Goal:** Replace the verbose extraction contract with a directive small-model-friendly prompt, then compare extraction quality, latency and cost across local, Gemini and Scaleway vision options.
 

@@ -1,6 +1,6 @@
 # Historical V2 evaluation — September 12, 2026
 
-This records the earlier evidence-based contract and smoke tests. For the simplified seven-field contract, expanded model matrix and current limitations, see the [V3 benchmark](listing-vision-benchmark-v3.md). V3 has assistant-assessed development/selection measurements; the full hosted holdout remains pending.
+This records the earlier evidence-based contract and smoke tests. For the simplified seven-field contract, expanded model matrix and current limitations, see the [V3 benchmark](listing-vision-benchmark-v3.md). V3 has assistant-assessed development/selection measurements; the four-finalist holdout is complete; see the current report.
 
 Measured September 12, 2026:
 
