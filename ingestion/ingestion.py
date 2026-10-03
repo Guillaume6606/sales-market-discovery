@@ -816,7 +816,8 @@ async def finish_product_pipeline(product_id: str, sources: list[str]) -> dict[s
                     ListingObservation.is_stale.is_(False),
                     ListingObservation.last_seen_at >= cutoff,
                     (ListingDetailORM.obs_id.is_(None))
-                    | (ListingDetailORM.fetched_at < ListingObservation.updated_at),
+                    | (ListingDetailORM.fetched_at < ListingObservation.updated_at)
+                    | and_(settings.vision_enabled, ListingDetailORM.fetched_at < cutoff),
                 )
                 .order_by(ListingObservation.price.asc())
                 .limit(20)

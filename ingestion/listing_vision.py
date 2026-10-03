@@ -24,6 +24,25 @@ def _target(product: ProductTemplate) -> dict[str, str]:
     return {"name": product.name, "search_query": product.search_query}
 
 
+def _detail_is_current(obs: ListingObservation, detail: ListingDetailORM | None) -> bool:
+    fetched_at = getattr(detail, "fetched_at", None)
+    if fetched_at is None:
+        return False
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=UTC)
+    updated_at = getattr(obs, "updated_at", None)
+    if updated_at is not None:
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=UTC)
+        if fetched_at < updated_at:
+            return False
+    return (
+        timedelta(0)
+        <= datetime.now(UTC) - fetched_at
+        <= timedelta(minutes=settings.alert_freshness_minutes)
+    )
+
+
 def input_fingerprint(
     obs: ListingObservation, detail: ListingDetailORM | None, product: ProductTemplate
 ) -> str:
@@ -60,9 +79,16 @@ def _current_result(
         obs, detail, product
     ):
         return False
+    if detail is None or not _detail_is_current(obs, detail):
+        return False
     try:
         checked = datetime.fromisoformat(result["checked_at"])
-        return timedelta(0) <= datetime.now(UTC) - checked <= timedelta(hours=24)
+        fetched_at = detail.fetched_at
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=UTC)
+        return fetched_at <= checked and timedelta(0) <= datetime.now(UTC) - checked <= timedelta(
+            hours=24
+        )
     except (ValueError, KeyError, TypeError):
         return False
 
@@ -177,6 +203,8 @@ async def run_listing_vision_batch(product_id: str | None = None) -> dict[str, A
                 continue
             if detail is None:
                 result = {"status": "pending", "error": "detail_unavailable"}
+            elif not _detail_is_current(obs, detail):
+                result = {"status": "pending", "error": "detail_stale"}
             else:
                 response = await extract_listing(
                     obs.title or "",

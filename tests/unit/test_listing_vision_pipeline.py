@@ -1,11 +1,16 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ingestion.listing_vision import input_fingerprint, vision_review_reasons
+from ingestion.listing_vision import (
+    input_fingerprint,
+    run_listing_vision_batch,
+    vision_review_reasons,
+)
 from libs.common.settings import settings
-from libs.common.vision_schema import SCHEMA_VERSION
+from libs.common.vision_schema import SCHEMA_VERSION, VisionResult
 
 
 @pytest.fixture
@@ -13,7 +18,11 @@ def vision_listing(monkeypatch):
     monkeypatch.setattr(settings, "vision_enabled", True)
     monkeypatch.setattr(settings, "vision_shadow_mode", False)
     obs = SimpleNamespace(title="PS5", condition="good", vision_result=None)
-    detail = SimpleNamespace(description="Console avec lecteur", photo_urls=["https://img.test/a"])
+    detail = SimpleNamespace(
+        description="Console avec lecteur",
+        photo_urls=["https://img.test/a"],
+        fetched_at=datetime.now(UTC),
+    )
     product = SimpleNamespace(name="PlayStation 5", search_query="PS5")
     obs.vision_result = {
         "pipeline": "vision",
@@ -36,6 +45,51 @@ def vision_listing(monkeypatch):
 
 def test_completed_vision_does_not_override_other_gates(vision_listing):
     assert vision_review_reasons(*vision_listing) == []
+
+
+@pytest.mark.parametrize("detail_state", ["expired", "unknown", "before_summary_update"])
+def test_stale_details_cannot_clear_a_recent_vision_result(vision_listing, detail_state):
+    obs, detail, product = vision_listing
+    if detail_state == "expired":
+        detail.fetched_at = datetime.now(UTC) - timedelta(
+            minutes=settings.alert_freshness_minutes + 1
+        )
+    elif detail_state == "unknown":
+        detail.fetched_at = None
+    else:
+        obs.updated_at = detail.fetched_at + timedelta(seconds=1)
+    assert vision_review_reasons(obs, detail, product) == ["vision_stale"]
+
+
+def test_detail_refetch_requires_rechecking_cached_vision(vision_listing):
+    obs, detail, product = vision_listing
+    obs.vision_result["checked_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    detail.fetched_at = datetime.now(UTC)
+    assert vision_review_reasons(obs, detail, product) == ["vision_stale"]
+
+
+@pytest.mark.parametrize("shadow", [False, True])
+async def test_expired_details_are_not_reanalysed_or_promoted(vision_listing, monkeypatch, shadow):
+    obs, detail, product = vision_listing
+    monkeypatch.setattr(settings, "vision_shadow_mode", shadow)
+    detail.fetched_at = datetime.now(UTC) - timedelta(minutes=settings.alert_freshness_minutes + 1)
+    obs.vision_result["checked_at"] = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    db = MagicMock()
+    db.query.return_value.join.return_value.outerjoin.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = [
+        (obs, detail, product)
+    ]
+    session = MagicMock()
+    session.return_value.__enter__.return_value = db
+    monkeypatch.setattr("ingestion.listing_vision.SessionLocal", session)
+    extract = AsyncMock(return_value=VisionResult(status="completed"))
+    monkeypatch.setattr("libs.common.vision_service.extract_listing", extract)
+    summary = await run_listing_vision_batch()
+    assert summary["status"] == "partial"
+    assert summary["pending"] == 1
+    assert obs.vision_result["status"] == "pending"
+    assert obs.vision_result["error"] == "detail_stale"
+    extract.assert_not_awaited()
+    assert vision_review_reasons(obs, detail, product) == ([] if shadow else ["vision_stale"])
 
 
 @pytest.mark.parametrize("status", ["pending", "error", "budget_exhausted", "text_only"])
