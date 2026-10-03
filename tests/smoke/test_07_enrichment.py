@@ -36,20 +36,18 @@ _VALID_PAYLOAD: dict = {
     "has_receipt_or_invoice": False,
     "accessories_included": ["charger"],
     "accessories_completeness": 0.5,
-    "photo_quality_score": 0.5,
+    "photo_quality_score": None,
     "listing_quality_score": 0.5,
     "condition_confidence": 0.5,
-    "fakeness_probability": 0.5,
+    "fakeness_probability": None,
     "seller_motivation_score": 0.5,
 }
 
 _SCORE_KEYS: list[str] = [
     "urgency_score",
     "accessories_completeness",
-    "photo_quality_score",
     "listing_quality_score",
     "condition_confidence",
-    "fakeness_probability",
     "seller_motivation_score",
 ]
 
@@ -118,20 +116,29 @@ class TestEnrichmentStructural:
         assert result is not None, "Markdown-fenced JSON must be accepted"
         assert result["urgency_score"] == pytest.approx(0.5)
 
-    def test_scores_clamped_above_one(self) -> None:
+    @pytest.mark.parametrize("key", _SCORE_KEYS)
+    def test_scores_clamped_above_one(self, key: str) -> None:
         """Score values > 1.0 in the LLM response must be clamped to 1.0."""
-        out_of_range = {**_VALID_PAYLOAD, "urgency_score": 1.5, "photo_quality_score": 99.0}
+        out_of_range = {**_VALID_PAYLOAD, key: 1.5}
         result = parse_enrichment_response(json.dumps(out_of_range))
         assert result is not None
-        assert result["urgency_score"] == pytest.approx(1.0)
-        assert result["photo_quality_score"] == pytest.approx(1.0)
+        assert result[key] == pytest.approx(1.0)
 
-    def test_scores_clamped_below_zero(self) -> None:
+    @pytest.mark.parametrize("key", _SCORE_KEYS)
+    def test_scores_clamped_below_zero(self, key: str) -> None:
         """Score values < 0.0 in the LLM response must be clamped to 0.0."""
-        out_of_range = {**_VALID_PAYLOAD, "fakeness_probability": -0.3}
+        out_of_range = {**_VALID_PAYLOAD, key: -0.3}
         result = parse_enrichment_response(json.dumps(out_of_range))
         assert result is not None
-        assert result["fakeness_probability"] == pytest.approx(0.0)
+        assert result[key] == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("value", [None, -0.3, 0.0, 0.5, 1.0, 99.0])
+    def test_unseen_visual_attributes_remain_unknown(self, value: float | None) -> None:
+        payload = {**_VALID_PAYLOAD, "photo_quality_score": value, "fakeness_probability": value}
+        result = parse_enrichment_response(json.dumps(payload))
+        assert result is not None
+        assert result["photo_quality_score"] is None
+        assert result["fakeness_probability"] is None
 
     def test_empty_urgency_keywords_accepted(self) -> None:
         """An empty ``urgency_keywords`` list is valid."""

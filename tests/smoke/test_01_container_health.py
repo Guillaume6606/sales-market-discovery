@@ -6,6 +6,7 @@ up, accepting connections, and at the expected schema revision.
 
 import os
 import subprocess
+import sys
 
 import httpx
 import pytest
@@ -43,8 +44,8 @@ def test_backend_health() -> None:
 def test_alembic_migrations_current() -> None:
     """Alembic migrations must be up to date (no pending heads).
 
-    Runs ``alembic check`` which exits 0 when the database is at the latest
-    revision and non-zero when migrations are pending.  Skips if alembic.ini
+    Runs ``alembic check`` to verify the revision and detect schema drift.
+    Skips if alembic.ini
     is not present in the container or if the Alembic version does not
     support the ``check`` subcommand.
     """
@@ -52,7 +53,7 @@ def test_alembic_migrations_current() -> None:
         pytest.skip("alembic.ini not found in container")
 
     result = subprocess.run(
-        ["uv", "run", "alembic", "check"],
+        [sys.executable, "-m", "alembic", "check"],
         capture_output=True,
         text=True,
     )

@@ -135,6 +135,7 @@ def test_delivery_migration_upgrade_downgrade_upgrade(monkeypatch: pytest.Monkey
             c["name"] for c in inspect(scoped).get_columns("valuation_listing_review")
         }
         command.upgrade(config, "head")
+        command.check(config)
         assert "raw_url" in {
             c["name"] for c in inspect(scoped).get_columns("valuation_listing_review")
         }

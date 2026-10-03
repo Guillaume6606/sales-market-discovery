@@ -31,6 +31,7 @@ def test_full_ingestion_success(ingestion_result: dict[str, Any]) -> None:
         "leboncoin_listings",
         "leboncoin_sold",
         "vinted_listings",
+        "cashconverters_listings",
     }
     counts = [
         ingestion_result[key]["count"]

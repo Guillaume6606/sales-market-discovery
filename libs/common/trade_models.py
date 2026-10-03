@@ -13,6 +13,7 @@ from sqlalchemy import (
     Column,
     Date,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     Text,
@@ -72,6 +73,10 @@ class Trade(Base):
             "(sold_on IS NULL OR closed_on >= sold_on))",
             name="ck_trade_closed_date",
         ),
+        Index("ix_trade_status_acquired", "status", "acquired_on"),
+        Index("ix_trade_settled_on", "settled_on"),
+        Index("ix_trade_closed_on", "closed_on"),
+        Index("ix_trade_observation_id", "observation_id"),
     )
 
     trade_id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())

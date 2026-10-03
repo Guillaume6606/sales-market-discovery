@@ -59,6 +59,7 @@ def ingestion_result(known_product_id: str) -> dict[str, Any]:
                 "leboncoin_listings": 5,
                 "leboncoin_sold": 5,
                 "vinted_listings": 5,
+                "cashconverters_listings": 5,
             },
         )
     )

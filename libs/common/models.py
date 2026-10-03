@@ -13,6 +13,7 @@ from sqlalchemy import (
     Column,
     Date,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     Text,
@@ -148,6 +149,7 @@ class MarketPriceNormal(Base):
 
 class PMNHistory(Base):
     __tablename__ = "pmn_history"
+    __table_args__ = (Index("ix_pmn_history_product_computed", "product_id", "computed_at"),)
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_id = Column(UUID, ForeignKey("product_template.product_id"), nullable=False)
@@ -254,6 +256,8 @@ class ConnectorAudit(Base):
             "audit_mode IN ('continuous', 'on_demand', 'cli')",
             name="ck_connector_audit_mode",
         ),
+        Index("ix_connector_audit_obs", "obs_id"),
+        Index("ix_connector_audit_source_date", "source", "audited_at"),
     )
 
     audit_id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
@@ -275,6 +279,7 @@ class ConnectorAudit(Base):
 
 class ListingDetailORM(Base):
     __tablename__ = "listing_detail"
+    __table_args__ = (Index("ix_listing_detail_fetched_at", "fetched_at"),)
 
     detail_id = Column(BigInteger, primary_key=True, autoincrement=True)
     obs_id = Column(
@@ -301,6 +306,7 @@ class ListingDetailORM(Base):
 
 class ListingEnrichment(Base):
     __tablename__ = "listing_enrichment"
+    __table_args__ = (Index("ix_listing_enrichment_enriched_at", "enriched_at"),)
 
     enrichment_id = Column(BigInteger, primary_key=True, autoincrement=True)
     obs_id = Column(
@@ -349,6 +355,11 @@ class ListingScore(Base):
     days_on_market = Column(Integer)
     score_breakdown = Column(JSONB)
     scored_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_listing_score_product_confidence", product_id, risk_adjusted_confidence.desc()),
+        Index("ix_listing_score_product_spread", product_id, arbitrage_spread_eur.desc()),
+    )
 
     observation = relationship("ListingObservation", back_populates="score")
     product = relationship("ProductTemplate")

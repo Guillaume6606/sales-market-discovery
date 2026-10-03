@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from libs.common.models import ListingObservation, ProductTemplate
 
-VALID_SOURCES: frozenset[str] = frozenset({"ebay", "leboncoin", "vinted"})
+VALID_SOURCES: frozenset[str] = frozenset({"ebay", "leboncoin", "vinted", "cashconverters"})
 
 
 def test_no_null_prices(
@@ -30,7 +30,7 @@ def test_no_null_prices(
         db_session.query(ListingObservation)
         .filter(
             ListingObservation.product_id == known_product_id,
-            ListingObservation.observed_at >= one_hour_ago,
+            ListingObservation.last_seen_at >= one_hour_ago,
             ListingObservation.price.is_(None),
         )
         .count()
@@ -52,7 +52,7 @@ def test_no_empty_titles(
         db_session.query(ListingObservation)
         .filter(
             ListingObservation.product_id == known_product_id,
-            ListingObservation.observed_at >= one_hour_ago,
+            ListingObservation.last_seen_at >= one_hour_ago,
             (ListingObservation.title.is_(None)) | (ListingObservation.title == ""),
         )
         .count()
@@ -84,7 +84,7 @@ def test_prices_within_bounds(
     base_query = db_session.query(ListingObservation).filter(
         ListingObservation.product_id == product_id,
         ListingObservation.price.isnot(None),
-        ListingObservation.observed_at >= one_hour_ago,
+        ListingObservation.last_seen_at >= one_hour_ago,
     )
 
     if price_min is not None:
@@ -117,7 +117,7 @@ def test_valid_sources(
         db_session.query(ListingObservation.source)
         .filter(
             ListingObservation.product_id == known_product_id,
-            ListingObservation.observed_at >= one_hour_ago,
+            ListingObservation.last_seen_at >= one_hour_ago,
         )
         .distinct()
         .all()
@@ -144,7 +144,7 @@ def test_recent_observations(
         db_session.query(ListingObservation)
         .filter(
             ListingObservation.product_id == known_product_id,
-            ListingObservation.observed_at >= one_hour_ago,
+            ListingObservation.last_seen_at >= one_hour_ago,
         )
         .count()
     )
