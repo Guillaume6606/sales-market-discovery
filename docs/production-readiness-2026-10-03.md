@@ -65,7 +65,9 @@ Measured probe wall time, including capture and replay: eBay 8.769 seconds for 2
 
 Measured baseline from production's rolling 24-hour ingestion history at the initial inspection: Vinted failed 132/132 runs, with no successes in the preceding seven days. LeBonCoin had 43 errors, 15 empty results and 74 successful runs out of 132; eBay had 112 successful and 23 empty runs out of 135. These are historical run outcomes, not field-quality scores.
 
-Bounded VPS probes using the configured transport observed HTTP 200 home pages followed by HTTP 403 API responses for both LeBonCoin and Vinted. The proxy setting was present. Cooldowns and honest health reporting fix the repeated-failure behavior; they cannot grant access. An approved provider API/feed/account integration is still needed to restore reliable access. Quality for denied payloads remains unmeasured.
+Bounded VPS probes using the configured transport observed HTTP 200 home pages followed by HTTP 403 API responses for both LeBonCoin and Vinted. The proxy setting was present. Cooldowns and honest health reporting fix the repeated-failure behavior; they cannot grant access. A working provider API/feed/account integration or another authorized connection path is still needed to restore reliable access. Quality for denied payloads remains unmeasured.
+
+Measured at 09:23:56 UTC after the 09:19:19 cutover: no new scheduled ingestion run had completed. This was consistent with the stored per-product intervals: the earliest existing eBay product was due at 09:35 UTC, LeBonCoin at 10:11 and Vinted at 10:12. Post-release scheduled persistence is therefore **not yet measured**; the public-payload probes and database integration tests do not replace that operational observation. No manual alert-producing ingestion was triggered for testing.
 
 ## Evidence and recovery
 
