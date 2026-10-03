@@ -113,7 +113,9 @@ def docker_actions(calls: list[list[str]]) -> list[list[str]]:
     return [call[6:] for call in calls if call[0] == "docker"]
 
 
-def test_deploy_backs_up_before_migration_and_only_recreates_apps(deploy_sandbox: DeploySandbox) -> None:
+def test_deploy_backs_up_before_migration_and_only_recreates_apps(
+    deploy_sandbox: DeploySandbox,
+) -> None:
     result, calls = run_deploy(deploy_sandbox)
     assert result.returncode == 0, result.stderr
     actions = docker_actions(calls)
@@ -136,7 +138,9 @@ def test_deploy_backs_up_before_migration_and_only_recreates_apps(deploy_sandbox
 
 
 @pytest.mark.parametrize("local", [False, True])
-def test_quick_deploy_rejected_before_any_external_changes(deploy_sandbox: DeploySandbox, local: bool) -> None:
+def test_quick_deploy_rejected_before_any_external_changes(
+    deploy_sandbox: DeploySandbox, local: bool
+) -> None:
     result, calls = run_deploy(deploy_sandbox, quick="1", local=local)
     assert result.returncode != 0
     assert calls == []
@@ -159,7 +163,9 @@ def test_database_wait_is_bounded_and_does_not_stop_apps(deploy_sandbox: DeployS
 
 
 @pytest.mark.parametrize("failure", ["backup", "empty_backup"])
-def test_failed_backup_prevents_migration_and_restart(deploy_sandbox: DeploySandbox, failure: str) -> None:
+def test_failed_backup_prevents_migration_and_restart(
+    deploy_sandbox: DeploySandbox, failure: str
+) -> None:
     result, calls = run_deploy(deploy_sandbox, failure=failure)
     assert result.returncode != 0
     actions = docker_actions(calls)
@@ -167,7 +173,9 @@ def test_failed_backup_prevents_migration_and_restart(deploy_sandbox: DeploySand
     assert "backup" in (result.stdout + result.stderr).lower()
 
 
-def test_failed_migration_keeps_backup_and_does_not_restart_apps(deploy_sandbox: DeploySandbox) -> None:
+def test_failed_migration_keeps_backup_and_does_not_restart_apps(
+    deploy_sandbox: DeploySandbox,
+) -> None:
     result, calls = run_deploy(deploy_sandbox, failure="migration")
     assert result.returncode != 0
     assert not any("--force-recreate" in call or "downgrade" in call for call in calls)
@@ -187,7 +195,9 @@ def test_failed_readiness_is_bounded_without_dumping_logs(deploy_sandbox: Deploy
     assert backups and str(backups[0]) in result.stdout + result.stderr
 
 
-def test_sync_protects_remote_secrets_backups_and_local_artifacts(deploy_sandbox: DeploySandbox) -> None:
+def test_sync_protects_remote_secrets_backups_and_local_artifacts(
+    deploy_sandbox: DeploySandbox,
+) -> None:
     directory, env = deploy_sandbox
     (directory / "application.py").write_text("new code")
     (directory / ".env.local").write_text("local secret")

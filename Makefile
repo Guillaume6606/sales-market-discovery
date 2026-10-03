@@ -80,9 +80,10 @@ test-v: ## Run unit tests (verbose)
 
 test-smoke: ## Run smoke tests inside Docker (real APIs + container health)
 	docker-compose run --rm \
+		-e UV_CACHE_DIR=/tmp/uv-cache \
 		-v $(PWD)/tests:/app/tests \
 		ingestion \
-		uv run --with pytest --with pytest-asyncio --with httpx \
+		uv run --no-sync --with pytest --with pytest-asyncio --with httpx \
 		pytest tests/smoke/ -v --tb=short -x
 
 # =============================================================================
@@ -205,27 +206,27 @@ migrate-new: ## Create new migration (usage: make migrate-new MSG="add column")
 
 audit: ## Run connector audit in Docker (all connectors)
 	$(DC) run --rm -T -e UV_CACHE_DIR=/tmp/uv-cache ingestion \
-		xvfb-run -a uv run python -m ingestion.audit_cli \
+		xvfb-run -a python -m ingestion.audit_cli \
 		--html-only
 
 audit-vinted: ## Run Vinted-only audit in Docker
 	$(DC) run --rm -T -e UV_CACHE_DIR=/tmp/uv-cache ingestion \
-		xvfb-run -a uv run python -m ingestion.audit_cli \
+		xvfb-run -a python -m ingestion.audit_cli \
 		--connectors vinted --html-only
 
 audit-lbc: ## Run LeBonCoin-only audit in Docker
 	$(DC) run --rm -T -e UV_CACHE_DIR=/tmp/uv-cache ingestion \
-		xvfb-run -a uv run python -m ingestion.audit_cli \
+		xvfb-run -a python -m ingestion.audit_cli \
 		--connectors leboncoin --html-only
 
 audit-ebay: ## Run eBay-only audit in Docker
 	$(DC) run --rm -T -e UV_CACHE_DIR=/tmp/uv-cache ingestion \
-		xvfb-run -a uv run python -m ingestion.audit_cli \
+		xvfb-run -a python -m ingestion.audit_cli \
 		--connectors ebay --html-only
 
 ingest: ## Run full ingestion in Docker
 	$(DC) run --rm -T -e UV_CACHE_DIR=/tmp/uv-cache ingestion \
-		uv run python -c "import asyncio; from ingestion.ingestion import run_full_ingestion_all; asyncio.run(run_full_ingestion_all())"
+		python -c "import asyncio; from ingestion.ingestion import run_full_ingestion_all; asyncio.run(run_full_ingestion_all())"
 
 # =============================================================================
 # Deployment (VPS)
@@ -236,7 +237,7 @@ deploy: ## Full deploy to VPS (sync + build + migrate + restart)
 	@echo "$(GREEN)Deploying to $(SSH_HOST)...$(NC)"
 	bash infra/deploy.sh
 
-deploy-quick: ## Quick deploy to VPS (sync + restart, no rebuild)
+deploy-quick: ## Disabled: production deployments require rebuilt images
 	@test -n "$(SSH_HOST)" || (echo "$(RED)Set SSH_HOST in .deploy.env$(NC)" && exit 1)
 	@echo "$(GREEN)Quick deploy to $(SSH_HOST)...$(NC)"
 	SSH_QUICK=1 bash infra/deploy.sh
