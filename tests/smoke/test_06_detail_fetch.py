@@ -79,13 +79,13 @@ class TestLeboncoinDetailFetch:
             pytest.skip("LeBonCoin returned no listings")
         return listings
 
-    def test_fetch_detail_returns_data(self, lbc_listings):
+    async def test_fetch_detail_returns_data(self, lbc_listings):
         """``fetch_detail`` returns a ``ListingDetail`` with expected fields populated."""
         from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
 
         connector = LeBonCoinAPIConnector()
         listing = lbc_listings[0]
-        detail = connector.fetch_detail(listing.listing_id, obs_id=1)
+        detail = await connector.fetch_detail(listing.listing_id, obs_id=1)
         assert detail is not None, (
             f"fetch_detail returned None for LBC listing {listing.listing_id}"
         )
@@ -93,12 +93,12 @@ class TestLeboncoinDetailFetch:
         # photo_count is auto-computed from photo_urls
         assert detail.photo_count == len(detail.photo_urls)
 
-    def test_fetch_detail_description_present(self, lbc_listings):
+    async def test_fetch_detail_description_present(self, lbc_listings):
         """LBC ads typically always have a body/description."""
         from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
 
         connector = LeBonCoinAPIConnector()
-        detail = connector.fetch_detail(lbc_listings[0].listing_id, obs_id=2)
+        detail = await connector.fetch_detail(lbc_listings[0].listing_id, obs_id=2)
         assert detail is not None
         assert detail.description is not None, "LBC detail should include a description"
 

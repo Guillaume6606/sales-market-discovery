@@ -2,6 +2,7 @@
 LeBonCoin connector using advanced web scraping
 """
 
+import asyncio
 import json
 import re
 from datetime import UTC, datetime
@@ -95,7 +96,7 @@ class LeBonCoinConnector:
 
         return items
 
-    def fetch_detail(self, listing_id: str, obs_id: int) -> "ListingDetail | None":
+    async def fetch_detail(self, listing_id: str, obs_id: int) -> "ListingDetail | None":
         """Delegate detail fetching to the API connector.
 
         Args:
@@ -108,8 +109,10 @@ class LeBonCoinConnector:
         from ingestion.connectors.leboncoin_api import LeBonCoinAPIConnector
         from libs.common.models import ListingDetail  # noqa: F401 — ensure type is resolvable
 
-        api = LeBonCoinAPIConnector()
-        return api.fetch_detail(listing_id, obs_id)
+        if await LeBonCoinAPIConnector._cooldown_active():
+            return None
+        api = await asyncio.to_thread(LeBonCoinAPIConnector)
+        return await api.fetch_detail(listing_id, obs_id)
 
     async def get_item_details(self, item_url: str) -> dict[str, Any] | None:
         """

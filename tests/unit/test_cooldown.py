@@ -201,3 +201,115 @@ async def test_leboncoin_expired_cooldown_allows_next_attempt(monkeypatch) -> No
     with pytest.raises(RuntimeError, match="HTTP 403"):
         await connector.search_items(keyword="test")
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", [401, 403, 429])
+@pytest.mark.parametrize("denial_at", ["detail", "profile"])
+async def test_leboncoin_detail_denial_blocks_subsequent_request(
+    monkeypatch, status: int, denial_at: str
+) -> None:
+    from lbc.exceptions import RequestError
+
+    from ingestion.connectors import leboncoin_api
+
+    redis = FakeRedis()
+    calls = []
+
+    class Ad:
+        @property
+        def user(self):
+            calls.append("profile")
+            raise RequestError(f"Request failed with status code {status}.")
+
+    class Client:
+        def get_ad(self, listing_id):
+            calls.append("detail")
+            if denial_at == "detail":
+                raise RequestError(f"Request failed with status code {status}.")
+            return Ad()
+
+    monkeypatch.setattr(leboncoin_api, "_get_redis", lambda: redis)
+    connector = leboncoin_api.LeBonCoinAPIConnector(client=Client())
+
+    first = await connector.fetch_detail("123", 1)
+    assert (first is None) == (denial_at == "detail")
+    assert redis.store["ingestion:cooldown:leboncoin"][1] == 300
+    monkeypatch.setattr(leboncoin_api.LeBonCoinAPIConnector, "_cooldown_until", 0.0)
+    assert await connector.fetch_detail("123", 1) is None
+    assert calls == (["detail"] if denial_at == "detail" else ["detail", "profile"])
+
+
+async def test_leboncoin_pipeline_cooldown_skips_client_bootstrap(monkeypatch) -> None:
+    from unittest.mock import MagicMock, Mock
+
+    from ingestion import computation, ingestion
+    from ingestion.connectors import leboncoin_api
+
+    redis = FakeRedis()
+    await redis.set("ingestion:cooldown:leboncoin", "blocked", ex=300)
+    monkeypatch.setattr(leboncoin_api, "_get_redis", lambda: redis)
+    bootstrap = Mock(side_effect=AssertionError("No requests allowed during cooldown"))
+    monkeypatch.setattr(leboncoin_api.lbc, "Client", bootstrap)
+    monkeypatch.setattr(ingestion.settings, "detail_fetch_enabled", True)
+    db = MagicMock()
+    db.get.return_value.is_active = True
+    db.query.return_value.outerjoin.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = [
+        object()
+    ]
+    session = MagicMock()
+    session.return_value.__enter__.return_value = db
+    monkeypatch.setattr(ingestion, "SessionLocal", session)
+    after_detail = Mock(side_effect=RuntimeError("detail phase completed"))
+    monkeypatch.setattr(computation, "compute_pmn_for_product", after_detail)
+
+    with pytest.raises(RuntimeError, match="detail phase completed"):
+        await ingestion.finish_product_pipeline("product", ["leboncoin"])
+    after_detail.assert_called_once()
+    bootstrap.assert_not_called()
+
+
+async def test_leboncoin_detail_wrapper_skips_bootstrap_during_cooldown(monkeypatch) -> None:
+    from unittest.mock import Mock
+
+    from ingestion.connectors import leboncoin_api
+    from ingestion.connectors.leboncoin import LeBonCoinConnector
+
+    redis = FakeRedis()
+    await redis.set("ingestion:cooldown:leboncoin", "blocked", ex=300)
+    monkeypatch.setattr(leboncoin_api, "_get_redis", lambda: redis)
+    bootstrap = Mock(side_effect=AssertionError("No requests allowed during cooldown"))
+    monkeypatch.setattr(leboncoin_api.lbc, "Client", bootstrap)
+    assert await LeBonCoinConnector().fetch_detail("123", 1) is None
+    bootstrap.assert_not_called()
+
+
+async def test_leboncoin_detail_wrapper_returns_payload_to_orchestrator(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from ingestion import detail_fetch
+    from ingestion.connectors import leboncoin_api
+    from ingestion.connectors.leboncoin import LeBonCoinConnector
+    from libs.common.models import ListingDetail
+
+    client = SimpleNamespace(get_ad=lambda _: SimpleNamespace(user=None))
+    monkeypatch.setattr(leboncoin_api.lbc, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(detail_fetch.settings, "detail_fetch_enabled", True)
+    monkeypatch.setitem(detail_fetch.RATE_LIMITS, "leboncoin", 0)
+
+    def persist(db, detail):
+        assert isinstance(detail, ListingDetail)
+        assert detail.obs_id == 1
+        return True
+
+    monkeypatch.setattr(detail_fetch, "persist_listing_detail", persist)
+    result = await detail_fetch.fetch_and_persist_details(
+        Mock(),
+        [SimpleNamespace(listing_id="123", obs_id=1, price=100)],
+        "leboncoin",
+        None,
+        None,
+        None,
+        LeBonCoinConnector().fetch_detail,
+    )
+    assert result == 1

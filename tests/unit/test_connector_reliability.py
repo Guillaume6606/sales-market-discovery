@@ -146,10 +146,10 @@ def test_vinted_shipping_requires_price_or_explicit_free_evidence(
     assert parsed["shipping_cost"] == expected
 
 
-def test_leboncoin_listing_count_is_not_transaction_count() -> None:
+async def test_leboncoin_listing_count_is_not_transaction_count() -> None:
     ad = SimpleNamespace(user=SimpleNamespace(registered_at=None, total_ads=123))
     client = SimpleNamespace(get_ad=lambda _: ad)
-    detail = LeBonCoinAPIConnector(client=client).fetch_detail("123", 1)
+    detail = await LeBonCoinAPIConnector(client=client).fetch_detail("123", 1)
     assert detail is not None
     assert detail.seller_transaction_count is None
 

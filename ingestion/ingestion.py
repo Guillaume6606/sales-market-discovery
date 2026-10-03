@@ -831,6 +831,9 @@ async def finish_product_pipeline(product_id: str, sources: list[str]) -> dict[s
                 elif source == "leboncoin":
                     import asyncio
 
+                    if await LeBonCoinAPIConnector._cooldown_active():
+                        result.setdefault("warnings", []).append("detail_cooldown:leboncoin")
+                        continue
                     connector = await asyncio.to_thread(LeBonCoinAPIConnector)
                     fetcher = connector.fetch_detail
                 elif source == "vinted":

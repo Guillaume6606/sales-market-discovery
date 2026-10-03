@@ -229,7 +229,7 @@ class LeBonCoinAPIConnector:
             color=None,
         )
 
-    def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | None:
+    async def fetch_detail(self, listing_id: str, obs_id: int) -> ListingDetail | None:
         """Fetch detailed data for a single LeBonCoin listing.
 
         Uses ``lbc.Client.get_ad()`` to retrieve the full ad object, then maps
@@ -246,10 +246,14 @@ class LeBonCoinAPIConnector:
         """
         from libs.common.models import ListingDetail
 
+        if await self._cooldown_active():
+            return None
         try:
-            ad = self._client.get_ad(listing_id)
-        except Exception:
-            logger.exception("LeBonCoin get_ad failed for %s", listing_id)
+            ad = await asyncio.to_thread(self._client.get_ad, listing_id)
+        except Exception as exc:
+            if _denial_status(exc) is not None:
+                await self._start_cooldown()
+            logger.warning("LeBonCoin detail fetch failed: {}", type(exc).__name__)
             return None
 
         if ad is None:
@@ -278,13 +282,19 @@ class LeBonCoinAPIConnector:
         seller_account_age_days: int | None = None
         seller_transaction_count: int | None = None
         try:
-            user = ad.user  # triggers lbc API call for user profile
+            user = (
+                None
+                if await self._cooldown_active()
+                else await asyncio.to_thread(getattr, ad, "user")
+            )
             registered_at_str = getattr(user, "registered_at", None)
             if registered_at_str:
                 reg_dt = datetime.fromisoformat(registered_at_str.replace("Z", "+00:00"))
                 seller_account_age_days = (datetime.now(UTC) - reg_dt).days
-        except Exception:
-            logger.debug("Could not fetch LBC user profile for ad %s", listing_id)
+        except Exception as exc:
+            if _denial_status(exc) is not None:
+                await self._start_cooldown()
+            logger.debug("LeBonCoin user profile fetch failed: {}", type(exc).__name__)
 
         # LBC does not expose negotiation/pickup flags in the public API
         return ListingDetail(
