@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Production reliability
+- Build and run frozen, non-editable dependencies; retain writable worker reports and use ARQ's built-in heartbeat. Deployment now backs up the database before migration and rejects unsafe quick deployments.
+- Distinguish successful ingestion, empty results and failures; bound LeBonCoin pagination and persist source-denial cooldowns across workers, including detail requests.
+- Correct eBay seller-feedback normalization, remove unsupported transaction-count evidence and migrate historical seller proxies without deleting listings.
+- Require current listing details for vision decisions; preserve all VLM, human-review, valuation and trade-ledger features.
+- Align ORM index metadata with existing migrations and repair stale container/data-quality smoke checks. See `docs/production-readiness-2026-10-03.md` for deployment evidence and remaining provider-access limits.
+
 ### Human VLM review
 - Added a local Streamlit review interface for five hosted models on 30 shared selection listings, with blinded per-field judgments, saved human assessments, JSON export and measured timing / derived cost comparison.
 
