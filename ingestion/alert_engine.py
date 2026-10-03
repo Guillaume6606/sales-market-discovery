@@ -73,10 +73,9 @@ def _rule_matches(
         ):
             return False
     if rule.min_seller_rating is not None:
-        # eBay feedbackScore is a count, not a star rating.
         if (
-            listing.source == "ebay"
-            or listing.seller_rating is None
+            listing.seller_rating is None
+            or not 0 <= listing.seller_rating <= 5
             or listing.seller_rating < rule.min_seller_rating
         ):
             return False

@@ -10,15 +10,28 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 from loguru import logger
+from redis.asyncio import Redis
 
 from ingestion.connectors.vinted_transport import ReliableVintedScraper
 from libs.common.condition import normalize_condition
+from libs.common.cooldown import set_source_cooldown, source_cooldown_active
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingUtils
 from libs.common.settings import settings
 
 if TYPE_CHECKING:
     from libs.common.models import ListingDetail
+
+
+COOLDOWN_SECONDS = 300
+_redis: Redis | None = None
+
+
+def _get_redis() -> Redis:
+    global _redis
+    if _redis is None:
+        _redis = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+    return _redis
 
 
 class VintedAPIConnector:
@@ -35,9 +48,25 @@ class VintedAPIConnector:
     def __init__(self) -> None:
         self._scraping_utils = ScrapingUtils()
 
+    async def _cooldown_active(self) -> bool:
+        if monotonic() < self._cooldown_until:
+            return True
+        try:
+            return await source_cooldown_active(_get_redis(), self.SOURCE)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Vinted cooldown lookup failed: {}", type(exc).__name__)
+            return False
+
+    async def _start_cooldown(self) -> None:
+        type(self)._cooldown_until = monotonic() + COOLDOWN_SECONDS
+        try:
+            await set_source_cooldown(_get_redis(), self.SOURCE, COOLDOWN_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Vinted cooldown persistence failed: {}", type(exc).__name__)
+
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[ReliableVintedScraper]:
-        if monotonic() < self._cooldown_until:
+        if await self._cooldown_active():
             raise RuntimeError("Vinted cooldown after access denial or rate limit")
         config: dict[str, Any] = {"timeout": 30.0}
         if settings.scraping_proxy_url:
@@ -48,7 +77,7 @@ class VintedAPIConnector:
                 yield scraper
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code in {401, 403, 429}:
-                    type(self)._cooldown_until = monotonic() + 300
+                    await self._start_cooldown()
                 raise
 
     @staticmethod
@@ -163,15 +192,6 @@ class VintedAPIConnector:
         # Seller info from VintedUser
         seller_account_age_days: int | None = None
         seller_transaction_count: int | None = None
-        user = item.user
-        if user is not None:
-            # last_loged_on_ts / last_logged_on_ts available but not registration date
-            # Use item_count as a proxy for transaction count if available
-            if user.item_count is not None:
-                seller_transaction_count = int(user.item_count)
-            # feedback_count is a closer proxy for completed transactions
-            if user.feedback_count is not None:
-                seller_transaction_count = int(user.feedback_count)
 
         favourite_count = item.favourite_count
         view_count = item.view_count
@@ -204,7 +224,8 @@ class VintedAPIConnector:
         price_value, currency = self._extract_price(data)
         url = self._build_url(data.get("url"))
 
-        is_sold = bool(data.get("is_closed") or data.get("is_reserved"))
+        if data.get("is_closed") or data.get("is_reserved"):
+            return None
 
         condition_raw = data.get("status") or None
         location = data.get("localization") or None
@@ -224,7 +245,7 @@ class VintedAPIConnector:
             seller_rating=None,
             shipping_cost=None,
             observed_at=datetime.now(UTC),
-            is_sold=is_sold,
+            is_sold=False,
             url=url,
             brand=brand,
             size=size,

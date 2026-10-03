@@ -20,30 +20,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /usr/local/bin/uv
 
 # Set work directory
 WORKDIR /app
 
 # Copy and install Python dependencies (--chown ensures pwuser ownership)
-COPY --chown=pwuser:pwuser pyproject.toml uv.lock ./
+COPY --chown=pwuser:pwuser pyproject.toml uv.lock README.md ./
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN uv sync --frozen --no-dev --no-install-project
-RUN uv run patchright install chromium
+RUN .venv/bin/patchright install chromium
 
 # Copy application code
 COPY --chown=pwuser:pwuser ingestion ./ingestion
 COPY --chown=pwuser:pwuser libs ./libs
+RUN uv sync --frozen --no-dev --no-editable
 COPY --chown=pwuser:pwuser test-stealth-config.py /app/test-stealth-config.py
 COPY --chown=pwuser:pwuser infra/docker/start-ingestion.sh /start-ingestion.sh
 
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TZ=Europe/Paris
 RUN chmod +x /start-ingestion.sh
-
-# Fix permissions: uv sync/uv run ran as root, so .venv and any build
-# artifacts (market_discovery.egg-info) are root-owned. pwuser needs write
-# access to /app itself at runtime (uv run rebuilds the editable install).
-RUN chown -R pwuser:pwuser /app
 
 # Pre-create the Chromium profile dir with correct ownership so the
 # pwuser-data named volume initializes pwuser-owned (else Docker creates
@@ -52,10 +48,6 @@ RUN mkdir -p /tmp/pwuser && chown pwuser:pwuser /tmp/pwuser
 
 USER pwuser
 
-# Redirect uv cache to a pwuser-writable location.
-# /home/pwuser/.cache is mounted as tmpfs (root-owned) by docker-compose,
-# so the Dockerfile chown has no effect there. Use /tmp instead.
-ENV UV_CACHE_DIR="/tmp/uv-cache"
-ENV PYTHONPATH="/app"
+ENV PYTHONPATH="/app" PATH="/app/.venv/bin:$PATH"
 
 CMD ["/start-ingestion.sh"]

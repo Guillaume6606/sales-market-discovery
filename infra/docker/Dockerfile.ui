@@ -4,16 +4,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y build-essential curl git && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /usr/local/bin/uv
 
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 COPY .streamlit ./.streamlit
 COPY ui ./ui
 COPY libs ./libs
 
-RUN uv pip install --system .
+RUN uv sync --frozen --no-dev --no-editable
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app PATH="/app/.venv/bin:$PATH"
 EXPOSE 8501
 CMD ["streamlit", "run", "ui/app.py", "--server.port=8501", "--server.address=0.0.0.0"]

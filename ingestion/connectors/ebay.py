@@ -261,10 +261,12 @@ def parse_ebay_browse_response(
             currency = price_data.get("currency") or "EUR"
 
             seller_rating = None
-            feedback_score = (item.get("seller") or {}).get("feedbackScore")
-            if feedback_score is not None:
+            feedback_percentage = (item.get("seller") or {}).get("feedbackPercentage")
+            if feedback_percentage is not None and not isinstance(feedback_percentage, bool):
                 try:
-                    seller_rating = float(feedback_score)
+                    percentage = float(feedback_percentage)
+                    if math.isfinite(percentage) and 0 <= percentage <= 100:
+                        seller_rating = round(percentage / 20.0, 2)
                 except (ValueError, TypeError):
                     pass
 

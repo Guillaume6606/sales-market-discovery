@@ -1,49 +1,77 @@
 #!/usr/bin/env bash
-# Remote-side deploy steps, executed on the VPS by infra/deploy.sh.
-#
-# Must run from a file, NOT an ssh heredoc: `docker compose exec/run` attach
-# stdin and steal script bytes when bash reads the script from its stdin,
-# silently truncating execution mid-script.
+# Execute this file over SSH: compose commands must not consume a script heredoc.
 set -euo pipefail
 
-QUICK="${1:-0}"
-DC_PROD="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
-
-if [ "$QUICK" = "0" ]; then
-    echo "--- Building images..."
-    $DC_PROD build --pull
-
-    echo "--- Running migrations (before app services start)..."
-    $DC_PROD up -d db
-    until $DC_PROD exec -T db pg_isready -U "${POSTGRES_USER:-app}" >/dev/null 2>&1; do
-        sleep 2
-    done
-    $DC_PROD run --rm --no-deps -T backend python -m alembic upgrade head
-fi
-
-echo "--- Starting services..."
-# --force-recreate: compose does NOT recreate containers when the image is
-# rebuilt under the same tag or when .env changes on disk
-$DC_PROD up -d --force-recreate
-
-echo "--- Health check (up to 60s)..."
-STATUS="FAIL"
-for _ in $(seq 1 20); do
-    sleep 3
-    if STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8000/health/ready 2>/dev/null); then
-        break
-    fi
-    STATUS="FAIL"
-done
-if [ "$STATUS" = "200" ]; then
-    echo "==> Health check PASSED"
-else
-    echo "==> Health check FAILED (status: $STATUS)"
-    echo "--- Last 30 lines of logs:"
-    $DC_PROD logs --tail=30
+if [ "${1:-0}" != "0" ]; then
+    echo "Quick deploy is disabled: production images require a rebuild. Use make deploy." >&2
     exit 1
 fi
 
-echo ""
-echo "--- Container status:"
-$DC_PROD ps
+DC_PROD=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+PHASE="build"
+BACKUP=""
+report_failure() {
+    local status=$?
+    if [ "$status" -ne 0 ]; then
+        echo "Deploy failed during ${PHASE}. No automatic database rollback was attempted." >&2
+        if [ -n "$BACKUP" ]; then
+            echo "Backup file: ${BACKUP} (use only if the backup step completed)." >&2
+            echo "Inspect the failure before restarting applications or restoring data." >&2
+        fi
+    fi
+}
+trap report_failure EXIT
+
+echo "--- Building images..."
+"${DC_PROD[@]}" build --pull
+
+PHASE="database readiness"
+"${DC_PROD[@]}" up -d --no-recreate db redis
+DB_READY=0
+for ((attempt = 1; attempt <= 30; attempt++)); do
+    if "${DC_PROD[@]}" exec -T db sh -c \
+        'pg_isready -t 2 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
+        DB_READY=1
+        break
+    fi
+    sleep 2
+ done
+if [ "$DB_READY" != "1" ]; then
+    echo "Database did not become ready after 30 attempts; applications were not stopped." >&2
+    exit 1
+fi
+
+PHASE="stopping applications"
+"${DC_PROD[@]}" stop --timeout 60 backend ingestion ui
+
+PHASE="database backup"
+umask 077
+mkdir -p backups
+BACKUP="$(pwd)/backups/pre-deploy-$(date -u +%Y%m%dT%H%M%SZ)-$$.dump"
+"${DC_PROD[@]}" exec -T db sh -c \
+    'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --no-owner --no-acl' > "$BACKUP"
+if [ ! -s "$BACKUP" ]; then
+    echo "Database backup is empty; migration was not started." >&2
+    exit 1
+fi
+echo "--- Backup complete: ${BACKUP}"
+
+PHASE="database migration"
+"${DC_PROD[@]}" run --rm --no-deps -T backend python -m alembic upgrade head
+
+PHASE="starting applications"
+"${DC_PROD[@]}" up -d --no-deps --force-recreate backend ingestion ui caddy
+
+PHASE="application readiness"
+echo "--- Checking application readiness (20 attempts)..."
+for ((attempt = 1; attempt <= 20; attempt++)); do
+    if curl -fsS --connect-timeout 2 --max-time 5 -o /dev/null \
+        http://localhost:8000/health/ready 2>/dev/null; then
+        echo "==> Health check PASSED"
+        "${DC_PROD[@]}" ps
+        exit 0
+    fi
+    sleep 3
+done
+echo "Health check failed; inspect application status and sanitized logs on the server." >&2
+exit 1

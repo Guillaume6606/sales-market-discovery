@@ -18,6 +18,7 @@ from ingestion.ingestion import (
     ingest_leboncoin_sold,
     run_full_ingestion,
 )
+from libs.common.cooldown import source_cooldown_active
 from libs.common.db import SessionLocal
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.log import logger
@@ -35,9 +36,6 @@ from libs.common.telegram_service import send_system_alert
 
 
 async def ping(ctx: dict) -> None:
-    pool = ctx.get("redis") or ctx.get("pool")
-    if pool is not None:
-        await pool.set("worker:heartbeat", datetime.now(UTC).isoformat(), ex=180)
     logger.info("Worker alive.")
 
 
@@ -80,6 +78,8 @@ async def scheduled_source_ingestion(ctx: dict, source: str) -> dict:
     pool = ctx.get("redis") or ctx.get("pool")
     if pool is None:
         return {"status": "error", "reason": "redis_unavailable"}
+    if await source_cooldown_active(pool, source):
+        return {"status": "cooldown", "source": source}
     results = {}
     for product_id in _active_product_ids(source):
         job = await pool.enqueue_job(
@@ -694,7 +694,8 @@ async def run_on_demand_audit(
 
 class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    on_startup = ping
+    health_check_key = "worker:heartbeat"
+    health_check_interval = 30
     max_jobs = 3
     job_timeout = 900
     keep_result = 0
@@ -739,7 +740,6 @@ class WorkerSettings:
     # stale-mark -> ingest -> compute.
     cron_jobs = [
         cron(deliver_pending_alerts, minute=set(range(60))),
-        cron(ping, minute=set(range(60))),  # Run ping every hour
         cron(mark_stale_listings, hour=6, minute=45),  # Mark stale listings before ingestion
         cron(scheduled_ebay_ingestion, minute=set(range(0, 60, 5))),  # eBay ingestion daily 07:00
         cron(scheduled_leboncoin_ingestion, minute=set(range(1, 60, 5))),  # LeBonCoin daily 07:20

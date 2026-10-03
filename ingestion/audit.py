@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from bs4 import BeautifulSoup
 from loguru import logger
 
 from libs.common.models import ConnectorAudit, ListingObservation
@@ -28,9 +29,7 @@ AUDITED_FIELDS = [
     "shipping_cost",
 ]
 
-CONNECTOR_FIELD_EXCLUSIONS: dict[str, set[str]] = {
-    "leboncoin": {"condition"},  # lbc package API does not expose condition
-}
+CONNECTOR_FIELD_EXCLUSIONS: dict[str, set[str]] = {}
 
 # Post-hoc classification of captured HTML for the LLM judge.
 # scraping.py has its own DATADOME_PATTERNS for live challenge interception.
@@ -79,19 +78,31 @@ def detect_antibot(html: str) -> bool:
     """Check if HTML contains CAPTCHA or login wall indicators."""
     if not html:
         return False
-    return bool(ANTIBOT_PATTERNS.search(html))
+    page = BeautifulSoup(html, "html.parser")
+    if page.find(
+        ["script", "iframe"],
+        src=re.compile(r"https://[^/]*captcha-delivery\.com/(?:c\.js|captcha/|interstitial/)"),
+    ):
+        return True
+    for element in page(["script", "style"]):
+        element.decompose()
+    return bool(ANTIBOT_PATTERNS.search(page.get_text(" ", strip=True)))
 
 
 def _build_extracted_fields(listing: ListingObservation) -> dict[str, Any]:
     """Build the extracted fields dict to send to the LLM judge."""
     return {
         "title": listing.title,
-        "price": float(listing.price) if listing.price else None,
+        "price": float(listing.price) if listing.price is not None else None,
         "currency": getattr(listing, "currency", "EUR"),
         "condition": listing.condition,
         "location": listing.location,
-        "seller_rating": float(listing.seller_rating) if listing.seller_rating else None,
-        "shipping_cost": float(listing.shipping_cost) if listing.shipping_cost else None,
+        "seller_rating": float(listing.seller_rating)
+        if listing.seller_rating is not None
+        else None,
+        "shipping_cost": float(listing.shipping_cost)
+        if listing.shipping_cost is not None
+        else None,
         "is_sold": listing.is_sold,
     }
 
@@ -447,8 +458,11 @@ def compute_connector_accuracy(
 
         result[source] = {
             "accuracy": round(avg_accuracy, 3) if avg_accuracy is not None else None,
-            "sample_size": len(records),
+            "sample_size": len(scores),
+            "total_audits": len(records),
+            "unverifiable_audits": len(records) - len(scores),
             "per_field": per_field,
+            "field_counts": dict(field_stats),
             "status": status,
         }
 

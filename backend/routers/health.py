@@ -75,17 +75,24 @@ def get_vision_health(db: Session = Depends(get_db)) -> dict[str, Any]:
     }
 
 
-FETCH_SUCCESS = ("success", "no_data")
-FETCH_COMPLETED = (*FETCH_SUCCESS, "error")
+FETCH_COMPLETED = ("success", "no_data", "error")
+FETCH_SUCCESS = (IngestionRun.status == "success") & (
+    (IngestionRun.listings_persisted > 0) | IngestionRun.listings_persisted.is_(None)
+)
+FETCH_NO_DATA = (IngestionRun.status == "no_data") | (
+    (IngestionRun.status == "success") & (IngestionRun.listings_persisted == 0)
+)
 
 
 def _fetch_outcomes(db: Session, source: str, since: datetime) -> Any:
     return (
         db.query(
             func.count(IngestionRun.run_id).label("total"),
+            func.count(case((FETCH_SUCCESS, IngestionRun.run_id), else_=None)).label("successes"),
+            func.count(case((FETCH_NO_DATA, IngestionRun.run_id), else_=None)).label("no_data"),
             func.count(
-                case((IngestionRun.status.in_(FETCH_SUCCESS), IngestionRun.run_id), else_=None)
-            ).label("successes"),
+                case((IngestionRun.status == "error", IngestionRun.run_id), else_=None)
+            ).label("errors"),
         )
         .filter(
             IngestionRun.source == source,
@@ -94,6 +101,22 @@ def _fetch_outcomes(db: Session, source: str, since: datetime) -> Any:
         )
         .first()
     )
+
+
+def summarize_outcomes(row: Any) -> dict[str, Any]:
+    total = int(row.total or 0) if row else 0
+    successes = int(row.successes or 0) if row else 0
+    no_data = int(row.no_data or 0) if row else 0
+    errors = int(row.errors or 0) if row else 0
+    return {
+        "completed_runs": total,
+        "success_runs": successes,
+        "no_data_runs": no_data,
+        "error_runs": errors,
+        "success_rate": round(successes / total, 2) if total else None,
+        "no_data_rate": round(no_data / total, 2) if total else None,
+        "error_rate": round(errors / total, 2) if total else None,
+    }
 
 
 def _ingestion_status(connectors: list[dict[str, Any]], stale_count: int) -> str:
@@ -118,7 +141,7 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
         # Last success/failure
         last_success = (
             db.query(IngestionRun)
-            .filter(IngestionRun.source == source, IngestionRun.status.in_(FETCH_SUCCESS))
+            .filter(IngestionRun.source == source, FETCH_SUCCESS)
             .order_by(desc(IngestionRun.finished_at))
             .first()
         )
@@ -130,17 +153,17 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
         )
 
         # Success rate 24h
-        runs_24h = _fetch_outcomes(db, source, twenty_four_h_ago)
+        outcomes_24h = summarize_outcomes(_fetch_outcomes(db, source, twenty_four_h_ago))
 
         # Success rate 7d
-        runs_7d = _fetch_outcomes(db, source, seven_d_ago)
+        outcomes_7d = summarize_outcomes(_fetch_outcomes(db, source, seven_d_ago))
 
         # Avg duration
         avg_duration = (
             db.query(func.avg(IngestionRun.duration_s))
             .filter(
                 IngestionRun.source == source,
-                IngestionRun.status.in_(FETCH_SUCCESS),
+                FETCH_SUCCESS,
                 IngestionRun.started_at >= seven_d_ago,
             )
             .scalar()
@@ -151,15 +174,10 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
             db.query(func.sum(IngestionRun.listings_persisted))
             .filter(
                 IngestionRun.source == source,
-                IngestionRun.status.in_(FETCH_SUCCESS),
+                FETCH_SUCCESS,
             )
             .scalar()
         ) or 0
-
-        total_24h = runs_24h.total if runs_24h else 0
-        successes_24h = runs_24h.successes if runs_24h else 0
-        total_7d = runs_7d.total if runs_7d else 0
-        successes_7d = runs_7d.successes if runs_7d else 0
 
         # 7d missing data aggregation (single query for both columns)
         missing_data = (
@@ -185,10 +203,8 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
                 "last_failure_at": last_failure.finished_at.isoformat()
                 if last_failure and last_failure.finished_at
                 else None,
-                "completed_runs_24h": total_24h,
-                "completed_runs_7d": total_7d,
-                "success_rate_24h": round(successes_24h / total_24h, 2) if total_24h > 0 else None,
-                "success_rate_7d": round(successes_7d / total_7d, 2) if total_7d > 0 else None,
+                **{f"{key}_24h": value for key, value in outcomes_24h.items()},
+                **{f"{key}_7d": value for key, value in outcomes_7d.items()},
                 "avg_duration_s": round(float(avg_duration), 2) if avg_duration else None,
                 "total_listings_persisted": int(total_persisted),
                 "missing_price_total": int(missing_price_total),
@@ -248,11 +264,12 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
 
     connectors = []
     for (source,) in sources:
-        runs_24h = _fetch_outcomes(db, source, twenty_four_h_ago)
-
-        total = runs_24h.total if runs_24h else 0
-        successes = runs_24h.successes if runs_24h else 0
-        rate = successes / total if total > 0 else None
+        outcomes = summarize_outcomes(_fetch_outcomes(db, source, twenty_four_h_ago))
+        rate = (
+            outcomes["success_runs"] / outcomes["completed_runs"]
+            if outcomes["completed_runs"]
+            else None
+        )
 
         if rate is None:
             color = "gray"
@@ -267,8 +284,7 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
             {
                 "source": source,
                 "status": color,
-                "success_rate_24h": round(rate, 2) if rate is not None else None,
-                "completed_runs_24h": total,
+                **{f"{key}_24h": value for key, value in outcomes.items()},
             }
         )
 

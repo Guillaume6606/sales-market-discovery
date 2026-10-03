@@ -31,7 +31,7 @@ def _make_browse_item(
         "condition": condition,
         "itemWebUrl": "https://www.ebay.fr/itm/123456",
         "itemLocation": {"postalCode": "75001", "country": "FR"},
-        "seller": {"username": "seller1", "feedbackScore": 1500},
+        "seller": {"username": "seller1", "feedbackScore": 1500, "feedbackPercentage": "99.0"},
         "shippingOptions": [
             {
                 "shippingCostType": "FIXED",
@@ -145,7 +145,7 @@ class TestEbayParsing:
         response = _make_browse_response([item])
         listings = parse_ebay_browse_response(response, is_sold=True)
 
-        assert listings[0].seller_rating == 1500.0
+        assert listings[0].seller_rating == 4.95
 
     def test_shipping_cost_extraction(self):
         item = _make_browse_item()
@@ -432,17 +432,15 @@ class TestVintedAPIConnector:
         assert listing is not None
         assert listing.price == 25.0
 
-    def test_map_item_sold_detection(self) -> None:
+    def test_map_closed_item_is_excluded_without_verified_sale(self) -> None:
         item_data = {"id": 1, "title": "Sold Item", "price": 10.0, "is_closed": True}
         listing = self.connector._map_item_to_listing(item_data)
-        assert listing is not None
-        assert listing.is_sold is True
+        assert listing is None
 
-    def test_map_item_reserved_detection(self) -> None:
+    def test_map_reserved_item_is_excluded_from_active_results(self) -> None:
         item_data = {"id": 2, "title": "Reserved Item", "price": 15.0, "is_reserved": True}
         listing = self.connector._map_item_to_listing(item_data)
-        assert listing is not None
-        assert listing.is_sold is True
+        assert listing is None
 
     def test_condition_normalization(self) -> None:
         assert normalize_condition("neuf") == "new"

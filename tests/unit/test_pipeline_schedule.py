@@ -49,9 +49,23 @@ async def test_scheduler_reports_duplicate_enqueue_as_already_queued(monkeypatch
 
     monkeypatch.setattr(worker, "_active_product_ids", lambda source: ["product"])
     pool = AsyncMock()
+    pool.exists.return_value = 0
     pool.enqueue_job.return_value = None
     result = await worker.scheduled_source_ingestion({"redis": pool}, "ebay")
     assert result["product"] == "already_queued"
+
+
+async def test_scheduler_does_not_enqueue_during_provider_cooldown(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    active_products = Mock(return_value=["product"])
+    monkeypatch.setattr(worker, "_active_product_ids", active_products)
+    pool = AsyncMock()
+    pool.exists.return_value = 1
+    result = await worker.scheduled_source_ingestion({"redis": pool}, "vinted")
+    assert result == {"status": "cooldown", "source": "vinted"}
+    pool.enqueue_job.assert_not_awaited()
+    active_products.assert_not_called()
 
 
 async def test_cashconverters_runs_full_pipeline(monkeypatch):

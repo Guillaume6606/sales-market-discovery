@@ -42,13 +42,11 @@ class FeedbackUpdate(BaseModel):
 
 
 def _verify_webhook_secret(request: Request) -> None:
-    """Verify Telegram webhook secret if configured."""
+    """Require a configured Telegram webhook secret."""
     if not settings.telegram_webhook_secret:
-        if settings.app_env in {"production", "prod"}:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, detail="Webhook secret is not configured"
-            )
-        return
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail="Webhook secret is not configured"
+        )
     token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
     if token != settings.telegram_webhook_secret:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")

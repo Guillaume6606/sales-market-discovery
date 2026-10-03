@@ -1,6 +1,7 @@
 """Tests for health endpoints."""
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -79,6 +80,39 @@ class TestProductHealth:
 
 
 class TestOverview:
+    @patch("backend.routers.health.compute_precision_summary", return_value={"precision": None})
+    def test_health_threshold_uses_unrounded_rate(self, mock_precision, client, db_session):
+        db_session.query.return_value.filter.return_value.distinct.return_value.all.return_value = [
+            ("vinted",)
+        ]
+        db_session.query.return_value.filter.return_value.all.return_value = []
+        db_session.query.return_value.order_by.return_value.limit.return_value.all.return_value = []
+        with patch(
+            "backend.routers.health._fetch_outcomes",
+            return_value=SimpleNamespace(total=200, successes=159, no_data=41, errors=0),
+        ):
+            response = client.get("/health/overview")
+        assert response.json()["connectors"][0]["status"] == "yellow"
+
+    @patch("backend.routers.health.compute_precision_summary", return_value={"precision": None})
+    def test_empty_fetches_are_not_healthy(self, mock_precision, client, db_session):
+        datetime.now(UTC)
+        db_session.query.return_value.filter.return_value.distinct.return_value.all.return_value = [
+            ("vinted",)
+        ]
+        db_session.query.return_value.filter.return_value.all.return_value = []
+        db_session.query.return_value.order_by.return_value.limit.return_value.all.return_value = []
+        with patch(
+            "backend.routers.health._fetch_outcomes",
+            return_value=SimpleNamespace(total=3, successes=0, no_data=3, errors=0),
+        ):
+            response = client.get("/health/overview")
+        assert response.status_code == 200
+        connector = response.json()["connectors"][0]
+        assert connector["status"] != "green"
+        assert connector["no_data_runs_24h"] == 3
+        assert connector["no_data_rate_24h"] == 1.0
+
     @patch("backend.routers.health.compute_precision_summary", return_value={"precision": None})
     def test_returns_expected_keys(self, mock_precision, client, db_session):
         """GET /health/overview returns expected structure."""

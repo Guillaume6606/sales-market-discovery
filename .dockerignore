@@ -23,10 +23,28 @@ tests/
 # Documentation
 docs/
 reports/
-README.md
 CHANGELOG.md
 TODO.md
 CLAUDE.md
 
 # Local environment
-.env
+.env*
+*.env
+*.env.*
+credentials.json
+*-credentials.json
+*.pem
+*.key
+backups/
+.codex
+.agents
+.mypy_cache
+.coverage
+htmlcov/
+node_modules/
+build/
+dist/
+*.log
+.DS_Store
+.idea
+.vscode

@@ -57,6 +57,8 @@ services:
         max-file: "3"
 
   backend:
+    environment:
+      APP_ENV: production
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"  # loopback only: deploy health check + SSH-tunnel access
@@ -71,6 +73,8 @@ services:
         max-file: "3"
 
   ingestion:
+    environment:
+      APP_ENV: production
     restart: unless-stopped
     deploy:
       resources:
@@ -83,6 +87,8 @@ services:
         max-file: "3"
 
   ui:
+    environment:
+      APP_ENV: production
     restart: unless-stopped
     ports:
       - "127.0.0.1:8501:8501"  # loopback only: SSH-tunnel access to dashboard

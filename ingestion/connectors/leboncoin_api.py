@@ -43,6 +43,7 @@ class LeBonCoinAPIConnector:
     """Wrapper around ``lbc.Client`` that returns project ``Listing`` models."""
 
     MAX_PAGE_SIZE = 35
+    MAX_PAGES = 10
     SOURCE = "leboncoin"
 
     def __init__(
@@ -109,7 +110,7 @@ class LeBonCoinAPIConnector:
                     continue
                 filters[key] = value
 
-        while remaining > 0:
+        while remaining > 0 and page <= self.MAX_PAGES:
             filters["page"] = page
 
             try:
@@ -122,15 +123,17 @@ class LeBonCoinAPIConnector:
             if not ads:
                 break
 
+            mapped = 0
             for ad in ads:
                 listing = self._map_ad_to_listing(ad)
                 if listing:
                     results.append(listing)
+                    mapped += 1
                     remaining -= 1
                     if remaining == 0:
                         break
 
-            if len(ads) < per_page:
+            if len(ads) < per_page or mapped == 0:
                 break
 
             page += 1
@@ -228,9 +231,6 @@ class LeBonCoinAPIConnector:
             if registered_at_str:
                 reg_dt = datetime.fromisoformat(registered_at_str.replace("Z", "+00:00"))
                 seller_account_age_days = (datetime.now(UTC) - reg_dt).days
-            total_ads = getattr(user, "total_ads", None)
-            if total_ads is not None:
-                seller_transaction_count = int(total_ads)
         except Exception:
             logger.debug("Could not fetch LBC user profile for ad %s", listing_id)
 

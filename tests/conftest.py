@@ -1,9 +1,20 @@
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 
 from ingestion.schemas import ProductTemplateSnapshot
 from libs.common.models import Listing
+
+
+@pytest.fixture(autouse=True)
+def offline_connector_cooldown(monkeypatch):
+    from ingestion.connectors import vinted_api
+
+    redis = AsyncMock()
+    redis.exists.return_value = 0
+    monkeypatch.setattr(vinted_api, "_get_redis", lambda: redis)
+    monkeypatch.setattr(vinted_api.VintedAPIConnector, "_cooldown_until", 0.0)
 
 
 @pytest.fixture

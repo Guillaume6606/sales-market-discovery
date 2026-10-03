@@ -422,11 +422,11 @@ class VintedConnector:
 
             # Extract condition - look in element text or specific elements
             condition = ""
-            element_text = element.get_text() if not price else ""  # Get text if we haven't already
 
             condition_keywords = [
                 "neuf",
                 "new",
+                "très bon état",
                 "très bon",
                 "very good",
                 "bon état",
@@ -462,7 +462,7 @@ class VintedConnector:
                 location = self.scraping_utils.extract_location(location_element.get_text())
 
             # Extract shipping cost
-            shipping_cost = 0.0
+            shipping_cost = None
             shipping_element = element.find(
                 ["span", "div"],
                 class_=lambda x: (
@@ -472,10 +472,14 @@ class VintedConnector:
             if shipping_element:
                 shipping_text = shipping_element.get_text()
                 extracted_shipping = self.scraping_utils.extract_price(shipping_text)
-                if (
-                    extracted_shipping and 0 <= extracted_shipping <= 100
-                ):  # Reasonable shipping cost
+                if extracted_shipping is not None and 0 <= extracted_shipping <= 100:
                     shipping_cost = extracted_shipping
+                elif re.search(
+                    r"\b(?:livraison gratuite|livraison offerte|free shipping)\b",
+                    shipping_text,
+                    re.IGNORECASE,
+                ):
+                    shipping_cost = 0.0
 
             # Build item data
             item_data = {

@@ -151,3 +151,14 @@ def test_rule_without_telegram_channel_cannot_send_telegram():
     rule, listing, product, _ = objects(price=50)
     rule.channels = []
     assert not _rule_matches(rule, listing, product, None, None, valuation=valuation())
+
+
+@pytest.mark.parametrize(
+    "rating, expected", [(4.95, True), (4.0, False), (1500, False), (None, False)]
+)
+def test_ebay_rule_uses_normalized_rating_and_rejects_legacy_counts(rating, expected):
+    rule, listing, product, _ = objects(price=50)
+    rule.min_seller_rating = Decimal("4.5")
+    listing.source = "ebay"
+    listing.seller_rating = rating
+    assert _rule_matches(rule, listing, product, None, None, valuation=valuation()) is expected
