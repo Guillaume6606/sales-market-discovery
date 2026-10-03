@@ -176,3 +176,71 @@ async def test_vinted_feedback_and_item_counts_are_not_transaction_count(monkeyp
     detail = await VintedAPIConnector().fetch_detail("123", 1)
     assert detail is not None
     assert detail.seller_transaction_count is None
+
+
+@pytest.mark.parametrize(
+    "percentage, expected",
+    [("98.5", 4.92), ("99.5", 4.98), ("99.7", 4.98), ("99.9", 5.0)],
+)
+def test_ebay_rating_decimal_half_even_rounding(percentage: str, expected: float) -> None:
+    item = _browse_item({"feedbackPercentage": percentage})
+    listing = parse_ebay_browse_response({"itemSummaries": [item]})[0]
+    assert listing.seller_rating == expected
+
+
+def test_ebay_detail_feedback_count_is_not_transaction_count(monkeypatch) -> None:
+    import httpx
+
+    from ingestion.connectors import ebay
+
+    monkeypatch.setattr(ebay, "_credentials_ready", lambda: True)
+    monkeypatch.setattr(ebay, "_get_app_token_sync", lambda: "test-token")
+    response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://api.ebay.com/test"),
+        json={"itemId": "v1|123456|0", "seller": {"feedbackScore": 1500}},
+    )
+    monkeypatch.setattr(ebay.httpx, "get", lambda *args, **kwargs: response)
+    detail = ebay.fetch_detail("v1|123456|0", 1)
+    assert detail is not None
+    assert detail.seller_transaction_count is None
+
+
+async def test_leboncoin_denial_is_not_retried_by_sdk(monkeypatch) -> None:
+    from ingestion.connectors import leboncoin_api
+
+    calls = []
+
+    class Session:
+        def request(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(ok=False, status_code=403)
+
+    monkeypatch.setattr(leboncoin_api.lbc.Client, "_init_session", lambda *a, **k: Session())
+    monkeypatch.setattr(leboncoin_api.settings, "scraping_proxy_url", None)
+    connector = leboncoin_api.LeBonCoinAPIConnector()
+    with pytest.raises(RuntimeError):
+        await connector.search_items(keyword="test")
+    assert len(calls) == 1
+
+
+async def test_leboncoin_bootstrap_runs_off_event_loop(monkeypatch) -> None:
+    import threading
+
+    from ingestion.connectors import leboncoin_api
+
+    caller_thread = threading.get_ident()
+    bootstrap_threads = []
+
+    class Session:
+        def request(self, **kwargs):
+            return SimpleNamespace(ok=True, json=lambda: {"ads": []})
+
+    def bootstrap(*args, **kwargs):
+        bootstrap_threads.append(threading.get_ident())
+        return Session()
+
+    monkeypatch.setattr(leboncoin_api.lbc.Client, "_init_session", bootstrap)
+    assert await leboncoin_api.fetch_leboncoin_api_listings("test") == []
+    assert len(bootstrap_threads) == 1
+    assert bootstrap_threads[0] != caller_thread

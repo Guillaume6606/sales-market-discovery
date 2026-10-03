@@ -14,6 +14,7 @@ import base64
 import math
 import time
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -264,10 +265,12 @@ def parse_ebay_browse_response(
             feedback_percentage = (item.get("seller") or {}).get("feedbackPercentage")
             if feedback_percentage is not None and not isinstance(feedback_percentage, bool):
                 try:
-                    percentage = float(feedback_percentage)
-                    if math.isfinite(percentage) and 0 <= percentage <= 100:
-                        seller_rating = round(percentage / 20.0, 2)
-                except (ValueError, TypeError):
+                    percentage = Decimal(str(feedback_percentage))
+                    if percentage.is_finite() and 0 <= percentage <= 100:
+                        seller_rating = float(
+                            (percentage / 20).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+                        )
+                except (InvalidOperation, ValueError, TypeError):
                     pass
 
             condition = item.get("condition") or "Unknown"
@@ -368,9 +371,6 @@ def fetch_detail(listing_id: str, obs_id: int) -> "ListingDetail | None":
         except (ValueError, AttributeError):
             pass
 
-    feedback_score = (item.get("seller") or {}).get("feedbackScore")
-    seller_transaction_count = int(feedback_score) if feedback_score is not None else None
-
     watch_count = item.get("watchCount")
     favorite_count = int(watch_count) if watch_count is not None else None
 
@@ -387,7 +387,7 @@ def fetch_detail(listing_id: str, obs_id: int) -> "ListingDetail | None":
         negotiation_enabled=negotiation_enabled,
         original_posted_at=original_posted_at,
         seller_account_age_days=None,  # Not exposed by the Browse API
-        seller_transaction_count=seller_transaction_count,
+        seller_transaction_count=None,
         view_count=None,  # Not exposed by the Browse API
         favorite_count=favorite_count,
     )

@@ -1,10 +1,14 @@
 """Tests for composite scoring functions."""
 
 from decimal import Decimal
+from typing import Any
+
+import pytest
 
 from ingestion.composite_scoring import (
     CONFIDENCE_WEIGHTS,
     compute_acquisition_cost,
+    compute_all_scores,
     compute_arbitrage_spread,
     compute_estimated_sale_price,
     compute_net_roi,
@@ -108,3 +112,54 @@ class TestRiskAdjustedConfidence:
 
     def test_weights_sum_to_one(self):
         assert abs(sum(CONFIDENCE_WEIGHTS.values()) - 1.0) < 0.001
+
+
+class TestSellerSignalScoring:
+    @staticmethod
+    def score(rating: Decimal | None, transactions: int | None = None) -> dict[str, Any]:
+        from libs.common.models import (
+            ListingDetailORM,
+            ListingObservation,
+            MarketPriceNormal,
+            ProductTemplate,
+        )
+
+        return compute_all_scores(
+            ListingObservation(
+                obs_id=1,
+                source="ebay",
+                price=Decimal("100"),
+                shipping_cost=Decimal("5"),
+                condition="good",
+                seller_rating=rating,
+            ),
+            ListingDetailORM(seller_transaction_count=transactions),
+            None,
+            MarketPriceNormal(pmn=Decimal("200"), confidence=Decimal("0.5")),
+            None,
+            ProductTemplate(name="Phone"),
+        )
+
+    @pytest.mark.parametrize("transactions", [0, 5, 100, 1500])
+    def test_unverified_transaction_counts_do_not_change_confidence(
+        self, transactions: int
+    ) -> None:
+        baseline = self.score(None)
+        scored = self.score(None, transactions)
+        assert baseline["risk_adjusted_confidence"] == Decimal("50")
+        assert scored["risk_adjusted_confidence"] == baseline["risk_adjusted_confidence"]
+        assert scored["acquisition_cost_eur"] == Decimal("105")
+
+    @pytest.mark.parametrize("rating", ["-1", "5.01", "1500", "NaN", "Infinity", "-Infinity"])
+    def test_invalid_ratings_use_unknown_seller_confidence(self, rating: str) -> None:
+        scored = self.score(Decimal(rating))
+        assert scored["risk_adjusted_confidence"] == Decimal("50")
+        assert scored["acquisition_cost_eur"] == Decimal("105")
+
+    @pytest.mark.parametrize(
+        "rating, confidence", [("0", "40"), ("2.5", "50"), ("4.95", "59.8"), ("5", "60")]
+    )
+    def test_valid_ratings_affect_confidence(self, rating: str, confidence: str) -> None:
+        scored = self.score(Decimal(rating))
+        assert scored["risk_adjusted_confidence"] == Decimal(confidence)
+        assert scored["acquisition_cost_eur"] == Decimal("105")

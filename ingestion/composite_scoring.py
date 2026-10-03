@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -310,10 +311,9 @@ def compute_all_scores(
     # --- Seller trust signal ---
     seller_trust = 0.5
     if obs.seller_rating is not None:
-        seller_trust = min(float(obs.seller_rating) / 5.0, 1.0)
-    if detail and detail.seller_transaction_count is not None:
-        tx_signal = min(float(detail.seller_transaction_count) / 100.0, 1.0)
-        seller_trust = (seller_trust + tx_signal) / 2.0
+        rating = float(obs.seller_rating)
+        if math.isfinite(rating) and 0 <= rating <= 5:
+            seller_trust = rating / 5.0
     if detail and detail.seller_account_age_days is not None:
         age_signal = min(float(detail.seller_account_age_days) / 365.0, 1.0)
         seller_trust = (seller_trust * 2 + age_signal) / 3.0

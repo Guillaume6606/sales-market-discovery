@@ -3,20 +3,46 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 import lbc
+from lbc.exceptions import DatadomeError, RequestError
 from loguru import logger
+from redis.asyncio import Redis
 
 from libs.common.condition import normalize_condition
+from libs.common.cooldown import set_source_cooldown, source_cooldown_active
 from libs.common.models import Listing
 from libs.common.scraping import ScrapingUtils
 from libs.common.settings import settings
 
 if TYPE_CHECKING:
     from libs.common.models import ListingDetail
+
+
+COOLDOWN_SECONDS = 300
+_redis: Redis | None = None
+
+
+def _get_redis() -> Redis:
+    global _redis
+    if _redis is None:
+        _redis = Redis.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
+    return _redis
+
+
+def _denial_status(exc: Exception) -> int | None:
+    if isinstance(exc, DatadomeError):
+        return 403
+    if isinstance(exc, RequestError):
+        match = re.fullmatch(r"Request failed with status code (401|403|429)\.", str(exc))
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def _proxy_from_settings() -> lbc.Proxy | None:
@@ -45,6 +71,7 @@ class LeBonCoinAPIConnector:
     MAX_PAGE_SIZE = 35
     MAX_PAGES = 10
     SOURCE = "leboncoin"
+    _cooldown_until = 0.0
 
     def __init__(
         self,
@@ -57,9 +84,27 @@ class LeBonCoinAPIConnector:
             self._client = client
         else:
             effective_proxy = proxy if proxy is not None else _proxy_from_settings()
-            self._client = lbc.Client(proxy=effective_proxy) if effective_proxy else lbc.Client()
+            self._client = lbc.Client(proxy=effective_proxy, max_retries=0)
 
         self._scraping_utils = ScrapingUtils()
+
+    @classmethod
+    async def _cooldown_active(cls) -> bool:
+        if monotonic() < cls._cooldown_until:
+            return True
+        try:
+            return await source_cooldown_active(_get_redis(), cls.SOURCE)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LeBonCoin cooldown lookup failed: {}", type(exc).__name__)
+            return False
+
+    @classmethod
+    async def _start_cooldown(cls) -> None:
+        cls._cooldown_until = monotonic() + COOLDOWN_SECONDS
+        try:
+            await set_source_cooldown(_get_redis(), cls.SOURCE, COOLDOWN_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LeBonCoin cooldown persistence failed: {}", type(exc).__name__)
 
     async def search_items(
         self,
@@ -84,6 +129,9 @@ class LeBonCoinAPIConnector:
 
         if not keyword and not url:
             raise ValueError("Either keyword or url must be provided")
+
+        if await self._cooldown_active():
+            raise RuntimeError("LeBonCoin cooldown after access denial or rate limit")
 
         per_page = min(max(limit, 1), self.MAX_PAGE_SIZE)
         remaining = limit
@@ -115,9 +163,13 @@ class LeBonCoinAPIConnector:
 
             try:
                 raw_response = await asyncio.to_thread(self._client.search, **filters)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.error(f"LeBonCoin API search failed (page={page}): {exc}")
-                raise RuntimeError("LeBonCoin search failed") from exc
+            except Exception as exc:
+                denied_status = _denial_status(exc)
+                if denied_status is not None:
+                    await self._start_cooldown()
+                reason = f"HTTP {denied_status}" if denied_status else type(exc).__name__
+                logger.error("LeBonCoin API search failed (page={}): {}", page, reason)
+                raise RuntimeError(f"LeBonCoin search failed: {reason}") from None
 
             ads = list(getattr(raw_response, "ads", []) or [])
             if not ads:
@@ -390,6 +442,8 @@ async def fetch_leboncoin_api_listings(
     limit: int = 50,
     **search_kwargs: Any,
 ) -> list[Listing]:
+    if await LeBonCoinAPIConnector._cooldown_active():
+        raise RuntimeError("LeBonCoin cooldown after access denial or rate limit")
     connector = await asyncio.to_thread(LeBonCoinAPIConnector)
     url = search_kwargs.pop("url", None)
     locations = search_kwargs.pop("locations", None)
