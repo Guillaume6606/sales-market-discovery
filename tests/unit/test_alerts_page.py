@@ -31,7 +31,10 @@ EVENT = {
 
 
 def _install_fakes(
-    monkeypatch: MonkeyPatch, events_response: httpx.Response, precision: dict[str, Any] | None
+    monkeypatch: MonkeyPatch,
+    events_response: httpx.Response,
+    precision: dict[str, Any] | None,
+    rules: list[dict[str, Any]] | None = None,
 ) -> None:
     st.cache_data.clear()
 
@@ -43,7 +46,7 @@ def _install_fakes(
         if path == "/alerts/rules":
             return httpx.Response(
                 200,
-                json={"rules": [{"rule_id": "rule-1", "name": "Sony bargains"}]},
+                json={"rules": rules or [{"rule_id": "rule-1", "name": "Sony bargains"}]},
                 request=events_response.request,
             )
         raise AssertionError(f"Unexpected API path: {path}")
@@ -80,3 +83,30 @@ def test_alert_events_load_failure_is_reported_not_shown_as_empty(
 
     assert any("alert events" in error.value.lower() for error in app.error)
     assert not any(info.value == "No alert events found" for info in app.info)
+
+
+def test_rule_actions_target_the_selected_rule_when_names_repeat(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    rules = [
+        {"rule_id": "aaaaaaaa-1", "name": "Sony bargains"},
+        {"rule_id": "bbbbbbbb-2", "name": "Sony bargains"},
+    ]
+    _install_fakes(monkeypatch, _events(200, {"events": [], "total": 0}), None, rules)
+    posted: list[str] = []
+
+    def fake_post(path: str, **_kwargs: Any) -> httpx.Response:
+        posted.append(path)
+        return httpx.Response(200, json={"match_count": 0, "matches": []})
+
+    monkeypatch.setattr(api, "api_post", fake_post)
+    app = AppTest.from_file(PAGE)
+    app.run()
+    selector = app.selectbox(key="rule_action_select")
+    assert len(selector.options) == 2
+    selector.set_value("bbbbbbbb-2")
+    app.run()
+    app.button(key="test_rule_btn").click()
+    app.run()
+
+    assert posted == ["/alerts/test/bbbbbbbb-2"]

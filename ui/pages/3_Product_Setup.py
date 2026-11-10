@@ -89,7 +89,9 @@ if mode == "Edit Existing Product":
     if not products:
         st.warning("No products available to edit. Create one first!")
     else:
-        product_options = {f"{p['name']} ({p['brand'] or 'No brand'})": p for p in products}
+        product_options = {
+            f"{p['name']} ({p['brand'] or 'No brand'}) · {p['product_id'][:8]}": p for p in products
+        }
         selected_label = st.selectbox(
             "Select Product to Edit",
             options=list(product_options.keys()),

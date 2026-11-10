@@ -67,3 +67,34 @@ def test_valuation_page_evaluates_decimal_strings_without_claiming_unknown_is_ze
         "Contribution": "€-12.35",
         "Maximum buy": "€309.31",
     }
+
+
+def test_valuation_page_distinguishes_products_with_the_same_name(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    requested_products: list[str] = []
+
+    def fake_products(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            {"product_id": "11111111-aaaa", "name": "Sony WH-1000XM4"},
+            {"product_id": "22222222-bbbb", "name": "Sony WH-1000XM4"},
+        ]
+
+    def fake_get(path: str, **kwargs: Any) -> _Response:
+        if path == "/valuation/references":
+            requested_products.append(kwargs["params"]["product_id"])
+            return _Response([])
+        raise AssertionError(f"Unexpected API path: {path}")
+
+    monkeypatch.setattr(api, "fetch_products", fake_products)
+    monkeypatch.setattr(api, "api_get", fake_get)
+    page = Path(__file__).parents[2] / "ui" / "pages" / "7_Valuation.py"
+
+    app = AppTest.from_file(page)
+    app.run()
+    product = next(widget for widget in app.selectbox if widget.label == "Product")
+    assert len(product.options) == 2
+    product.set_value(product.options[1])
+    app.run()
+
+    assert requested_products[-1] == "22222222-bbbb"

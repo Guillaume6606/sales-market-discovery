@@ -11,7 +11,7 @@ PAGE = Path(__file__).parents[2] / "ui" / "pages" / "3_Product_Setup.py"
 CATEGORY = {"category_id": "cat-1", "name": "Audio", "description": None}
 PRODUCTS: list[dict[str, Any]] = [
     {
-        "product_id": "product-switch",
+        "product_id": "switch01-id",
         "name": "Nintendo Switch OLED",
         "description": None,
         "search_query": "switch oled",
@@ -27,7 +27,7 @@ PRODUCTS: list[dict[str, Any]] = [
         "last_ingested_at": None,
     },
     {
-        "product_id": "product-sony",
+        "product_id": "sony0001-id",
         "name": "Sony WH-1000XM4",
         "description": None,
         "search_query": "sony wh-1000xm4",
@@ -96,10 +96,9 @@ def test_edit_form_loads_each_selected_product_after_create_mode(
     app.radio(key="product_mode").set_value("Edit Existing Product")
     app.run()
 
-    for product in PRODUCTS:
-        app.selectbox(key="edit_product_select").set_value(
-            f"{product['name']} ({product['brand'] or 'No brand'})"
-        )
+    for index, product in enumerate(PRODUCTS):
+        selector = app.selectbox(key="edit_product_select")
+        selector.set_value(selector.options[index])
         app.run()
 
         assert not app.exception
@@ -121,7 +120,8 @@ def test_update_preserves_unchanged_settings_of_selected_product(
     app.run()
     app.radio(key="product_mode").set_value("Edit Existing Product")
     app.run()
-    app.selectbox(key="edit_product_select").set_value("Nintendo Switch OLED (Nintendo)")
+    selector = app.selectbox(key="edit_product_select")
+    selector.set_value(selector.options[0])
     app.run()
 
     next(button for button in app.button if button.label == "Update Product").click()
@@ -129,7 +129,7 @@ def test_update_preserves_unchanged_settings_of_selected_product(
 
     assert writes == [
         (
-            "/products/product-switch",
+            "/products/switch01-id",
             {
                 "name": "Nintendo Switch OLED",
                 "description": None,
@@ -160,3 +160,22 @@ def test_create_refuses_an_empty_provider_selection(monkeypatch: MonkeyPatch) ->
 
     assert writes == []
     assert any("provider" in error.value.lower() for error in app.error)
+
+
+def test_edit_selector_distinguishes_products_with_the_same_name(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    _install_fakes(monkeypatch)
+    duplicate = {**PRODUCTS[1], "product_id": "sony0002-id", "providers": ["vinted"]}
+    monkeypatch.setattr(api, "fetch_products", lambda *_a, **_k: [*PRODUCTS, duplicate])
+    app = AppTest.from_file(PAGE)
+    app.run()
+    app.radio(key="product_mode").set_value("Edit Existing Product")
+    app.run()
+
+    selector = app.selectbox(key="edit_product_select")
+    assert len(selector.options) == 3
+    selector.set_value(selector.options[2])
+    app.run()
+
+    assert _form_values(app)["providers"] == ["vinted"]

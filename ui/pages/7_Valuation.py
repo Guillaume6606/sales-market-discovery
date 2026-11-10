@@ -31,7 +31,10 @@ if not products:
     st.warning("Create a product before adding valuation references.")
     st.stop()
 
-product_options = {product["name"]: product["product_id"] for product in products}
+product_options = {
+    f"{product['name']} ({product['product_id'][:8]})": product["product_id"]
+    for product in products
+}
 selected_product_name = st.selectbox("Product", options=list(product_options))
 selected_product_id = product_options[selected_product_name]
 
