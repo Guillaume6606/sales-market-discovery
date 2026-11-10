@@ -149,7 +149,7 @@ def products_discovery(
     brand: str | None = None,
     min_margin: float | None = Query(None, description="min % below PMN (e.g., -20 for 20% below)"),
     max_margin: float | None = Query(None, description="max % below PMN (e.g., 0)"),
-    min_liquidity: float | None = Query(None, description="min liquidity score (0-1)"),
+    min_liquidity: float | None = Query(None, description="min liquidity score (0-100)"),
     min_trend: float | None = Query(None, description="min trend score"),
     min_pmn_confidence: float | None = Query(None, description="min PMN confidence (0-1)"),
     sort_by: str | None = Query(
