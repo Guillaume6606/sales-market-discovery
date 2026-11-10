@@ -72,8 +72,20 @@ NIKON_BODIES = ("z5", "z6", "z7", "z8", "z9", "zf", "z30", "z50")
 FUJI_BODIES = ("x-t", "x-h", "x-s", "x-pro", "x-e", "xt3", "xt4", "xt5", "xh2", "xs10", "xs20")
 CANON_EF = ("canon ef", " ef ", "ef-", "adaptateur")
 NIKON_F = ("af-s", "afs", "af s ", "af-p", "nikkor af", "ftz", "monture f")
-OTHER_THAN_SONY_E = ("l-mount", "l mount", "monture l", "leica l", "lumix", "panasonic")
-OTHER_THAN_SONY_E += ("canon", "nikon", "fuji", "monture z", "monture x", "monture rf")
+OTHER_THAN_SONY_E = (
+    "l-mount",
+    "l mount",
+    "monture l",
+    "leica l",
+    "lumix",
+    "panasonic",
+    "canon",
+    "nikon",
+    "fuji",
+    "monture z",
+    "monture x",
+    "monture rf",
+)
 SONY_GM_II = ("gm ii", "gm2", "gm 2", "gmii", "mark ii", "mk ii", "mk2")
 
 
