@@ -891,15 +891,15 @@ async def trigger_ingestion(
     product_id: str,
     sold_limit: int = 50,
     listings_limit: int = 50,
-    sources: list[str] | None = None,
+    sources: list[str] | None = Query(None),
     db: Session = Depends(get_db),
 ):
     """Trigger full ingestion pipeline for a product template."""
     if not arq_pool:
-        return {
-            "error": "ARQ pool not available",
-            "message": "Please ensure Redis and ingestion service are running",
-        }
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ARQ pool not available; ensure Redis and the ingestion service are running",
+        )
 
     product = db.query(ProductTemplate).filter(ProductTemplate.product_id == product_id).first()
     if not product:
@@ -912,6 +912,8 @@ async def trigger_ingestion(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Unsupported providers: {', '.join(invalid)}",
             )
+        for provider in sources:
+            _ensure_provider_allowed(product, provider)
 
     job_sources = sources or product.providers or SUPPORTED_PROVIDERS
 
@@ -935,7 +937,9 @@ async def trigger_ingestion(
         }
     except Exception as exc:
         logger.error(f"Failed to enqueue ingestion job: {exc}")
-        return {"error": "Failed to enqueue job", "message": str(exc)}
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Failed to enqueue job: {exc}"
+        ) from exc
 
 
 @app.post("/ingestion/trigger-sold")
@@ -1605,10 +1609,10 @@ async def trigger_product_computation_endpoint(product_id: str, db: Session = De
 async def trigger_enrichment():
     """Trigger LLM enrichment + scoring pipeline manually."""
     if not arq_pool:
-        return {
-            "error": "ARQ pool not available",
-            "message": "Please ensure Redis and worker service are running",
-        }
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ARQ pool not available; ensure Redis and the worker service are running",
+        )
 
     try:
         logger.info("Triggering enrichment + scoring pipeline")
@@ -1623,7 +1627,9 @@ async def trigger_enrichment():
         }
     except Exception as exc:
         logger.error(f"Failed to enqueue enrichment pipeline: {exc}", exc_info=True)
-        return {"error": "Failed to enqueue job", "message": str(exc)}
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Failed to enqueue job: {exc}"
+        ) from exc
 
 
 @app.get("/listings/{obs_id}/opportunity")
