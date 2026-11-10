@@ -1852,10 +1852,7 @@ def explore_listings(
     if llm_validated is not None:
         base_query = base_query.filter(ListingObservation.llm_validated == llm_validated)
 
-    # Count on the base query before the score/enrichment outerjoin to avoid row inflation
-    total = base_query.count()
-
-    # Add outerjoins for scoring and enrichment data
+    # Add outerjoins for scoring and enrichment data (both unique per obs_id)
     query = (
         base_query.outerjoin(ListingScore, ListingScore.obs_id == ListingObservation.obs_id)
         .outerjoin(ListingEnrichment, ListingEnrichment.obs_id == ListingObservation.obs_id)
@@ -1879,6 +1876,8 @@ def explore_listings(
     elif has_score is False:
         query = query.filter(ListingScore.score_id.is_(None))
 
+    total = query.count()
+
     # Apply sorting
     if sort_by == "price":
         sort_col = ListingObservation.price
@@ -1892,9 +1891,9 @@ def explore_listings(
         sort_col = ListingObservation.observed_at
 
     if sort_order == "desc":
-        query = query.order_by(desc(sort_col))
+        query = query.order_by(desc(sort_col).nulls_last())
     else:
-        query = query.order_by(sort_col)
+        query = query.order_by(sort_col.asc().nulls_last())
 
     # Apply pagination
     query = query.offset(offset).limit(limit)
