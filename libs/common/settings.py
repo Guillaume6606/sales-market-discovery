@@ -108,6 +108,15 @@ class Settings(BaseSettings):
     scoring_sell_shipping_default: float = 7.0
     scoring_vinted_buyer_fee_pct: float = 0.05
 
+    # eBay.fr completed-sales comparables (operator opt-in; proposals never authorize alerts)
+    sold_comps_enabled: bool = False
+    sold_comps_min_comparables: int = Field(default=8, ge=1, le=200)
+    sold_comps_max_requests_per_run: int = Field(default=3, ge=1, le=20)
+    sold_comps_refresh_days: int = Field(default=7, ge=7, le=90)
+    sold_comps_window_days: int = Field(default=90, ge=1, le=365)
+    sold_comps_cooldown_seconds: int = Field(default=86400, ge=3600)
+    sold_comps_min_delay_seconds: float = Field(default=5.0, gt=0, le=120)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
