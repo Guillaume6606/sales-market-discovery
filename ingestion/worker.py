@@ -22,6 +22,7 @@ from ingestion.ingestion import (
     ingest_leboncoin_sold,
     run_full_ingestion,
 )
+from ingestion.sold_comps import refresh_sold_comps
 from libs.common.cooldown import source_cooldown_active
 from libs.common.db import SessionLocal
 from libs.common.llm_service import assess_listing_relevance
@@ -803,6 +804,7 @@ ALL_FUNCTIONS: list[Callable[..., Any]] = [
     run_enrichment_batch,
     # Scoring tasks
     run_scoring_batch,
+    refresh_sold_comps,
 ]
 REMOTE_FUNCTIONS: list[Callable[..., Any]] = [
     ping,
@@ -844,6 +846,7 @@ CRON_JOBS: list[tuple[str | None, CronJob]] = [
     ),  # Check system health every 2 hours
     (None, cron(run_enrichment_batch, hour=None, minute=30)),  # Enrich listings every hour at :30
     (None, cron(run_scoring_batch, hour=None, minute=45)),  # Score listings every hour at :45
+    (None, cron(refresh_sold_comps, hour=5, minute=10)),
 ]
 
 

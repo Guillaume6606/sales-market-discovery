@@ -16,6 +16,7 @@ DEFAULT_CRONS = [
     "check_system_health",
     "run_enrichment_batch",
     "run_scoring_batch",
+    "refresh_sold_comps",
 ]
 DEFAULT_FUNCTIONS = [
     "ping",
@@ -43,6 +44,7 @@ DEFAULT_FUNCTIONS = [
     "run_on_demand_audit",
     "run_enrichment_batch",
     "run_scoring_batch",
+    "refresh_sold_comps",
 ]
 
 
@@ -102,6 +104,7 @@ def test_remote_worker_runs_only_its_provider_crons(lbc_at_home: None) -> None:
         "check_system_health",
         "run_enrichment_batch",
         "run_scoring_batch",
+        "refresh_sold_comps",
         "audit_ingestion_sample",
     ):
         assert global_job not in functions

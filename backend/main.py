@@ -18,6 +18,7 @@ from backend.routers.ingestion import router as ingestion_router
 from backend.routers.listing_detail import router as listing_detail_router
 from backend.routers.pmn import router as pmn_router
 from backend.routers.scored_listings import router as scored_listings_router
+from backend.routers.sold_comps import router as sold_comps_router
 from backend.routers.trades import router as trades_router
 from backend.routers.valuation import router as valuation_router
 from ingestion.constants import SUPPORTED_PROVIDERS
@@ -56,6 +57,7 @@ app.include_router(scored_listings_router)
 app.include_router(listing_detail_router)
 app.include_router(valuation_router)
 app.include_router(trades_router)
+app.include_router(sold_comps_router)
 
 
 @app.on_event("startup")

@@ -15,7 +15,11 @@ fileConfig(config.config_file_name)
 
 def _register_model_modules() -> None:
     """Load standalone model modules without importing the FastAPI application."""
-    for module_name in ("libs.common.valuation_models", "libs.common.trade_models"):
+    for module_name in (
+        "libs.common.valuation_models",
+        "libs.common.trade_models",
+        "libs.common.sold_comp_models",
+    ):
         importlib.import_module(module_name)
 
 
