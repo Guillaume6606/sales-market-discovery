@@ -3,11 +3,13 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import redis
 from fastapi import APIRouter, Depends
 from sqlalchemy import case, desc, func
 from sqlalchemy.orm import Session
 
 from backend.routers.feedback import compute_precision_summary
+from ingestion import topology
 from libs.common.db import get_db
 from libs.common.models import (
     ConnectorAudit,
@@ -119,6 +121,44 @@ def summarize_outcomes(row: Any) -> dict[str, Any]:
     }
 
 
+def worker_heartbeats() -> dict[str, bool | None]:
+    """Liveness per expected worker role; None when Redis cannot be read."""
+    roles = topology.expected_roles()
+    try:
+        client = redis.Redis.from_url(
+            settings.redis_url, socket_connect_timeout=1, socket_timeout=1
+        )
+        with client:
+            return {role: bool(client.exists(topology.HEARTBEAT_KEYS[role])) for role in roles}
+    except (redis.RedisError, OSError):
+        return dict.fromkeys(roles)
+
+
+def _multi_worker_heartbeats() -> dict[str, bool | None] | None:
+    return worker_heartbeats() if topology.remote_providers() else None
+
+
+def _worker_fields(source: str, heartbeats: dict[str, bool | None] | None) -> dict[str, Any]:
+    if heartbeats is None:
+        return {}
+    role = topology.provider_role(source)
+    return {"worker": role, "worker_online": heartbeats.get(role)}
+
+
+@router.get("/workers")
+def get_worker_health() -> list[dict[str, Any]]:
+    heartbeats = worker_heartbeats()
+    return [
+        {
+            "role": role,
+            "queue": topology.QUEUES[role],
+            "providers": topology.worker_providers(role),
+            "online": heartbeats.get(role),
+        }
+        for role in topology.expected_roles()
+    ]
+
+
 def _ingestion_status(connectors: list[dict[str, Any]], stale_count: int) -> str:
     if stale_count or any(c["status"] in {"red", "yellow"} for c in connectors):
         return "yellow"
@@ -135,6 +175,7 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     seven_d_ago = now - timedelta(days=7)
 
     sources = db.query(IngestionRun.source).filter(IngestionRun.source.isnot(None)).distinct().all()
+    heartbeats = _multi_worker_heartbeats()
 
     result = []
     for (source,) in sources:
@@ -209,6 +250,7 @@ def get_ingestion_health(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
                 "total_listings_persisted": int(total_persisted),
                 "missing_price_total": int(missing_price_total),
                 "rejected_title_total": int(rejected_title_total),
+                **_worker_fields(source, heartbeats),
             }
         )
 
@@ -261,6 +303,7 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
 
     # Connector status colors
     sources = db.query(IngestionRun.source).filter(IngestionRun.source.isnot(None)).distinct().all()
+    heartbeats = _multi_worker_heartbeats()
 
     connectors = []
     for (source,) in sources:
@@ -280,11 +323,16 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
         else:
             color = "red"
 
+        worker = _worker_fields(source, heartbeats)
+        if worker.get("worker_online") is False:
+            color = "gray"
+
         connectors.append(
             {
                 "source": source,
                 "status": color,
                 **{f"{key}_24h": value for key, value in outcomes.items()},
+                **worker,
             }
         )
 
@@ -316,6 +364,8 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
 
     # System status
     system_status = _ingestion_status(connectors, stale_count)
+    if heartbeats and False in heartbeats.values():
+        system_status = "yellow"
 
     # Connector audit quality (last 7 days)
     audit_cutoff = datetime.now(UTC) - timedelta(days=7)
@@ -327,7 +377,7 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
 
         connector_quality = compute_connector_accuracy(audit_records)
 
-    return {
+    overview = {
         "system_status": system_status,
         "ingestion_status": system_status,
         "connectors": connectors,
@@ -336,6 +386,9 @@ def get_health_overview(db: Session = Depends(get_db)) -> dict[str, Any]:
         "precision": compute_precision_summary(db),
         "connector_quality": connector_quality,
     }
+    if heartbeats is not None:
+        overview["workers"] = heartbeats
+    return overview
 
 
 @router.get("/enrichment")

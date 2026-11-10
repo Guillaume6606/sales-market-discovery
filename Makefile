@@ -16,6 +16,7 @@ NC := \033[0m
 
 DC := docker-compose
 DC_PROD := docker compose -f docker-compose.yml -f docker-compose.prod.yml
+DC_HOME := docker compose -f docker-compose.home.yml
 
 # Load deploy config if present
 -include .deploy.env
@@ -53,6 +54,9 @@ help: ## Show this help message
 	@echo ""
 	@echo "$(GREEN)Deployment (VPS):$(NC)"
 	@grep -hE '^(deploy|remote-|backup|setup-vps|telegram-|caddy-).*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
+	@echo ""
+	@echo "$(GREEN)Home ingestion worker:$(NC)"
+	@grep -hE '^home-.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-28s$(NC) %s\n", $$1, $$2}'
 
 # =============================================================================
 # Development
@@ -287,3 +291,22 @@ telegram-test: ## Send test message to verify Telegram config
 caddy-hash: ## Generate bcrypt hash for Caddy basic auth (usage: make caddy-hash PASSWORD=yourpassword)
 	@test -n "$(PASSWORD)" || (echo "$(RED)Usage: make caddy-hash PASSWORD=yourpassword$(NC)" && exit 1)
 	@docker run --rm caddy:2 caddy hash-password --plaintext '$(PASSWORD)'
+
+# =============================================================================
+# Home ingestion worker (docs/home-worker.md)
+# =============================================================================
+
+home-env-check:
+	@test -f .env.home || (echo "$(RED).env.home not found (start from .env.home.example)$(NC)" && exit 1)
+
+home-up: home-env-check ## Build and start the home ingestion worker
+	$(DC_HOME) up -d --build
+
+home-down: home-env-check ## Stop the home ingestion worker
+	$(DC_HOME) down
+
+home-logs: home-env-check ## Follow home ingestion worker logs
+	$(DC_HOME) logs -f --tail=100
+
+home-probe: home-env-check ## One LeBonCoin search (5 ads, one request) from this connection
+	$(DC_HOME) run --rm --build --no-deps -T ingestion python -c "import asyncio; from ingestion.connectors.leboncoin_api import fetch_leboncoin_api_listings as fetch; ads = asyncio.run(fetch('$(or $(KEYWORD),iphone 13)', limit=5)); print('leboncoin_probe ok listings=%d' % len(ads))"
