@@ -15,6 +15,7 @@ from ui.lib.api import (
     fetch_product_health,
 )
 from ui.lib.components import paginator
+from ui.lib.config import SUPPORTED_PROVIDERS
 from ui.lib.formatters import relative_time
 from ui.lib.theme import COLORS, PLOTLY_LAYOUT, status_badge
 
@@ -113,7 +114,7 @@ if ingestion_health:
             )
 
             st.caption(f"Completed fetches: {conn.get('completed_runs_24h', 0)} (24h)")
-            st.caption("Successful fetches include empty results; skipped runs are excluded.")
+            st.caption("Empty results count as no data, not success; skipped runs are excluded.")
             avg_dur = conn.get("avg_duration_s")
             st.caption(f"Avg duration: {avg_dur:.1f}s" if avg_dur else "No duration data")
             st.caption(f"Persisted: {conn.get('total_listings_persisted', 0)}")
@@ -250,7 +251,7 @@ st.subheader("Recent Ingestion Runs")
 rc1, rc2 = st.columns(2)
 with rc1:
     run_source_filter = st.selectbox(
-        "Source", ["All", "ebay", "leboncoin", "vinted"], key="health_run_source"
+        "Source", ["All", *SUPPORTED_PROVIDERS], key="health_run_source"
     )
 with rc2:
     run_status_filter = st.selectbox(
