@@ -4,7 +4,10 @@ Telegram alert service for sending opportunity notifications.
 
 import html
 import os
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -52,6 +55,152 @@ def _confidence_badge(confidence: float | None) -> str:
     return f"\n📈 <b>Confidence:</b> {label} ({pct}%)"
 
 
+TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_CAPTION_LIMIT = 1024
+NEGOTIATION_DISCOUNT = Decimal("0.90")
+NEGOTIATION_STEP_EUR = 5
+_FIELD_LIMIT = 120
+_MANUAL_CHECKS = (
+    "identité exacte + numéro de série (photo)",
+    "disponibilité auprès du vendeur",
+    "état réel des lentilles (champignon, rayures, buée)",
+    "frais de port / remise en main propre",
+)
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _eur(value: Any) -> str:
+    amount = _to_decimal(value)
+    if amount is None:
+        return "non calculé"
+    grouped = f"{amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,.2f}"
+    return grouped.replace(",", " ").replace(".", ",") + " €"
+
+
+def _text(value: Any, fallback: str, limit: int = _FIELD_LIMIT) -> str:
+    raw = " ".join(str(value).split()) if value not in (None, "") else ""
+    if not raw:
+        return fallback
+    if len(raw) > limit:
+        raw = raw[: limit - 1].rstrip() + "…"
+    return html.escape(raw)
+
+
+def _age(first_seen_at: Any, now: datetime) -> str:
+    if not isinstance(first_seen_at, datetime):
+        return "inconnue"
+    seen = first_seen_at if first_seen_at.tzinfo else first_seen_at.replace(tzinfo=UTC)
+    minutes = max(0, int((now - seen).total_seconds() // 60))
+    if minutes < 60:
+        ago = f"il y a {minutes} min"
+    elif minutes < 48 * 60:
+        ago = f"il y a {minutes // 60} h"
+    else:
+        ago = f"il y a {minutes // (24 * 60)} j"
+    return f"{ago} ({seen.astimezone(UTC):%d/%m %H:%M} UTC)"
+
+
+def negotiation_offer_eur(ask: Any, max_buy: Any) -> int | None:
+    """Offer 10% below the asking price, capped by the maximum purchase price.
+
+    The result is rounded down to a multiple of 5 EUR, so it never exceeds either bound.
+    """
+    asking = _to_decimal(ask)
+    ceiling = _to_decimal(max_buy)
+    if asking is None or ceiling is None or asking <= 0:
+        return None
+    target = min(asking * NEGOTIATION_DISCOUNT, ceiling)
+    offer = int(target // NEGOTIATION_STEP_EUR) * NEGOTIATION_STEP_EUR
+    return offer if offer > 0 else None
+
+
+def negotiation_draft(title: str | None, offer_eur: int) -> str:
+    subject = " ".join(str(title or "votre objectif").split())[:60]
+    return (
+        f"Bonjour, votre annonce « {subject} » m'intéresse. Est-elle toujours disponible ? "
+        f"Je vous propose {offer_eur} € (hors frais de port). Pourriez-vous m'envoyer une "
+        "photo du numéro de série et des lentilles avant/arrière ? Merci et bonne journée."
+    )
+
+
+def format_opportunity_alert(
+    opportunity: dict[str, Any],
+    listing: dict[str, Any],
+    product_template: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    pmn_confidence: float | None = None,
+) -> str:
+    """Render a self-contained Telegram HTML alert for a manual purchase decision."""
+    now = now or datetime.now(UTC)
+    product_name = _text(product_template.get("name"), "Produit inconnu")
+    title = _text(listing.get("title"), "titre non renseigné")
+    source = _text(listing.get("source"), "source inconnue", 40)
+    destination = _text(opportunity.get("destination_marketplace"), "destination à vérifier", 40)
+    ask = _to_decimal(listing.get("price"))
+    shipping = _to_decimal(listing.get("shipping_cost"))
+    max_buy = _to_decimal(opportunity.get("max_buy_price_eur"))
+    offer = _to_decimal(opportunity.get("offer_price_eur"))
+
+    if ask is None:
+        price_line = "💰 Prix demandé : non renseigné"
+    elif shipping is None:
+        price_line = (
+            f"💰 Prix demandé : {_eur(ask)} + port inconnu (frais de port à demander, "
+            "non inclus dans les calculs)"
+        )
+    else:
+        price_line = (
+            f"💰 Prix demandé : {_eur(ask)} + port {_eur(shipping)} = {_eur(ask + shipping)}"
+        )
+
+    url = str(listing.get("url") or "").strip()
+    if urlparse(url).scheme in {"http", "https"} and urlparse(url).netloc:
+        link = f'🔗 <a href="{html.escape(url, quote=True)}">Voir l\'annonce</a>'
+    else:
+        link = "🔗 Lien indisponible"
+
+    reference_condition = _text(opportunity.get("reference_condition"), "non précisé", 20)
+    reference_id = _text(opportunity.get("reference_id"), "aucune", 40)
+    offer_label = f"à l'offre {_eur(offer)}" if offer is not None else "à l'offre"
+    lines = [
+        "🎯 <b>Opportunité à vérifier (décision manuelle)</b>",
+        f"📦 <b>{product_name}</b>",
+        f"📋 Annonce : {title} ({source})",
+        price_line,
+        f"⚖️ <b>Prix d'achat max (estimé) : {_eur(max_buy)}</b>",
+        f"📊 Revente estimée : {_eur(opportunity.get('estimated_sale_price_eur'))} "
+        f"sur {destination} (référence vérifiée, pas un prix garanti)",
+        "💵 <b>Contribution nette estimée</b> (frais, charges, envoi, risque déduits) :",
+        f"  • au prix demandé : {_eur(opportunity.get('contribution_eur'))}",
+        f"  • au prix max {_eur(max_buy)} : {_eur(opportunity.get('contribution_at_max_buy_eur'))}",
+        f"  • {offer_label} : {_eur(opportunity.get('contribution_at_offer_eur'))}",
+        f"🔎 État annoncé : {_text(listing.get('condition'), 'non renseigné', 60)} "
+        f"(référence : {reference_condition})",
+        f"🕒 Première observation : {_age(listing.get('first_seen_at'), now)}",
+        link,
+        "✅ <b>À vérifier à la main</b> : " + " ; ".join(_MANUAL_CHECKS),
+    ]
+    if offer is not None and max_buy is not None:
+        draft = negotiation_draft(listing.get("title"), int(offer))
+        lines.append(f"✉️ <b>Brouillon d'offre</b> ({_eur(offer)} ≤ max {_eur(max_buy)}) :")
+        lines.append(f"<pre>{html.escape(draft, quote=False)}</pre>")
+    lines.append(f"🧾 Référence de valorisation : {reference_id}")
+    badge = _confidence_badge(pmn_confidence)
+    if badge:
+        lines.append(badge.strip())
+    return "\n".join(lines)
+
+
 async def send_opportunity_alert(
     opportunity: dict[str, Any],
     listing: dict[str, Any],
@@ -86,32 +235,9 @@ async def send_opportunity_alert(
         }
 
     try:
-        # Format message
-        product_name = html.escape(product_template.get("name", "Unknown Product"))
-        brand = html.escape(product_template.get("brand") or "")
-        listing_title = html.escape(listing.get("title", "No title"))
-        listing_price = listing.get("price", 0)
-        listing_url = html.escape(listing.get("url") or "", quote=True)
-        opportunity.get("margin_pct", 0)
-        margin_abs = opportunity.get("margin_abs", 0)
-        pmn = opportunity.get("pmn", 0)
-        destination = html.escape(opportunity.get("destination_marketplace") or "review reference")
-
-        # Build message text
-        message_text = f"""🎯 <b>Opportunity for manual review</b>
-
-📦 <b>Product:</b> {product_name}
-{f"🏷️ <b>Brand:</b> {brand}" if brand else ""}
-
-📋 <b>Listing:</b> {listing_title}
-💰 <b>Price:</b> €{listing_price:.2f}
-📊 <b>Reviewed exit estimate:</b> €{pmn:.2f} ({destination})
-
-💵 <b>Estimated net contribution:</b> €{margin_abs:.2f}
-🧾 <b>Reference:</b> {opportunity.get("reference_id", "manual review required")}
-⚖️ <b>Maximum item price:</b> €{opportunity.get("max_buy_price_eur", 0):.2f}
-{_confidence_badge(pmn_confidence)}
-🔗 <a href="{listing_url}">View Listing</a>"""
+        message_text = format_opportunity_alert(
+            opportunity, listing, product_template, pmn_confidence=pmn_confidence
+        )
 
         # Build inline keyboard if alert_id is provided
         reply_markup = None
@@ -133,7 +259,11 @@ async def send_opportunity_alert(
 
         # Send message
         try:
-            if screenshot_path and os.path.exists(screenshot_path):
+            if (
+                screenshot_path
+                and os.path.exists(screenshot_path)
+                and len(message_text) <= TELEGRAM_CAPTION_LIMIT
+            ):
                 # Send with photo
                 with open(screenshot_path, "rb") as photo:
                     message = await bot.send_photo(

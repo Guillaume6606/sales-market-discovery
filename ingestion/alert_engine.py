@@ -1,7 +1,7 @@
 """Verified opportunity eligibility and a transactional Telegram delivery outbox."""
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from loguru import logger
@@ -19,7 +19,10 @@ from libs.common.models import (
     ProductTemplate,
 )
 from libs.common.settings import settings
-from libs.common.telegram_service import send_opportunity_alert
+from libs.common.telegram_service import negotiation_offer_eur, send_opportunity_alert
+from libs.common.valuation_models import VerifiedValuationReference
+
+CENT = Decimal("0.01")
 
 
 def _aware(value: datetime) -> datetime:
@@ -130,6 +133,74 @@ def evaluate_alert_rules(
     finally:
         if owned:
             db.close()
+
+
+def _contribution_at(
+    valuation: dict[str, Any], reference: Any, price: Decimal | None
+) -> Decimal | None:
+    breakdown = valuation.get("cost_breakdown")
+    sale = valuation.get("estimated_sale_price_eur")
+    if not breakdown or sale is None or price is None or reference is None:
+        return None
+    price = Decimal(str(price))
+    purchase_fee = (
+        Decimal(str(reference.purchase_fee_fixed_eur))
+        + price * Decimal(str(reference.purchase_fee_rate))
+    ).quantize(CENT, rounding=ROUND_HALF_UP)
+    costs = (
+        "inbound_shipping_eur",
+        "sell_fee_eur",
+        "social_charge_eur",
+        "outbound_logistics_eur",
+        "risk_allowance_eur",
+    )
+    deductions = sum((Decimal(str(breakdown[key])) for key in costs), Decimal("0"))
+    return (Decimal(str(sale)) - price - purchase_fee - deductions).quantize(
+        CENT, rounding=ROUND_HALF_UP
+    )
+
+
+def _alert_payload(
+    valuation: dict[str, Any],
+    listing: ListingObservation,
+    product: ProductTemplate,
+    reference: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    max_buy = valuation.get("max_buy_price_eur")
+    offer = negotiation_offer_eur(listing.price, max_buy)
+    offer_price = Decimal(offer) if offer is not None else None
+    reference_snapshot = valuation.get("reference_snapshot") or {}
+    breakdown = valuation.get("cost_breakdown") or {}
+    opportunity = {
+        "estimated_sale_price_eur": valuation.get("estimated_sale_price_eur"),
+        "contribution_eur": valuation.get("contribution_eur"),
+        "max_buy_price_eur": max_buy,
+        "minimum_contribution_eur": breakdown.get("minimum_contribution_eur"),
+        "contribution_at_max_buy_eur": _contribution_at(valuation, reference, max_buy),
+        "offer_price_eur": offer_price,
+        "contribution_at_offer_eur": _contribution_at(valuation, reference, offer_price),
+        "reference_id": valuation.get("reference_id"),
+        "destination_marketplace": valuation.get("destination_marketplace"),
+        "reference_condition": reference_snapshot.get("condition"),
+    }
+    listing_data = {
+        "listing_id": listing.listing_id,
+        "source": listing.source,
+        "title": listing.title,
+        "price": listing.price,
+        "shipping_cost": listing.shipping_cost,
+        "url": listing.url,
+        "condition": listing.condition,
+        "seller_rating": listing.seller_rating,
+        "first_seen_at": listing.first_seen_at,
+    }
+    product_data = {
+        "product_id": str(product.product_id),
+        "name": product.name,
+        "brand": product.brand,
+        "description": product.description,
+    }
+    return opportunity, listing_data, product_data
 
 
 def _check_duplicate_alert(db: Session, rule_id: str, obs_id: int) -> bool:
@@ -258,33 +329,15 @@ async def deliver_pending_alerts(
                 db.commit()
                 continue
             event.delivery_attempts += 1
+            reference = db.get(VerifiedValuationReference, valuation["reference_id"])
             try:
+                opportunity, listing_data, product_data = _alert_payload(
+                    valuation, listing, product, reference
+                )
                 result = await send_opportunity_alert(
-                    {
-                        "margin_abs": float(valuation["contribution_eur"]),
-                        "margin_pct": (
-                            float(listing.price) / float(valuation["estimated_sale_price_eur"]) - 1
-                        )
-                        * 100,
-                        "pmn": float(valuation["estimated_sale_price_eur"]),
-                        "max_buy_price_eur": float(valuation["max_buy_price_eur"]),
-                        "reference_id": valuation["reference_id"],
-                        "destination_marketplace": valuation.get("destination_marketplace"),
-                    },
-                    {
-                        "listing_id": listing.listing_id,
-                        "title": listing.title,
-                        "price": float(listing.price),
-                        "url": listing.url,
-                        "condition": listing.condition,
-                        "seller_rating": listing.seller_rating,
-                    },
-                    {
-                        "product_id": str(product.product_id),
-                        "name": product.name,
-                        "brand": product.brand,
-                        "description": product.description,
-                    },
+                    opportunity,
+                    listing_data,
+                    product_data,
                     screenshot_path=listing.screenshot_path,
                     alert_id=event.alert_id,
                 )
