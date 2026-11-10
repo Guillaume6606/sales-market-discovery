@@ -98,3 +98,55 @@ def test_valuation_page_distinguishes_products_with_the_same_name(
     app.run()
 
     assert requested_products[-1] == "22222222-bbbb"
+
+
+def test_listing_review_does_not_default_unknown_shipping_to_zero(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    patched: list[dict[str, Any]] = []
+
+    def fake_get(path: str, **_kwargs: Any) -> _Response:
+        if path == "/valuation/references":
+            return _Response([])
+        if path == "/listings/5/detail":
+            return _Response(
+                {
+                    "observation": {
+                        "obs_id": 5,
+                        "title": "Casque Sony WH-1000XM4",
+                        "price": 140.0,
+                        "condition": "Très bon état",
+                        "shipping_cost": None,
+                        "last_seen_at": "2026-11-10T19:33:20+00:00",
+                        "url": "https://www.leboncoin.fr/ad/audio/5",
+                    }
+                }
+            )
+        raise AssertionError(f"Unexpected API path: {path}")
+
+    def fake_patch(_url: str, **kwargs: Any) -> _Response:
+        patched.append(kwargs["json"])
+        return _Response({}, 201)
+
+    monkeypatch.setattr(
+        api, "fetch_products", lambda *_a, **_k: [{"product_id": "p-1", "name": "Sony"}]
+    )
+    monkeypatch.setattr(api, "api_get", fake_get)
+    monkeypatch.setattr("httpx.patch", fake_patch)
+    page = Path(__file__).parents[2] / "ui" / "pages" / "7_Valuation.py"
+
+    app = AppTest.from_file(page)
+    app.run()
+    next(widget for widget in app.number_input if widget.label == "Observation ID").set_value(5)
+    next(button for button in app.button if button.label == "Load listing for review").click()
+    app.run()
+    shipping = next(w for w in app.number_input if w.label == "Verified inbound shipping (€)")
+    assert shipping.value is None
+
+    app.text_input(key="listing_review_reviewer").input("operator")
+    next(w for w in app.text_area if w.label == "Review evidence notes").input("Photos checked")
+    next(button for button in app.button if button.label == "Save listing review").click()
+    app.run()
+
+    assert patched == []
+    assert any("shipping" in error.value.lower() for error in app.error)

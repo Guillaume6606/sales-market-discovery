@@ -218,7 +218,12 @@ if review_listing and review_listing["obs_id"] == int(obs_id):
         reviewed_shipping = st.number_input(
             "Verified inbound shipping (€)",
             min_value=0.0,
-            value=float(review_listing["shipping_cost"] or 0),
+            value=(
+                float(review_listing["shipping_cost"])
+                if review_listing["shipping_cost"] is not None
+                else None
+            ),
+            placeholder="Unknown: enter the verified amount",
             step=1.0,
             format="%.2f",
         )
@@ -237,7 +242,10 @@ if review_listing and review_listing["obs_id"] == int(obs_id):
         review_valid_hours = st.number_input(
             "Review validity (hours)", min_value=1, max_value=24, value=2
         )
-        if st.form_submit_button("Save listing review"):
+        submitted_review = st.form_submit_button("Save listing review")
+        if submitted_review and reviewed_shipping is None:
+            st.error("Enter the verified inbound shipping; enter 0 only if delivery is free.")
+        elif submitted_review:
             reviewed_at = datetime.now(UTC)
             review_response = httpx.patch(
                 f"{get_api_url()}/valuation/listings/{int(obs_id)}/review",
