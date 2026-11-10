@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -16,3 +16,5 @@ class ProductTemplateSnapshot:
     words_to_avoid: list[str]
     enable_llm_validation: bool
     is_active: bool
+    required_tokens: list[str] = field(default_factory=list)
+    excluded_tokens: list[str] = field(default_factory=list)

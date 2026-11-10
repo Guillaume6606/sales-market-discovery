@@ -1,5 +1,3 @@
-import re
-import unicodedata
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
 from types import SimpleNamespace
@@ -8,6 +6,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
+from ingestion.relevance import text_tokens
 from libs.common.condition import normalize_condition
 from libs.common.models import ListingObservation
 from libs.common.settings import settings
@@ -49,9 +48,7 @@ def _aware(value: datetime) -> datetime:
 
 
 def _tokens(value: str) -> set[str]:
-    normalized = unicodedata.normalize("NFKD", value.casefold())
-    without_accents = "".join(char for char in normalized if not unicodedata.combining(char))
-    return set(re.findall(r"[a-z0-9]+", without_accents))
+    return text_tokens(value)
 
 
 def _reference_tokens(values: list[str] | None) -> set[str]:

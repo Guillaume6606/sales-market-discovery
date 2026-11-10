@@ -1,16 +1,23 @@
 """Title filtering of the pilot lens catalog against hand-labelled marketplace titles.
 
 ``SHOULD_ACCEPT`` is the operator truth (exact reference, working, sold as a lens
-with its own caps/hood/box only), written before running the filter. ``KNOWN_ERRORS``
-records where the current price/brand/relevance/words-to-avoid stages disagree.
+with its own caps/hood/box only), written before running the filter. It is the
+DEVELOPMENT set: the catalog identity tokens were tuned on it. The untouched held-out
+set is ``pilot_heldout_titles.HELD_OUT``.
+
+``LEGACY_KNOWN_ERRORS`` records where the stages disagree for a product without
+``required_tokens``; ``IDENTITY_KNOWN_ERRORS`` with the catalog identity tokens.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from ingestion.connectors.ebay import _extract_brand_from_title
 from ingestion.filtering import (
     _matches_brand,
     _matches_price,
@@ -18,6 +25,7 @@ from ingestion.filtering import (
 )
 from ingestion.relevance import classify_listing_relevance
 from ingestion.schemas import ProductTemplateSnapshot
+from ingestion.valuation import _reference_reasons
 from libs.common.models import Listing
 from scripts.seed_catalogs import PILOT_LENSES, CatalogProduct
 
@@ -112,7 +120,7 @@ SHOULD_ACCEPT: dict[str, list[Case]] = {
 }
 
 _NO_APERTURE = "FN: aperture from the product name is required but the title omits it"
-KNOWN_ERRORS: dict[tuple[str, str], str] = {
+LEGACY_KNOWN_ERRORS: dict[tuple[str, str], str] = {
     (
         "Sony FE 24-70mm f/2.8 GM II",
         "Objectif Sony 24-70 GM II SEL2470GM2 comme neuf",
@@ -129,14 +137,6 @@ KNOWN_ERRORS: dict[tuple[str, str], str] = {
         "Sony FE 70-200mm f/4 G OSS",
         "Sony 70-200mm f/4 G OSS objectif pro état neuf",
     ): "FN: generic variant term 'pro' is read as another model variant",
-    (
-        "Canon RF 24-70mm f/2.8 L IS USM",
-        "Objectif Canon RF 24-70 f/2.8L IS USM",
-    ): "FN: 'f/2.8L' normalizes to 'f2', not 'f2p8'",
-    (
-        "Canon RF 24-105mm f/4 L IS USM",
-        "Canon RF 24-105 f/4L IS USM",
-    ): "FN: 'f/4L' is not normalized to the 'f4' aperture token",
     (
         "Nikon Z 24-120mm f/4 S",
         "Nikkor Z 24-120 f4 S comme neuf",
@@ -161,10 +161,12 @@ KNOWN_ERRORS: dict[tuple[str, str], str] = {
     ("Tamron 28-75mm f/2.8 Di III VXD G2 (Sony E)", "Tamron 28-75 G2 Sony FE"): _NO_APERTURE,
 }
 
+IDENTITY_KNOWN_ERRORS: dict[tuple[str, str], str] = {}
+
 CATALOG = {product.name: product for product in PILOT_LENSES}
 
 
-def _snapshot(product: CatalogProduct) -> ProductTemplateSnapshot:
+def _snapshot(product: CatalogProduct, identity: bool = False) -> ProductTemplateSnapshot:
     return ProductTemplateSnapshot(
         product_id="00000000-0000-0000-0000-000000000001",
         name=product.name,
@@ -179,6 +181,8 @@ def _snapshot(product: CatalogProduct) -> ProductTemplateSnapshot:
         words_to_avoid=list(product.words_to_avoid),
         enable_llm_validation=False,
         is_active=True,
+        required_tokens=list(product.required_tokens) if identity else [],
+        excluded_tokens=list(product.excluded_tokens) if identity else [],
     )
 
 
@@ -200,14 +204,54 @@ def _listing(title: str, price: float) -> Listing:
     )
 
 
-def current_filter_accepts(product: CatalogProduct, title: str, price: float) -> bool:
-    snapshot = _snapshot(product)
+def filter_accepts(
+    product: CatalogProduct,
+    title: str,
+    price: float,
+    source: str = "leboncoin",
+    identity: bool = True,
+) -> bool:
+    """Price, brand, relevance and words-to-avoid stages of ``filter_listings_multi_stage``."""
+    snapshot = _snapshot(product, identity)
     listing = _listing(title, price)
+    if source == "ebay":
+        listing = listing.model_copy(
+            update={"source": "ebay", "brand": _extract_brand_from_title(title)}
+        )
     return (
         _matches_price(snapshot, listing)
         and _matches_brand(snapshot, listing)
-        and classify_listing_relevance(snapshot.name, snapshot.search_query, title).is_relevant
+        and classify_listing_relevance(
+            snapshot.name,
+            snapshot.search_query,
+            title,
+            snapshot.required_tokens,
+            snapshot.excluded_tokens,
+        ).is_relevant
         and _matches_words_to_avoid(snapshot, listing)
+    )
+
+
+def valuation_accepts(product: CatalogProduct, title: str) -> bool:
+    """Identity checks of the valuation gate, with the catalog's suggested reference tokens."""
+    reference = SimpleNamespace(
+        required_tokens=list(product.reference_tokens),
+        excluded_tokens=list(product.reference_excluded_tokens),
+        condition=None,
+        currency="EUR",
+        evidence_url=None,
+        comparable_sold_at=None,
+        reviewed_at=None,
+        reviewed_by=None,
+        expires_at=None,
+        reviewed_price_eur=None,
+    )
+    observation = SimpleNamespace(title=title, condition=None)
+    reasons = _reference_reasons(cast(Any, reference), cast(Any, observation), datetime.now(UTC))
+    return not any(
+        reason.startswith("relevance_")
+        or reason in {"required_tokens_missing", "excluded_tokens_present"}
+        for reason in reasons
     )
 
 
@@ -218,31 +262,57 @@ CASES = [
 ]
 
 
+def _error_counts(identity: bool) -> tuple[tuple[int, int], tuple[int, int]]:
+    positives = [case for case in CASES if case[3]]
+    negatives = [case for case in CASES if not case[3]]
+    false_negatives = [
+        case
+        for case in positives
+        if not filter_accepts(CATALOG[case[0]], *case[1:3], identity=identity)
+    ]
+    false_positives = [
+        case
+        for case in negatives
+        if filter_accepts(CATALOG[case[0]], *case[1:3], identity=identity)
+    ]
+    return (len(false_negatives), len(positives)), (len(false_positives), len(negatives))
+
+
 def test_labelled_references_exist_in_catalog() -> None:
     assert len(SHOULD_ACCEPT) >= 8
     assert set(SHOULD_ACCEPT) <= set(CATALOG)
 
 
 @pytest.mark.parametrize(("name", "title", "price", "expected"), CASES)
-def test_current_filter_against_truth(name: str, title: str, price: float, expected: bool) -> None:
-    accepted = current_filter_accepts(CATALOG[name], title, price)
-    if (name, title) in KNOWN_ERRORS:
-        assert accepted is not expected, f"known error fixed: {KNOWN_ERRORS[(name, title)]}"
+def test_legacy_filter_without_identity_tokens_is_unchanged(
+    name: str, title: str, price: float, expected: bool
+) -> None:
+    """Products without ``required_tokens`` keep the pre-0015 decisions on the dev set.
+
+    The only differences are the two 'f/2.8L' / 'f/4L' tokenization fixes.
+    """
+    accepted = filter_accepts(CATALOG[name], title, price, identity=False)
+    if (name, title) in LEGACY_KNOWN_ERRORS:
+        assert accepted is not expected, LEGACY_KNOWN_ERRORS[(name, title)]
     else:
         assert accepted is expected
 
 
-def test_error_rates_with_denominators() -> None:
-    positives = [case for case in CASES if case[3]]
-    negatives = [case for case in CASES if not case[3]]
-    false_negatives = [
-        case for case in positives if not current_filter_accepts(CATALOG[case[0]], *case[1:3])
-    ]
-    false_positives = [
-        case for case in negatives if current_filter_accepts(CATALOG[case[0]], *case[1:3])
-    ]
-    assert (len(false_negatives), len(positives)) == (11, 24)
-    assert (len(false_positives), len(negatives)) == (2, 41)
+def test_legacy_error_rates_with_denominators() -> None:
+    assert _error_counts(identity=False) == ((9, 24), (2, 41))
+
+
+@pytest.mark.parametrize(("name", "title", "price", "expected"), CASES)
+def test_identity_filter_against_truth(name: str, title: str, price: float, expected: bool) -> None:
+    accepted = filter_accepts(CATALOG[name], title, price)
+    if (name, title) in IDENTITY_KNOWN_ERRORS:
+        assert accepted is not expected, IDENTITY_KNOWN_ERRORS[(name, title)]
+    else:
+        assert accepted is expected
+
+
+def test_identity_error_rates_with_denominators() -> None:
+    assert _error_counts(identity=True) == ((0, 24), (0, 41))
 
 
 def test_single_letter_mount_token_in_search_query_is_not_required() -> None:
@@ -259,23 +329,22 @@ def test_words_to_avoid_substring_ignores_negation() -> None:
     assert _matches_words_to_avoid(snapshot, clean) is False
 
 
-def test_ebay_title_brand_extraction_rejects_third_party_lenses_for_sony() -> None:
-    from ingestion.connectors.ebay import _extract_brand_from_title
-
+def test_ebay_title_brand_for_sony_mount_does_not_reject_third_party_lens() -> None:
     sigma = _snapshot(CATALOG["Sigma 24-70mm f/2.8 DG DN Art (Sony E)"])
     title = "Sigma 24-70mm f/2.8 DG DN Art Sony E"
     listing = _listing(title, 750).model_copy(
         update={"source": "ebay", "brand": _extract_brand_from_title(title)}
     )
     assert listing.brand == "Sony"
+    assert _matches_brand(sigma, listing) is True
+
+
+def test_provider_brand_absent_from_title_still_rejects() -> None:
+    sigma = _snapshot(CATALOG["Sigma 24-70mm f/2.8 DG DN Art (Sony E)"])
+    listing = _listing("Sony FE 24-70mm f/2.8 GM", 900).model_copy(update={"brand": "Sony"})
     assert _matches_brand(sigma, listing) is False
-
-
-def test_valuation_tokens_keep_focal_unit_glued() -> None:
-    from ingestion.valuation import _tokens
-
-    assert "70" not in _tokens("Sony FE 24-70mm f/2.8 GM II")
-    assert "70" in _tokens("Sony FE 24-70 mm f/2.8 GM II")
+    tamron_titled = _listing("Objectif 24-70 Sony E", 900).model_copy(update={"brand": "Tamron"})
+    assert _matches_brand(sigma, tamron_titled) is False
 
 
 def test_catalog_shape() -> None:
@@ -289,12 +358,30 @@ def test_catalog_shape() -> None:
         assert not any(word.casefold() in lowered for word in product.words_to_avoid), product.name
 
 
-def test_every_catalog_name_is_accepted_by_its_own_filter() -> None:
+@pytest.mark.parametrize("identity", [False, True])
+def test_every_catalog_name_is_accepted_by_its_own_filter(identity: bool) -> None:
     rejected = [
         product.name
         for product in PILOT_LENSES
-        if not current_filter_accepts(
-            product, product.name, (product.price_min + product.price_max) / 2
+        if not filter_accepts(
+            product, product.name, (product.price_min + product.price_max) / 2, identity=identity
         )
     ]
     assert rejected == []
+
+
+def test_every_catalog_product_has_identity_tokens() -> None:
+    for product in PILOT_LENSES:
+        assert product.required_tokens, product.name
+        assert not set(product.required_tokens) & set(product.excluded_tokens), product.name
+
+
+def test_neighbouring_catalog_names_reject_each_other() -> None:
+    accepted_pairs = [
+        (product.name, other.name)
+        for product in PILOT_LENSES
+        for other in PILOT_LENSES
+        if other is not product
+        and filter_accepts(product, other.name, (product.price_min + product.price_max) / 2)
+    ]
+    assert accepted_pairs == []

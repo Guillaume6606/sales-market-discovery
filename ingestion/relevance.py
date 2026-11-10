@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -78,6 +79,21 @@ _VARIANT_TERMS = {
     "ti",
     "ultra",
 }
+TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
+    "nikkor": ("nikon",),
+    "fuji": ("fujifilm",),
+    "fujinon": ("fujifilm",),
+    "gm2": ("gm", "ii"),
+    "gmii": ("gm", "ii"),
+    "mk2": ("mark", "ii"),
+    "mkii": ("mark", "ii"),
+    "markii": ("mark", "ii"),
+}
+_BARE_APERTURE = re.compile(r"(?<![\w.,/])(\d{1,2})[.,](\d)(?![\d.,]|\s*x\b)")
+_MOUNT_NAME = re.compile(r"\b([a-z]{1,2}) mounts?\b")
+_LENS_ACCESSORY_START = re.compile(
+    r"^(?:pare soleil|collier|bague|filtre|bouchons?|hood|lens hood|tripod collar|caps?)\b"
+)
 _FAMILY_COMPETITORS = {
     "ps5": {"ps4", "xbox", "switch"},
     "xbox": {"ps4", "ps5", "switch"},
@@ -90,8 +106,8 @@ def _normalize(value: str) -> str:
     ascii_text = "".join(
         character for character in decomposed if not unicodedata.combining(character)
     )
-    ascii_text = re.sub(r"\bf\s*/?\s*(\d+)[.,](\d+)\b", r" f\1p\2 ", ascii_text)
-    ascii_text = re.sub(r"\bf\s*/?\s*(\d+)\b", r" f\1 ", ascii_text)
+    ascii_text = re.sub(r"\bf\s*/?\s*(\d+)[.,](\d+)(?!\d)", r" f\1p\2 ", ascii_text)
+    ascii_text = re.sub(r"\bf\s*/?\s*(\d+)(?!\d|p\d|[.,]\d)", r" f\1 ", ascii_text)
     normalized = re.sub(r"[^a-z0-9+]+", " ", ascii_text)
     normalized = re.sub(r"\bwh(?=\d)", "wh ", normalized)
     normalized = re.sub(r"(\d)(mm|gb|tb)\b", r"\1 \2", normalized)
@@ -102,6 +118,15 @@ def _normalize(value: str) -> str:
 
 def _tokens(value: str) -> set[str]:
     return set(value.split())
+
+
+def text_tokens(value: str) -> set[str]:
+    """Tokens of a raw text under the normalization shared by filtering and valuation."""
+    return _tokens(_normalize(value)) - {"+"}
+
+
+def _with_aliases(tokens: set[str]) -> set[str]:
+    return tokens.union(*(TOKEN_ALIASES.get(token, ()) for token in tokens))
 
 
 def _identity_tokens(search_query: str) -> set[str]:
@@ -161,16 +186,69 @@ def _decision(classification: RelevanceClass, reason: str) -> RelevanceDecision:
     )
 
 
+def _classify_explicit_identity(
+    listing_title: str,
+    required_tokens: Sequence[str],
+    excluded_tokens: Sequence[str],
+) -> RelevanceDecision:
+    listing = _normalize(listing_title)
+    if not listing:
+        return _decision(RelevanceClass.UNCERTAIN, "missing listing title")
+    if any(re.search(pattern, listing) for pattern in _BROKEN_PATTERNS):
+        return _decision(RelevanceClass.PARTS_BROKEN, "title indicates a broken or parts item")
+    if _EMPTY_PACKAGING.search(listing):
+        return _decision(RelevanceClass.ACCESSORY, "title offers empty product packaging")
+
+    listing_tokens = _with_aliases(_tokens(listing)) | {
+        f"f{whole}p{fraction}"
+        for whole, fraction in _BARE_APERTURE.findall(listing_title.casefold())
+    }
+    required = set().union(*(text_tokens(token) for token in required_tokens))
+    excluded = set().union(*(text_tokens(token) for token in excluded_tokens))
+    if present := excluded & listing_tokens:
+        return _decision(
+            RelevanceClass.WRONG_VARIANT,
+            f"title contains an excluded token ({', '.join(sorted(present))})",
+        )
+    if missing := required - listing_tokens:
+        return _decision(
+            RelevanceClass.UNCERTAIN,
+            f"title omits a required token ({', '.join(sorted(missing))})",
+        )
+    if _BUNDLE_MARKERS.search(listing):
+        return _decision(RelevanceClass.UNCERTAIN, "title bundles the target with other items")
+    accessory_text = _MOUNT_NAME.sub(r"\1 monture", listing)
+    accessory_kinds = _accessory_kinds(" ".join(sorted(required)), accessory_text)
+    if _LENS_ACCESSORY_START.match(accessory_text) or (
+        accessory_kinds
+        and (
+            _starts_as_accessory(accessory_text)
+            or bool(_ONLY_MARKERS.search(accessory_text))
+            or bool(_COMPATIBILITY_MARKERS.search(accessory_text))
+        )
+    ):
+        return _decision(RelevanceClass.ACCESSORY, "accessory-only title")
+    return _decision(RelevanceClass.EXACT_DEVICE, "title has every required identity token")
+
+
 def classify_listing_relevance(
     target_title: str,
     search_query: str,
     listing_title: str,
+    required_tokens: Sequence[str] = (),
+    excluded_tokens: Sequence[str] = (),
 ) -> RelevanceDecision:
     """Classify whether a listing title contains the requested working product.
 
     This deliberately favors precision: a title that does not establish the exact
     requested model is ``uncertain`` and is not accepted automatically.
+
+    Non-empty ``required_tokens`` replace the identity inferred from the name and query:
+    every required token must be a whole title token (after ``TOKEN_ALIASES``), any
+    excluded token rejects, and bundles are not accepted.
     """
+    if required_tokens:
+        return _classify_explicit_identity(listing_title, required_tokens, excluded_tokens)
     target = _normalize(f"{target_title} {search_query}")
     query = _normalize(search_query or target_title)
     listing = _normalize(listing_title)

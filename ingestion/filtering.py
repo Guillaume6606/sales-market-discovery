@@ -2,17 +2,20 @@
 Multi-stage filtering pipeline for listings.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
 
-from ingestion.relevance import RelevanceClass, classify_listing_relevance
+from ingestion.relevance import RelevanceClass, classify_listing_relevance, text_tokens
 from ingestion.schemas import ProductTemplateSnapshot
 from libs.common.llm_service import assess_listing_relevance
 from libs.common.models import Listing, ProductTemplate
 from libs.common.screenshot_service import capture_listing_screenshot
 from libs.common.settings import settings
+
+_NEGATIONS = frozenset({"sans", "ni", "aucun", "aucune", "pas", "without", "no"})
 
 
 @dataclass
@@ -55,8 +58,16 @@ def _matches_brand(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
 
     # Provider brand fields are stronger evidence than the search query. An
     # explicit mismatch must not be bypassed because a provider received the brand.
+    # A brand that only restates one of two brands named in the title (a Sigma lens
+    # "for Sony E") is not such evidence; relevance decides the identity.
     if listing.brand:
-        return listing.brand.casefold() == snapshot.brand.casefold()
+        if listing.brand.casefold() == snapshot.brand.casefold():
+            return True
+        title_tokens = text_tokens(listing.title or "")
+        return (
+            text_tokens(snapshot.brand) <= title_tokens
+            and text_tokens(listing.brand) <= title_tokens
+        )
 
     # Check title
     if listing.title and brand_lower in listing.title.lower():
@@ -65,6 +76,21 @@ def _matches_brand(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
     # Missing provider brand is inconclusive; exact-product relevance handles
     # title identity in the following stage.
     return True
+
+
+def _has_affirmed_phrase(text: str, phrase: str) -> bool:
+    """Substring match unless directly negated ('sans X', 'ni X', 'pas de X')."""
+    start = text.find(phrase)
+    while start != -1:
+        preceding = re.findall(r"\w+", text[:start])[-2:]
+        negated = bool(preceding) and (
+            preceding[-1] in _NEGATIONS
+            or (preceding[-1] == "de" and len(preceding) == 2 and preceding[0] in _NEGATIONS)
+        )
+        if not negated:
+            return True
+        start = text.find(phrase, start + 1)
+    return False
 
 
 def _matches_words_to_avoid(snapshot: ProductTemplateSnapshot, listing: Listing) -> bool:
@@ -85,9 +111,13 @@ def _matches_words_to_avoid(snapshot: ProductTemplateSnapshot, listing: Listing)
         text_to_check += listing.title.lower() + " "
     # Note: Listing model doesn't have description field, but we check title
 
-    # Check each word/phrase
+    explicit_identity = bool(getattr(snapshot, "required_tokens", None))
     for word in words_to_avoid:
-        if word.lower() in text_to_check:
+        if explicit_identity:
+            matched = _has_affirmed_phrase(text_to_check, word.lower())
+        else:
+            matched = word.lower() in text_to_check
+        if matched:
             logger.debug(
                 f"Listing '{listing.title[:50]}...' rejected: contains word to avoid '{word}'"
             )
@@ -148,6 +178,8 @@ async def filter_listings_multi_stage(
             snapshot.name,
             snapshot.search_query,
             listing.title or "",
+            snapshot.required_tokens,
+            snapshot.excluded_tokens,
         )
         classification = decision.classification.value
         stats.relevance_counts[classification] = stats.relevance_counts.get(classification, 0) + 1

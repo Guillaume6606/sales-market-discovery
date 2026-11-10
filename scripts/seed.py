@@ -6,10 +6,14 @@ Usage:
     uv run python scripts/seed.py --products-only     # skip alert rules
     uv run python scripts/seed.py --rules-only        # skip products
     uv run python scripts/seed.py --catalog pilot-lenses [--activate] [--scan-interval 60]
+        [--identity-via-db]
 
 Safe to re-run: existing categories/products/rules (matched by name) are left untouched.
 A named catalog only seeds its products, inactive unless ``--activate``. On re-run,
-``--activate`` and ``--scan-interval`` update existing catalog products; nothing else does.
+``--activate`` and ``--scan-interval`` update existing catalog products, and empty
+identity tokens (``required_tokens``/``excluded_tokens``) are filled; nothing else is.
+When the API does not expose identity tokens, ``--identity-via-db`` fills them directly
+in the database (needs DATABASE_URL); otherwise a warning is printed.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import httpx
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.seed_catalogs import CATALOG_PROVIDERS, CATALOGS  # noqa: E402
+from scripts.seed_catalogs import CATALOG_PROVIDERS, CATALOGS, CatalogProduct  # noqa: E402
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 DEFAULT_SCAN_INTERVAL_MINUTES = 60
@@ -337,13 +341,47 @@ def seed_products(client: httpx.Client) -> None:
         print(f"  product created: {product['name']}")
 
 
+def _identity(product: CatalogProduct) -> dict[str, list[str]]:
+    return {
+        "required_tokens": list(product.required_tokens),
+        "excluded_tokens": list(product.excluded_tokens),
+    }
+
+
+def write_identity_tokens_db(products: list[CatalogProduct]) -> None:
+    """Fill empty identity tokens directly in the database, by product name."""
+    from sqlalchemy import func, update
+
+    from libs.common.db import SessionLocal
+    from libs.common.models import ProductTemplate
+
+    with SessionLocal() as db:
+        for product in products:
+            db.execute(
+                update(ProductTemplate)
+                .where(
+                    ProductTemplate.name == product.name,
+                    func.coalesce(func.cardinality(ProductTemplate.required_tokens), 0) == 0,
+                )
+                .values(**_identity(product))
+            )
+            print(f"  identity tokens written in db if empty: {product.name}")
+        db.commit()
+
+
 def seed_catalog(
-    client: httpx.Client, catalog: str, *, activate: bool, scan_interval: int | None
+    client: httpx.Client,
+    catalog: str,
+    *,
+    activate: bool,
+    scan_interval: int | None,
+    identity_via_db: bool = False,
 ) -> None:
     print(f"Seeding catalog {catalog}...")
     products = CATALOGS[catalog]
     categories = _ensure_categories(client, {p.category for p in products})
     existing = {p["name"]: p for p in client.get("/products").json()["products"]}
+    identity_not_exposed: list[CatalogProduct] = []
     for product in products:
         current = existing.get(product.name)
         if current is None:
@@ -360,8 +398,12 @@ def seed_catalog(
                 "ingestion_interval_minutes": scan_interval or DEFAULT_SCAN_INTERVAL_MINUTES,
                 "enable_llm_validation": False,
                 "is_active": activate,
+                **_identity(product),
             }
-            client.post("/products", json=payload).raise_for_status()
+            response = client.post("/products", json=payload)
+            response.raise_for_status()
+            if "required_tokens" not in response.json():
+                identity_not_exposed.append(product)
             print(f"  product created ({'active' if activate else 'inactive'}): {product.name}")
             continue
         updates: dict[str, Any] = {}
@@ -369,11 +411,24 @@ def seed_catalog(
             updates["is_active"] = True
         if scan_interval is not None and current.get("ingestion_interval_minutes") != scan_interval:
             updates["ingestion_interval_minutes"] = scan_interval
+        if "required_tokens" not in current:
+            identity_not_exposed.append(product)
+        elif not current["required_tokens"]:
+            updates.update(_identity(product))
         if not updates:
             print(f"  product exists: {product.name}")
             continue
         client.put(f"/products/{current['product_id']}", json=updates).raise_for_status()
         print(f"  product updated {sorted(updates)}: {product.name}")
+    if not identity_not_exposed:
+        return
+    if identity_via_db:
+        write_identity_tokens_db(identity_not_exposed)
+    else:
+        print(
+            f"  WARNING: the API does not expose identity tokens for {len(identity_not_exposed)} "
+            "products; rerun with --identity-via-db to write them in the database."
+        )
 
 
 def seed_alert_rules(client: httpx.Client) -> None:
@@ -410,9 +465,16 @@ def main() -> int:
         type=_scan_interval,
         help=f"catalog scan interval in minutes (default {DEFAULT_SCAN_INTERVAL_MINUTES})",
     )
+    parser.add_argument(
+        "--identity-via-db",
+        action="store_true",
+        help="write empty catalog identity tokens directly in the database (DATABASE_URL)",
+    )
     args = parser.parse_args()
-    if not args.catalog and (args.activate or args.scan_interval is not None):
-        parser.error("--activate and --scan-interval require --catalog")
+    if not args.catalog and (
+        args.activate or args.scan_interval is not None or args.identity_via_db
+    ):
+        parser.error("--activate, --scan-interval and --identity-via-db require --catalog")
 
     with _client() as client:
         try:
@@ -422,7 +484,11 @@ def main() -> int:
             return 1
         if args.catalog:
             seed_catalog(
-                client, args.catalog, activate=args.activate, scan_interval=args.scan_interval
+                client,
+                args.catalog,
+                activate=args.activate,
+                scan_interval=args.scan_interval,
+                identity_via_db=args.identity_via_db,
             )
             print("Done.")
             return 0
