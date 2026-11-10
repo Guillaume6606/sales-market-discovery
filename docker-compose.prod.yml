@@ -45,6 +45,13 @@ services:
         max-file: "3"
 
   redis:
+    # REDIS_PASSWORD unset: same command as the image default (no auth).
+    command:
+      - sh
+      - -c
+      - exec docker-entrypoint.sh redis-server $${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
     restart: unless-stopped
     deploy:
       resources:
@@ -96,6 +103,36 @@ services:
       resources:
         limits:
           memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Home ingestion worker access (docs/home-worker.md). Started only with
+  # COMPOSE_PROFILES=tailnet; publishes db/redis on the Tailscale IP, never on 0.0.0.0.
+  tailnet-gateway:
+    image: haproxy:3.0-alpine
+    profiles: ["tailnet"]
+    command:
+      - sh
+      - -c
+      - >-
+        test -n "$$REDIS_PASSWORD" || { echo "REDIS_PASSWORD is required" >&2; exit 1; };
+        exec haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+    ports:
+      - "${TAILNET_BIND_IP:-127.0.0.1}:5432:5432"
+      - "${TAILNET_BIND_IP:-127.0.0.1}:6379:6379"
+    volumes:
+      - ./infra/tailnet/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on: [db, redis]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64M
     logging:
       driver: json-file
       options:

@@ -1,0 +1,40 @@
+# Home ingestion node: only the remote ARQ worker, on a residential connection.
+# Postgres and Redis stay on the VPS and are reached over Tailscale (docs/home-worker.md).
+# Standalone file, not merged with docker-compose.yml:
+#   make home-up | home-logs | home-down | home-probe
+name: market-discovery-home
+
+services:
+  ingestion:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.ingestion
+    env_file: .env.home
+    environment:
+      WORKER_ROLE: remote
+      APP_ENV: production
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    security_opt:
+      - seccomp:unconfined
+      - no-new-privileges:true
+    init: true
+    ipc: host
+    shm_size: "1gb"
+    user: "pwuser"
+    volumes:
+      - pwuser-data:/tmp/pwuser
+    tmpfs:
+      - /home/pwuser/.cache
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pwuser-data:
