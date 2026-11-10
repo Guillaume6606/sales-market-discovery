@@ -326,6 +326,8 @@ class ProductTemplateCreate(BaseModel):
     price_max: float | None = None
     providers: list[str] | None = None
     words_to_avoid: list[str] | None = None
+    required_tokens: list[str] | None = None
+    excluded_tokens: list[str] | None = None
     ingestion_interval_minutes: int = Field(default=60, ge=5, le=1440)
     enable_llm_validation: bool = False
     is_active: bool = True
@@ -341,6 +343,8 @@ class ProductTemplateUpdate(BaseModel):
     price_max: float | None = None
     providers: list[str] | None = None
     words_to_avoid: list[str] | None = None
+    required_tokens: list[str] | None = None
+    excluded_tokens: list[str] | None = None
     ingestion_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     enable_llm_validation: bool | None = None
     is_active: bool | None = None
@@ -369,6 +373,8 @@ def _serialize_product_template(product: ProductTemplate) -> dict[str, Any]:
         "price_max": _decimal_to_float(product.price_max),
         "providers": list(product.providers or []),
         "words_to_avoid": list(product.words_to_avoid or []),
+        "required_tokens": list(product.required_tokens or []),
+        "excluded_tokens": list(product.excluded_tokens or []),
         "ingestion_interval_minutes": product.ingestion_interval_minutes,
         "enable_llm_validation": product.enable_llm_validation,
         "is_active": product.is_active,
@@ -777,6 +783,8 @@ def create_product(payload: ProductTemplateCreate, db: Session = Depends(get_db)
         price_max=payload.price_max,
         providers=providers,
         words_to_avoid=payload.words_to_avoid or [],
+        required_tokens=payload.required_tokens or [],
+        excluded_tokens=payload.excluded_tokens or [],
         ingestion_interval_minutes=payload.ingestion_interval_minutes,
         enable_llm_validation=payload.enable_llm_validation,
         is_active=payload.is_active,
@@ -854,6 +862,10 @@ def update_product(
 
     if payload.words_to_avoid is not None:
         product.words_to_avoid = payload.words_to_avoid
+    if payload.required_tokens is not None:
+        product.required_tokens = payload.required_tokens
+    if payload.excluded_tokens is not None:
+        product.excluded_tokens = payload.excluded_tokens
 
     if payload.ingestion_interval_minutes is not None:
         product.ingestion_interval_minutes = payload.ingestion_interval_minutes

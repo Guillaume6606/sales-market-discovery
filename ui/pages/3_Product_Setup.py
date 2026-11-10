@@ -189,6 +189,19 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
             key=f"pf_words_{form_key}",
             help="Listings with these words in the title will be rejected",
         )
+        pf_required = st.text_input(
+            "Required identity tokens (comma-separated)",
+            value=", ".join((selected_product or {}).get("required_tokens", [])),
+            key=f"pf_required_{form_key}",
+            help="If set, replaces the identity inferred from name and query; "
+            "every token must appear as a whole word in the title",
+        )
+        pf_excluded = st.text_input(
+            "Excluded identity tokens (comma-separated)",
+            value=", ".join((selected_product or {}).get("excluded_tokens", [])),
+            key=f"pf_excluded_{form_key}",
+            help="Whole-word tokens that reject a title",
+        )
 
     # ---------------------------------------------------------------------------
     # Advanced Settings expander
@@ -270,6 +283,8 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
                         "price_max": pf_price_max_val if pf_price_max_val > 0 else None,
                         "providers": pf_providers_val,
                         "words_to_avoid": words_list,
+                        "required_tokens": [t.strip() for t in pf_required.split(",") if t.strip()],
+                        "excluded_tokens": [t.strip() for t in pf_excluded.split(",") if t.strip()],
                         "enable_llm_validation": pf_llm_val,
                         "ingestion_interval_minutes": pf_interval,
                         "is_active": pf_active_val,

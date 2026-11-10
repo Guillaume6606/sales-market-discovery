@@ -45,9 +45,11 @@ uv run pytest tests/unit/ -v                # run unit tests
 
 **Shared library** (`libs/common/`): ORM models, DB connection, settings (Pydantic), scraping session with anti-bot bypass (Playwright stealth patches, CloudScraper, UA rotation).
 
-**Marketplace connectors** (`ingestion/connectors/`): Each connector returns standardized `Listing` objects. eBay uses Finding API; LeBonCoin has both scraping and JSON API approaches; Vinted uses scraping.
+**Marketplace connectors** (`ingestion/connectors/`): Each connector returns standardized `Listing` objects. eBay uses the Browse API (OAuth2 client credentials); LeBonCoin has both scraping and JSON API approaches; Vinted uses an API-first connector with HTML fallback; Cash Converters uses Algolia plus product pages. No provider exposes sold prices: sold feeds return `unsupported`, and eBay.fr sold comparables are opt-in proposals (`docs/sold-comps.md`).
 
-**Scheduled ingestion** (ARQ cron in `ingestion/worker.py`): eBay 2:00 AM, LeBonCoin 3:00 AM, Vinted 4:00 AM.
+**Scheduled ingestion** (ARQ cron in `ingestion/worker.py`): each provider is scanned every 5 minutes on staggered slots and enqueues products whose `ingestion_interval_minutes` elapsed. Providers listed in `REMOTE_PROVIDERS` run on an optional home worker (`docs/home-worker.md`).
+
+**Alert gate**: an alert requires a verified valuation reference, fresh listing details, France delivery evidence and available `WORKING_CAPITAL_EUR` (`ingestion/valuation.py`, `docs/profit-workstreams-operations.md`). PMN and composite scores are descriptive only.
 
 ## Code Style
 
@@ -76,7 +78,7 @@ Full roadmap, KPIs, and milestone definitions in `docs/superpowers/specs/2026-03
 3. **Get Smarter** (W9-14) — Product discovery engine, trend detection, advanced LLM, seller intelligence
 4. **Scale Up** (W15-20) — Portfolio management, new marketplaces, auto-pricing, performance analytics
 
-**Current focus:** Milestone 2. See `docs/milestone-1-todo.md` (completed) and future `docs/milestone-2-todo.md` for task breakdowns.
+**Current focus:** revenue pilot — first 5 recorded trades in one category (pro photo lenses, `scripts/seed.py --catalog pilot-lenses`), bought on LeBonCoin and resold on eBay France. The milestone documents and `TODO.md` predate September 2026; trust the code and `docs/profit-workstreams-operations.md`.
 
 ## Planning Rule
 

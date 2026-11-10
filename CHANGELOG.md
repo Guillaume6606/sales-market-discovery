@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Revenue pilot
+- Fixed the operator journey end to end: Product Setup loads the selected product, manual triggers honor the chosen providers and report queue failures (503), alert events on Alerts and Home identify the listing and delivery status, Listing Explorer counts and sorts with score filters, Discovery tolerates missing trends, selectors work by id, feedback `updated_at` is stamped, and listing reviews no longer assume free shipping.
+- Added an optional home ingestion worker (`WORKER_ROLE`, `REMOTE_PROVIDERS`, `arq:queue:remote`, `/health/workers`, `docker-compose.home.yml`, tailnet-only db/redis gateway) to ingest LeBonCoin from a residential connection; defaults unchanged. See `docs/home-worker.md`.
+- Added opt-in eBay.fr sold-comparable proposals (`SOLD_COMPS_ENABLED=false`, migration `0014_sold_comp_proposals`): weekly bounded fetch, identity-filtered median and quartiles per condition, operator approval creates a verified valuation reference; unapproved proposals never authorize alerts. The parser is not yet validated on live eBay HTML. See `docs/sold-comps.md`.
+- Added a pilot catalog of 37 exact lens references, loaded inactive with `scripts/seed.py --catalog pilot-lenses`, and decision-ready French Telegram alerts with estimated maximum buy price, contribution at ask/max/offer and a deterministic negotiation draft.
+- Shared title and valuation token normalization ("24-70mm", "f/2.8L") and explicit product identity tokens (`required_tokens`, `excluded_tokens`, migration `0015_product_identity_tokens`), exposed in the product API and Product Setup. Held-out synthetic titles: false negatives 18/33 → 2/33, false positives 1/52 → 1/52.
+
 ### Production reliability
 - Build and run frozen, non-editable dependencies; retain writable worker reports and use ARQ's built-in heartbeat. Deployment now backs up the database before migration and rejects unsafe quick deployments.
 - Distinguish successful ingestion, empty results and failures; bound LeBonCoin pagination and persist source-denial cooldowns across workers, including detail requests.

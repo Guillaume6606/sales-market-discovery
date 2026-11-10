@@ -140,6 +140,8 @@ def test_update_preserves_unchanged_settings_of_selected_product(
                 "price_max": None,
                 "providers": ["vinted"],
                 "words_to_avoid": ["boite"],
+                "required_tokens": [],
+                "excluded_tokens": [],
                 "enable_llm_validation": False,
                 "ingestion_interval_minutes": 120,
                 "is_active": False,
