@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     scoring_sell_shipping_default: float = 7.0
     scoring_vinted_buyer_fee_pct: float = 0.05
 
+    # Worker topology: comma-separated providers ingested by the remote (home) worker.
+    worker_role: Literal["primary", "remote"] = "primary"
+    remote_providers: str = ""
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

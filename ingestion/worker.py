@@ -1,10 +1,14 @@
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from arq import cron
 from arq.connections import RedisSettings
+from arq.cron import CronJob
 from sqlalchemy import and_, update
 from sqlalchemy.orm.session import make_transient
 
+from ingestion import topology
 from ingestion.alert_engine import deliver_pending_alerts, trigger_alerts
 from ingestion.composite_scoring import run_scoring_batch
 from ingestion.computation import (
@@ -74,6 +78,24 @@ def _active_product_ids(provider: str | None = None) -> list[str]:
         return ids
 
 
+async def _forward_to_remote(ctx: dict, function: str, *args: Any, **kwargs: Any) -> dict:
+    queue = topology.QUEUES["remote"]
+    pool = ctx.get("redis") or ctx.get("pool")
+    job = await pool.enqueue_job(function, *args, _queue_name=queue, **kwargs)
+    return {"status": "forwarded", "queue": queue, "job_id": job.job_id if job else None}
+
+
+async def _route_elsewhere(
+    ctx: dict, provider: str, function: str, *args: Any, **kwargs: Any
+) -> dict | None:
+    """Return a result when this worker must not ingest ``provider`` itself."""
+    if topology.provider_role(provider) == settings.worker_role:
+        return None
+    if settings.worker_role == "remote":
+        return {"status": "skipped", "reason": "provider_not_served", "provider": provider}
+    return await _forward_to_remote(ctx, function, *args, **kwargs)
+
+
 async def scheduled_source_ingestion(ctx: dict, source: str) -> dict:
     pool = ctx.get("redis") or ctx.get("pool")
     if pool is None:
@@ -90,6 +112,9 @@ async def scheduled_source_ingestion(ctx: dict, source: str) -> dict:
 
 
 async def ingest_scheduled_product(ctx: dict, product_id: str, source: str) -> dict:
+    routed = await _route_elsewhere(ctx, source, "ingest_scheduled_product", product_id, source)
+    if routed is not None:
+        return routed
     return await run_full_ingestion(product_id, {f"{source}_listings": 20}, sources=[source])
 
 
@@ -111,6 +136,9 @@ async def scheduled_vinted_ingestion(ctx: dict) -> dict:
 
 async def trigger_ebay_sold_ingestion(ctx, product_id: str, limit: int = 50):
     """Trigger eBay sold ingestion for a specific product template."""
+    routed = await _route_elsewhere(ctx, "ebay", "trigger_ebay_sold_ingestion", product_id, limit)
+    if routed is not None:
+        return routed
     logger.info(f"Triggering eBay sold items ingestion for product {product_id}")
     result = await ingest_ebay_sold(product_id, limit)
     logger.info(f"Completed sold items ingestion for {product_id}: {result}")
@@ -119,6 +147,11 @@ async def trigger_ebay_sold_ingestion(ctx, product_id: str, limit: int = 50):
 
 async def trigger_ebay_listings_ingestion(ctx, product_id: str, limit: int = 50):
     """Trigger eBay listings ingestion for a specific product template."""
+    routed = await _route_elsewhere(
+        ctx, "ebay", "trigger_ebay_listings_ingestion", product_id, limit
+    )
+    if routed is not None:
+        return routed
     logger.info(f"Triggering eBay listings ingestion for product {product_id}")
     result = await run_full_ingestion(product_id, {"ebay_listings": limit}, ["ebay"])
     logger.info(f"Completed listings ingestion for {product_id}: {result}")
@@ -135,6 +168,20 @@ async def trigger_full_ingestion(
     """Trigger full ingestion pipeline for a specific product template."""
     if sources is None:
         sources = ["ebay", "leboncoin", "vinted", "cashconverters"]
+    local = [s for s in sources if topology.provider_role(s) == settings.worker_role]
+    elsewhere = [s for s in sources if s not in local]
+    forwarded = None
+    if elsewhere and settings.worker_role == "primary":
+        forwarded = await _forward_to_remote(
+            ctx, "trigger_full_ingestion", product_id, sold_limit, listings_limit, sources=elsewhere
+        )
+    if not local:
+        return forwarded or {
+            "status": "skipped",
+            "reason": "provider_not_served",
+            "sources": elsewhere,
+        }
+    sources = local
     logger.info(f"Triggering full ingestion for product {product_id} from sources: {sources}")
     result = await run_full_ingestion(
         product_id,
@@ -149,11 +196,18 @@ async def trigger_full_ingestion(
         sources,
     )
     logger.info(f"Completed full ingestion for {product_id}: {result}")
+    if forwarded:
+        result["forwarded"] = forwarded
     return result
 
 
 async def trigger_leboncoin_listings_ingestion(ctx, product_id: str, limit: int = 50):
     """Trigger LeBonCoin listings ingestion for a specific product template."""
+    routed = await _route_elsewhere(
+        ctx, "leboncoin", "trigger_leboncoin_listings_ingestion", product_id, limit
+    )
+    if routed is not None:
+        return routed
     logger.info(f"Triggering LeBonCoin listings ingestion for product {product_id}")
     result = await run_full_ingestion(product_id, {"leboncoin_listings": limit}, ["leboncoin"])
     logger.info(f"Completed LeBonCoin listings ingestion for {product_id}: {result}")
@@ -162,6 +216,11 @@ async def trigger_leboncoin_listings_ingestion(ctx, product_id: str, limit: int 
 
 async def trigger_leboncoin_sold_ingestion(ctx, product_id: str, limit: int = 50):
     """Trigger LeBonCoin 'sold' ingestion for a specific product template."""
+    routed = await _route_elsewhere(
+        ctx, "leboncoin", "trigger_leboncoin_sold_ingestion", product_id, limit
+    )
+    if routed is not None:
+        return routed
     logger.info(f"Triggering LeBonCoin 'sold' ingestion for product {product_id}")
     result = await ingest_leboncoin_sold(product_id, limit)
     logger.info(f"Completed LeBonCoin 'sold' ingestion for {product_id}: {result}")
@@ -170,6 +229,11 @@ async def trigger_leboncoin_sold_ingestion(ctx, product_id: str, limit: int = 50
 
 async def trigger_vinted_listings_ingestion(ctx, product_id: str, limit: int = 50):
     """Trigger Vinted listings ingestion for a specific product template."""
+    routed = await _route_elsewhere(
+        ctx, "vinted", "trigger_vinted_listings_ingestion", product_id, limit
+    )
+    if routed is not None:
+        return routed
     logger.info(f"Triggering Vinted listings ingestion for product {product_id}")
     result = await run_full_ingestion(product_id, {"vinted_listings": limit}, ["vinted"])
     logger.info(f"Completed Vinted listings ingestion for {product_id}: {result}")
@@ -506,6 +570,19 @@ async def mark_stale_listings(ctx: dict) -> dict:
     return {"marked_stale": count}
 
 
+async def _offline_remote_providers(ctx: dict) -> list[dict]:
+    providers = topology.remote_providers()
+    pool = ctx.get("redis") or ctx.get("pool")
+    if not providers or pool is None:
+        return []
+    if await pool.exists(topology.HEARTBEAT_KEYS["remote"]):
+        return []
+    return [
+        {"name": p, "consecutive_failures": 0, "last_error": "remote worker heartbeat missing"}
+        for p in providers
+    ]
+
+
 async def check_system_health(ctx: dict) -> dict:
     """Check for stale products and failing connectors, send Telegram alert if issues found."""
     now = datetime.now(UTC)
@@ -557,6 +634,8 @@ async def check_system_health(ctx: dict) -> dict:
                         "last_error": last_error,
                     }
                 )
+
+    failing_connectors += await _offline_remote_providers(ctx)
 
     if stale_products or failing_connectors:
         await send_system_alert(
@@ -692,65 +771,103 @@ async def run_on_demand_audit(
             logger.warning("Failed to clear on-demand audit lock: %s", cleanup_exc)
 
 
-class WorkerSettings:
-    redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    health_check_key = "worker:heartbeat"
-    health_check_interval = 30
-    max_jobs = 3
-    job_timeout = 900
-    keep_result = 0
-    functions = [
-        ping,
-        ingest_scheduled_product,
-        deliver_pending_alerts,
-        scheduled_ebay_ingestion,
-        scheduled_leboncoin_ingestion,
-        scheduled_vinted_ingestion,
-        scheduled_cashconverters_ingestion,
-        trigger_ebay_sold_ingestion,
-        trigger_ebay_listings_ingestion,
-        trigger_leboncoin_listings_ingestion,
-        trigger_leboncoin_sold_ingestion,
-        trigger_vinted_listings_ingestion,
-        trigger_full_ingestion,
-        # Computation tasks
-        scheduled_computation,
-        trigger_product_computation,
-        trigger_batch_computation,
-        # LLM & Screenshot tasks
-        validate_listing_with_llm,
-        capture_listing_screenshot_task,
-        process_opportunity_alerts,
-        # Staleness & health tasks
-        mark_stale_listings,
-        check_system_health,
-        # Audit tasks
-        audit_ingestion_sample,
-        run_on_demand_audit,
-        # Enrichment tasks
-        run_enrichment_batch,
-        # Scoring tasks
-        run_scoring_batch,
-    ]
-    # NOTE: arq's cron() fires on EVERY minute of a matching hour unless `minute`
-    # is pinned. Every daily job below MUST set minute=N or it runs 60x/night.
-    # Times are container-local (TZ=Europe/Paris). Daily cycle runs at 07:00 Paris
-    # so fresh data is ready when the operator wakes up; jobs are staggered to
-    # avoid overlap (Vinted drives a headless browser) and ordered
-    # stale-mark -> ingest -> compute.
-    cron_jobs = [
-        cron(deliver_pending_alerts, minute=set(range(60))),
-        cron(mark_stale_listings, hour=6, minute=45),  # Mark stale listings before ingestion
-        cron(scheduled_ebay_ingestion, minute=set(range(0, 60, 5))),  # eBay ingestion daily 07:00
-        cron(scheduled_leboncoin_ingestion, minute=set(range(1, 60, 5))),  # LeBonCoin daily 07:20
-        cron(scheduled_cashconverters_ingestion, minute=set(range(3, 60, 5))),
-        cron(scheduled_vinted_ingestion, minute=set(range(2, 60, 5))),  # Vinted daily 07:40
-        cron(scheduled_computation, hour=8, minute=0),  # Computation daily 08:00 (after ingest)
+ALL_FUNCTIONS: list[Callable[..., Any]] = [
+    ping,
+    ingest_scheduled_product,
+    deliver_pending_alerts,
+    scheduled_ebay_ingestion,
+    scheduled_leboncoin_ingestion,
+    scheduled_vinted_ingestion,
+    scheduled_cashconverters_ingestion,
+    trigger_ebay_sold_ingestion,
+    trigger_ebay_listings_ingestion,
+    trigger_leboncoin_listings_ingestion,
+    trigger_leboncoin_sold_ingestion,
+    trigger_vinted_listings_ingestion,
+    trigger_full_ingestion,
+    # Computation tasks
+    scheduled_computation,
+    trigger_product_computation,
+    trigger_batch_computation,
+    # LLM & Screenshot tasks
+    validate_listing_with_llm,
+    capture_listing_screenshot_task,
+    process_opportunity_alerts,
+    # Staleness & health tasks
+    mark_stale_listings,
+    check_system_health,
+    # Audit tasks
+    audit_ingestion_sample,
+    run_on_demand_audit,
+    # Enrichment tasks
+    run_enrichment_batch,
+    # Scoring tasks
+    run_scoring_batch,
+]
+REMOTE_FUNCTIONS: list[Callable[..., Any]] = [
+    ping,
+    ingest_scheduled_product,
+    scheduled_ebay_ingestion,
+    scheduled_leboncoin_ingestion,
+    scheduled_vinted_ingestion,
+    scheduled_cashconverters_ingestion,
+    trigger_ebay_sold_ingestion,
+    trigger_ebay_listings_ingestion,
+    trigger_leboncoin_listings_ingestion,
+    trigger_leboncoin_sold_ingestion,
+    trigger_vinted_listings_ingestion,
+    trigger_full_ingestion,
+]
+
+# NOTE: arq's cron() fires on EVERY minute of a matching hour unless `minute`
+# is pinned. Every daily job below MUST set minute=N or it runs 60x/night.
+# Times are container-local (TZ=Europe/Paris). Daily cycle runs at 07:00 Paris
+# so fresh data is ready when the operator wakes up; jobs are staggered to
+# avoid overlap (Vinted drives a headless browser) and ordered
+# stale-mark -> ingest -> compute.
+# The first element is the provider a cron ingests; None marks a global job (primary only).
+CRON_JOBS: list[tuple[str | None, CronJob]] = [
+    (None, cron(deliver_pending_alerts, minute=set(range(60)))),
+    (None, cron(mark_stale_listings, hour=6, minute=45)),  # Mark stale listings before ingestion
+    ("ebay", cron(scheduled_ebay_ingestion, minute=set(range(0, 60, 5)))),
+    ("leboncoin", cron(scheduled_leboncoin_ingestion, minute=set(range(1, 60, 5)))),
+    ("cashconverters", cron(scheduled_cashconverters_ingestion, minute=set(range(3, 60, 5)))),
+    ("vinted", cron(scheduled_vinted_ingestion, minute=set(range(2, 60, 5)))),
+    (None, cron(scheduled_computation, hour=8, minute=0)),  # Computation daily 08:00 (after ingest)
+    (
+        None,
         cron(
             check_system_health,
             hour={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22},
             minute=30,
-        ),  # Check system health every 2 hours
-        cron(run_enrichment_batch, hour=None, minute=30),  # Enrich listings every hour at :30
-        cron(run_scoring_batch, hour=None, minute=45),  # Score listings every hour at :45
+        ),
+    ),  # Check system health every 2 hours
+    (None, cron(run_enrichment_batch, hour=None, minute=30)),  # Enrich listings every hour at :30
+    (None, cron(run_scoring_batch, hour=None, minute=45)),  # Score listings every hour at :45
+]
+
+
+def worker_functions(role: topology.WorkerRole) -> list[Callable[..., Any]]:
+    topology.worker_providers(role)
+    return ALL_FUNCTIONS if role == "primary" else REMOTE_FUNCTIONS
+
+
+def worker_cron_jobs(role: topology.WorkerRole) -> list[CronJob]:
+    providers = topology.worker_providers(role)
+    return [
+        job
+        for provider, job in CRON_JOBS
+        if (provider in providers if provider else role == "primary")
     ]
+
+
+class WorkerSettings:
+    redis_settings = RedisSettings.from_dsn(settings.redis_url)
+    queue_name = topology.QUEUES[settings.worker_role]
+    health_check_key = topology.HEARTBEAT_KEYS[settings.worker_role]
+    health_check_interval = 30
+    max_jobs = 3
+    job_timeout = 900
+    keep_result = 0
+    functions = worker_functions(settings.worker_role)
+    cron_jobs = worker_cron_jobs(settings.worker_role)
