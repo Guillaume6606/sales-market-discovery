@@ -48,3 +48,16 @@ def test_alert_events_identify_the_alerted_listing(
     assert event["listing_price"] == 500.0
     assert event["listing_url"] == scored_listings[0].url
     assert event["listing_source"] == "leboncoin"
+
+
+def test_changed_feedback_records_when_it_was_updated(
+    client: TestClient, alert_event: AlertEvent
+) -> None:
+    path = f"/alerts/events/{alert_event.alert_id}/feedback"
+    assert client.post(path, json={"feedback": "interested"}).status_code == 201
+    assert client.post(path, json={"feedback": "purchased"}).status_code == 201
+
+    feedback = client.get(path).json()["feedback"]
+
+    assert feedback["feedback"] == "purchased"
+    assert feedback["updated_at"] > feedback["created_at"]
