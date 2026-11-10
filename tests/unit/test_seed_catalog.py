@@ -150,9 +150,73 @@ def test_catalog_cli_skips_default_products_and_rules(monkeypatch: pytest.Monkey
     assert ("POST", "/alerts/rules") not in _writes(backend)
 
 
+def test_pilot_catalog_sends_identity_tokens() -> None:
+    backend = FakeBackend()
+    with backend.client() as client:
+        seed.seed_catalog(client, "pilot-lenses", activate=False, scan_interval=None)
+
+    by_name = {p["name"]: p for p in backend.products}
+    for product in PILOT_LENSES:
+        assert by_name[product.name]["required_tokens"] == list(product.required_tokens)
+        assert by_name[product.name]["excluded_tokens"] == list(product.excluded_tokens)
+
+
+def test_rerun_fills_empty_identity_tokens_but_keeps_operator_tokens() -> None:
+    empty, edited = PILOT_LENSES[0], PILOT_LENSES[1]
+    backend = FakeBackend(
+        products=[
+            {"product_id": "p-a", "name": empty.name, "required_tokens": [], "is_active": False},
+            {
+                "product_id": "p-b",
+                "name": edited.name,
+                "required_tokens": ["operator"],
+                "excluded_tokens": [],
+                "is_active": False,
+            },
+        ]
+    )
+    with backend.client() as client:
+        seed.seed_catalog(client, "pilot-lenses", activate=False, scan_interval=None)
+
+    puts = [(path, body) for method, path, body in backend.calls if method == "PUT"]
+    assert puts == [
+        (
+            "/products/p-a",
+            {
+                "required_tokens": list(empty.required_tokens),
+                "excluded_tokens": list(empty.excluded_tokens),
+            },
+        )
+    ]
+
+
+def test_identity_tokens_go_to_db_only_when_api_hides_them_and_flag_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hidden = {"product_id": "p-h", "name": PILOT_LENSES[0].name, "is_active": False}
+    written: list[list[str]] = []
+    monkeypatch.setattr(
+        seed,
+        "write_identity_tokens_db",
+        lambda products: written.append([p.name for p in products]),
+    )
+    backend = FakeBackend(products=[dict(hidden)])
+    with backend.client() as client:
+        seed.seed_catalog(client, "pilot-lenses", activate=False, scan_interval=None)
+    assert written == []
+
+    backend = FakeBackend(products=[dict(hidden)])
+    with backend.client() as client:
+        seed.seed_catalog(
+            client, "pilot-lenses", activate=False, scan_interval=None, identity_via_db=True
+        )
+    assert written == [[PILOT_LENSES[0].name]]
+
+
 @pytest.mark.parametrize(
     "argv",
     [
+        ["seed.py", "--identity-via-db"],
         ["seed.py", "--activate"],
         ["seed.py", "--scan-interval", "30"],
         ["seed.py", "--catalog", "pilot-lenses", "--scan-interval", "4"],
