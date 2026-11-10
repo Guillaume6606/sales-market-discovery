@@ -101,13 +101,11 @@ with col_alerts:
 
     if events:
         for evt in events:
-            product_id = evt.get("product_id", "?")[:8]
-            sent_at = relative_time(evt.get("sent_at"))
-            suppressed = evt.get("suppressed", False)
+            listing = evt.get("listing_title") or f"Product `{evt.get('product_id', '?')[:8]}`"
+            alerted_at = relative_time(evt.get("sent_at") or evt.get("created_at"))
+            delivery_status = evt.get("delivery_status") or "unknown"
 
-            label = f"Product `{product_id}` | {sent_at}"
-            if suppressed:
-                label += " *(suppressed)*"
+            label = f"{listing} | {alerted_at} | {delivery_status.replace('_', ' ')}"
 
             st.markdown(f"- {label}")
     else:
