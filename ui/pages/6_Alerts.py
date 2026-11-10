@@ -343,6 +343,16 @@ if events:
             with badge_col:
                 st.markdown(suppressed_badge, unsafe_allow_html=True)
 
+            listing_price = evt.get("listing_price")
+            listing_parts = [
+                f"**{evt.get('listing_title') or 'Unknown listing'}**",
+                f"€{listing_price:,.2f}" if listing_price is not None else "price unknown",
+                evt.get("listing_source") or "unknown source",
+            ]
+            if evt.get("listing_url"):
+                listing_parts.append(f"[Open listing]({evt['listing_url']})")
+            st.markdown(" · ".join(listing_parts))
+
             st.caption(
                 f"Delivery attempts: {evt.get('delivery_attempts', 0)} · Next retry: {evt.get('next_attempt_at') or 'none'}"
             )
@@ -393,5 +403,5 @@ if events:
                     _submit_feedback(alert_id, "purchased")
     # Pagination controls
     paginator("alert_events_page", events_total, PAGE_SIZE)
-else:
+elif "error" not in events_data:
     st.info("No alert events found")

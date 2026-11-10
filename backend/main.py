@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 # ARQ imports for proper job enqueuing
 from arq import create_pool
@@ -2123,15 +2124,17 @@ async def test_alert_rule(rule_id: str, db: Session = Depends(get_db)):
 
 @app.get("/alerts/events")
 def list_alert_events(
-    rule_id: str | None = Query(None, description="Filter by rule ID"),
-    product_id: str | None = Query(None, description="Filter by product ID"),
+    rule_id: UUID | None = Query(None, description="Filter by rule ID"),
+    product_id: UUID | None = Query(None, description="Filter by product ID"),
     limit: int = Query(100, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
     """List alert history with filtering and pagination."""
-    query = db.query(AlertEvent, AlertFeedback.feedback).outerjoin(
-        AlertFeedback, AlertEvent.alert_id == AlertFeedback.alert_id
+    query = (
+        db.query(AlertEvent, AlertFeedback.feedback, ListingObservation)
+        .outerjoin(AlertFeedback, AlertEvent.alert_id == AlertFeedback.alert_id)
+        .outerjoin(ListingObservation, AlertEvent.obs_id == ListingObservation.obs_id)
     )
 
     if rule_id:
@@ -2165,8 +2168,12 @@ def list_alert_events(
                 else None,
                 "suppressed": event.suppressed,
                 "feedback": feedback,
+                "listing_title": listing.title if listing else None,
+                "listing_price": _decimal_to_float(listing.price) if listing else None,
+                "listing_url": listing.url if listing else None,
+                "listing_source": listing.source if listing else None,
             }
-            for event, feedback in rows
+            for event, feedback, listing in rows
         ],
         "total": total,
         "limit": limit,
