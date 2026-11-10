@@ -5,8 +5,11 @@ Usage:
     API_URL=http://localhost:8000 python scripts/seed.py
     uv run python scripts/seed.py --products-only     # skip alert rules
     uv run python scripts/seed.py --rules-only        # skip products
+    uv run python scripts/seed.py --catalog pilot-lenses [--activate] [--scan-interval 60]
 
 Safe to re-run: existing categories/products/rules (matched by name) are left untouched.
+A named catalog only seeds its products, inactive unless ``--activate``. On re-run,
+``--activate`` and ``--scan-interval`` update existing catalog products; nothing else does.
 """
 
 from __future__ import annotations
@@ -14,11 +17,18 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.seed_catalogs import CATALOG_PROVIDERS, CATALOGS  # noqa: E402
+
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
+DEFAULT_SCAN_INTERVAL_MINUTES = 60
 
 # Starter set: liquid on eBay, 100-500 EUR, identifiable, condition-stable.
 # See docs/BUSINESS_ROADMAP.md section 5 for the selection criteria.
@@ -327,6 +337,45 @@ def seed_products(client: httpx.Client) -> None:
         print(f"  product created: {product['name']}")
 
 
+def seed_catalog(
+    client: httpx.Client, catalog: str, *, activate: bool, scan_interval: int | None
+) -> None:
+    print(f"Seeding catalog {catalog}...")
+    products = CATALOGS[catalog]
+    categories = _ensure_categories(client, {p.category for p in products})
+    existing = {p["name"]: p for p in client.get("/products").json()["products"]}
+    for product in products:
+        current = existing.get(product.name)
+        if current is None:
+            payload = {
+                "name": product.name,
+                "description": product.description(),
+                "search_query": product.search_query,
+                "category_id": categories[product.category],
+                "brand": product.brand,
+                "price_min": product.price_min,
+                "price_max": product.price_max,
+                "providers": CATALOG_PROVIDERS[catalog],
+                "words_to_avoid": list(product.words_to_avoid),
+                "ingestion_interval_minutes": scan_interval or DEFAULT_SCAN_INTERVAL_MINUTES,
+                "enable_llm_validation": False,
+                "is_active": activate,
+            }
+            client.post("/products", json=payload).raise_for_status()
+            print(f"  product created ({'active' if activate else 'inactive'}): {product.name}")
+            continue
+        updates: dict[str, Any] = {}
+        if activate and not current.get("is_active"):
+            updates["is_active"] = True
+        if scan_interval is not None and current.get("ingestion_interval_minutes") != scan_interval:
+            updates["ingestion_interval_minutes"] = scan_interval
+        if not updates:
+            print(f"  product exists: {product.name}")
+            continue
+        client.put(f"/products/{current['product_id']}", json=updates).raise_for_status()
+        print(f"  product updated {sorted(updates)}: {product.name}")
+
+
 def seed_alert_rules(client: httpx.Client) -> None:
     print("Seeding alert rules...")
     existing = {r["name"] for r in client.get("/alerts/rules").json().get("rules", [])}
@@ -339,18 +388,44 @@ def seed_alert_rules(client: httpx.Client) -> None:
         print(f"  rule created: {rule['name']}")
 
 
+def _client() -> httpx.Client:
+    return httpx.Client(base_url=API_URL, timeout=30)
+
+
+def _scan_interval(value: str) -> int:
+    minutes = int(value)
+    if not 5 <= minutes <= 1440:
+        raise argparse.ArgumentTypeError("scan interval must be between 5 and 1440 minutes")
+    return minutes
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--products-only", action="store_true")
     parser.add_argument("--rules-only", action="store_true")
+    parser.add_argument("--catalog", choices=sorted(CATALOGS))
+    parser.add_argument("--activate", action="store_true", help="catalog products are active")
+    parser.add_argument(
+        "--scan-interval",
+        type=_scan_interval,
+        help=f"catalog scan interval in minutes (default {DEFAULT_SCAN_INTERVAL_MINUTES})",
+    )
     args = parser.parse_args()
+    if not args.catalog and (args.activate or args.scan_interval is not None):
+        parser.error("--activate and --scan-interval require --catalog")
 
-    with httpx.Client(base_url=API_URL, timeout=30) as client:
+    with _client() as client:
         try:
             client.get("/health").raise_for_status()
         except httpx.HTTPError as exc:
             print(f"Backend not reachable at {API_URL}: {exc}", file=sys.stderr)
             return 1
+        if args.catalog:
+            seed_catalog(
+                client, args.catalog, activate=args.activate, scan_interval=args.scan_interval
+            )
+            print("Done.")
+            return 0
         if not args.rules_only:
             seed_products(client)
         if not args.products_only:
