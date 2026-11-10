@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 # ARQ imports for proper job enqueuing
 from arq import create_pool
@@ -151,7 +152,7 @@ def products_discovery(
     brand: str | None = None,
     min_margin: float | None = Query(None, description="min % below PMN (e.g., -20 for 20% below)"),
     max_margin: float | None = Query(None, description="max % below PMN (e.g., 0)"),
-    min_liquidity: float | None = Query(None, description="min liquidity score (0-1)"),
+    min_liquidity: float | None = Query(None, description="min liquidity score (0-100)"),
     min_trend: float | None = Query(None, description="min trend score"),
     min_pmn_confidence: float | None = Query(None, description="min PMN confidence (0-1)"),
     sort_by: str | None = Query(
@@ -893,15 +894,15 @@ async def trigger_ingestion(
     product_id: str,
     sold_limit: int = 50,
     listings_limit: int = 50,
-    sources: list[str] | None = None,
+    sources: list[str] | None = Query(None),
     db: Session = Depends(get_db),
 ):
     """Trigger full ingestion pipeline for a product template."""
     if not arq_pool:
-        return {
-            "error": "ARQ pool not available",
-            "message": "Please ensure Redis and ingestion service are running",
-        }
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ARQ pool not available; ensure Redis and the ingestion service are running",
+        )
 
     product = db.query(ProductTemplate).filter(ProductTemplate.product_id == product_id).first()
     if not product:
@@ -914,6 +915,8 @@ async def trigger_ingestion(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Unsupported providers: {', '.join(invalid)}",
             )
+        for provider in sources:
+            _ensure_provider_allowed(product, provider)
 
     job_sources = sources or product.providers or SUPPORTED_PROVIDERS
 
@@ -937,7 +940,9 @@ async def trigger_ingestion(
         }
     except Exception as exc:
         logger.error(f"Failed to enqueue ingestion job: {exc}")
-        return {"error": "Failed to enqueue job", "message": str(exc)}
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Failed to enqueue job: {exc}"
+        ) from exc
 
 
 @app.post("/ingestion/trigger-sold")
@@ -1607,10 +1612,10 @@ async def trigger_product_computation_endpoint(product_id: str, db: Session = De
 async def trigger_enrichment():
     """Trigger LLM enrichment + scoring pipeline manually."""
     if not arq_pool:
-        return {
-            "error": "ARQ pool not available",
-            "message": "Please ensure Redis and worker service are running",
-        }
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ARQ pool not available; ensure Redis and the worker service are running",
+        )
 
     try:
         logger.info("Triggering enrichment + scoring pipeline")
@@ -1625,7 +1630,9 @@ async def trigger_enrichment():
         }
     except Exception as exc:
         logger.error(f"Failed to enqueue enrichment pipeline: {exc}", exc_info=True)
-        return {"error": "Failed to enqueue job", "message": str(exc)}
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Failed to enqueue job: {exc}"
+        ) from exc
 
 
 @app.get("/listings/{obs_id}/opportunity")
@@ -1854,10 +1861,7 @@ def explore_listings(
     if llm_validated is not None:
         base_query = base_query.filter(ListingObservation.llm_validated == llm_validated)
 
-    # Count on the base query before the score/enrichment outerjoin to avoid row inflation
-    total = base_query.count()
-
-    # Add outerjoins for scoring and enrichment data
+    # Add outerjoins for scoring and enrichment data (both unique per obs_id)
     query = (
         base_query.outerjoin(ListingScore, ListingScore.obs_id == ListingObservation.obs_id)
         .outerjoin(ListingEnrichment, ListingEnrichment.obs_id == ListingObservation.obs_id)
@@ -1881,6 +1885,8 @@ def explore_listings(
     elif has_score is False:
         query = query.filter(ListingScore.score_id.is_(None))
 
+    total = query.count()
+
     # Apply sorting
     if sort_by == "price":
         sort_col = ListingObservation.price
@@ -1894,9 +1900,9 @@ def explore_listings(
         sort_col = ListingObservation.observed_at
 
     if sort_order == "desc":
-        query = query.order_by(desc(sort_col))
+        query = query.order_by(desc(sort_col).nulls_last())
     else:
-        query = query.order_by(sort_col)
+        query = query.order_by(sort_col.asc().nulls_last())
 
     # Apply pagination
     query = query.offset(offset).limit(limit)
@@ -2120,15 +2126,17 @@ async def test_alert_rule(rule_id: str, db: Session = Depends(get_db)):
 
 @app.get("/alerts/events")
 def list_alert_events(
-    rule_id: str | None = Query(None, description="Filter by rule ID"),
-    product_id: str | None = Query(None, description="Filter by product ID"),
+    rule_id: UUID | None = Query(None, description="Filter by rule ID"),
+    product_id: UUID | None = Query(None, description="Filter by product ID"),
     limit: int = Query(100, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
     """List alert history with filtering and pagination."""
-    query = db.query(AlertEvent, AlertFeedback.feedback).outerjoin(
-        AlertFeedback, AlertEvent.alert_id == AlertFeedback.alert_id
+    query = (
+        db.query(AlertEvent, AlertFeedback.feedback, ListingObservation)
+        .outerjoin(AlertFeedback, AlertEvent.alert_id == AlertFeedback.alert_id)
+        .outerjoin(ListingObservation, AlertEvent.obs_id == ListingObservation.obs_id)
     )
 
     if rule_id:
@@ -2162,8 +2170,12 @@ def list_alert_events(
                 else None,
                 "suppressed": event.suppressed,
                 "feedback": feedback,
+                "listing_title": listing.title if listing else None,
+                "listing_price": _decimal_to_float(listing.price) if listing else None,
+                "listing_url": listing.url if listing else None,
+                "listing_source": listing.source if listing else None,
             }
-            for event, feedback in rows
+            for event, feedback, listing in rows
         ],
         "total": total,
         "limit": limit,

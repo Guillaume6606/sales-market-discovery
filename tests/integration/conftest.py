@@ -9,12 +9,15 @@ from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.schema import CreateSchema, DropSchema
 
-from libs.common.models import Base
+from backend.main import app as backend_app
+from libs.common.db import get_db
+from libs.common.models import Base, ListingObservation, ListingScore
 
 
 def _register_model_modules() -> None:
@@ -126,3 +129,50 @@ def seed_sold_observations(integration_db: Session, seed_product: str) -> list[i
         observation_ids.append(observation_id)
     integration_db.commit()
     return observation_ids
+
+
+@pytest.fixture()
+def client(integration_db: Session) -> Generator[TestClient, None, None]:
+    def override_db() -> Generator[Session, None, None]:
+        yield integration_db
+
+    backend_app.dependency_overrides[get_db] = override_db
+    try:
+        yield TestClient(backend_app)
+    finally:
+        backend_app.dependency_overrides.pop(get_db, None)
+
+
+def _listing(product_id: str, index: int, price: int) -> ListingObservation:
+    now = datetime.now(UTC)
+    return ListingObservation(
+        product_id=product_id,
+        source="leboncoin",
+        listing_id=f"listing-{index}",
+        title=f"iPhone 14 Pro 128GB #{index}",
+        price=price,
+        currency="EUR",
+        is_sold=False,
+        is_stale=False,
+        observed_at=now,
+        last_seen_at=now,
+        url=f"https://www.leboncoin.fr/ad/{index}",
+    )
+
+
+@pytest.fixture()
+def scored_listings(integration_db: Session, seed_product: str) -> list[ListingObservation]:
+    listings = [_listing(seed_product, index, 500 + index) for index in range(3)]
+    integration_db.add_all(listings)
+    integration_db.flush()
+    integration_db.add(
+        ListingScore(
+            obs_id=listings[1].obs_id,
+            product_id=seed_product,
+            arbitrage_spread_eur=42,
+            net_roi_pct=8,
+            risk_adjusted_confidence=60,
+        )
+    )
+    integration_db.commit()
+    return listings

@@ -59,7 +59,7 @@ def _upsert_feedback(db: Session, alert_id: int, feedback: str, notes: str | Non
         values["notes"] = notes
 
     stmt = pg_insert(AlertFeedback).values(**values)
-    update_cols: dict[str, Any] = {"feedback": stmt.excluded.feedback}
+    update_cols: dict[str, Any] = {"feedback": stmt.excluded.feedback, "updated_at": func.now()}
     if notes is not None:
         update_cols["notes"] = stmt.excluded.notes
     stmt = stmt.on_conflict_do_update(

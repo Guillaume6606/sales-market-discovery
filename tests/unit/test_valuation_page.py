@@ -67,3 +67,86 @@ def test_valuation_page_evaluates_decimal_strings_without_claiming_unknown_is_ze
         "Contribution": "€-12.35",
         "Maximum buy": "€309.31",
     }
+
+
+def test_valuation_page_distinguishes_products_with_the_same_name(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    requested_products: list[str] = []
+
+    def fake_products(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            {"product_id": "11111111-aaaa", "name": "Sony WH-1000XM4"},
+            {"product_id": "22222222-bbbb", "name": "Sony WH-1000XM4"},
+        ]
+
+    def fake_get(path: str, **kwargs: Any) -> _Response:
+        if path == "/valuation/references":
+            requested_products.append(kwargs["params"]["product_id"])
+            return _Response([])
+        raise AssertionError(f"Unexpected API path: {path}")
+
+    monkeypatch.setattr(api, "fetch_products", fake_products)
+    monkeypatch.setattr(api, "api_get", fake_get)
+    page = Path(__file__).parents[2] / "ui" / "pages" / "7_Valuation.py"
+
+    app = AppTest.from_file(page)
+    app.run()
+    product = next(widget for widget in app.selectbox if widget.label == "Product")
+    assert len(product.options) == 2
+    product.set_value(product.options[1])
+    app.run()
+
+    assert requested_products[-1] == "22222222-bbbb"
+
+
+def test_listing_review_does_not_default_unknown_shipping_to_zero(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    patched: list[dict[str, Any]] = []
+
+    def fake_get(path: str, **_kwargs: Any) -> _Response:
+        if path == "/valuation/references":
+            return _Response([])
+        if path == "/listings/5/detail":
+            return _Response(
+                {
+                    "observation": {
+                        "obs_id": 5,
+                        "title": "Casque Sony WH-1000XM4",
+                        "price": 140.0,
+                        "condition": "Très bon état",
+                        "shipping_cost": None,
+                        "last_seen_at": "2026-11-10T19:33:20+00:00",
+                        "url": "https://www.leboncoin.fr/ad/audio/5",
+                    }
+                }
+            )
+        raise AssertionError(f"Unexpected API path: {path}")
+
+    def fake_patch(_url: str, **kwargs: Any) -> _Response:
+        patched.append(kwargs["json"])
+        return _Response({}, 201)
+
+    monkeypatch.setattr(
+        api, "fetch_products", lambda *_a, **_k: [{"product_id": "p-1", "name": "Sony"}]
+    )
+    monkeypatch.setattr(api, "api_get", fake_get)
+    monkeypatch.setattr("httpx.patch", fake_patch)
+    page = Path(__file__).parents[2] / "ui" / "pages" / "7_Valuation.py"
+
+    app = AppTest.from_file(page)
+    app.run()
+    next(widget for widget in app.number_input if widget.label == "Observation ID").set_value(5)
+    next(button for button in app.button if button.label == "Load listing for review").click()
+    app.run()
+    shipping = next(w for w in app.number_input if w.label == "Verified inbound shipping (€)")
+    assert shipping.value is None
+
+    app.text_input(key="listing_review_reviewer").input("operator")
+    next(w for w in app.text_area if w.label == "Review evidence notes").input("Photos checked")
+    next(button for button in app.button if button.label == "Save listing review").click()
+    app.run()
+
+    assert patched == []
+    assert any("shipping" in error.value.lower() for error in app.error)

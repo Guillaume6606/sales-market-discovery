@@ -143,13 +143,15 @@ if rules:
     display_cols = [c for c in display_cols if c in rules_df.columns]
     st.dataframe(rules_df[display_cols], hide_index=True, use_container_width=True)
 
-    selected_rule_name: str = st.selectbox(
+    rule_labels = {r["rule_id"]: f"{r['name']} · {r['rule_id'][:8]}" for r in rules}
+    selected_rule_id: str = st.selectbox(
         "Select Rule",
-        [r["name"] for r in rules],
+        list(rule_labels),
+        format_func=rule_labels.get,
         key="rule_action_select",
     )  # type: ignore[assignment]
     selected_rule: dict[str, Any] | None = next(
-        (r for r in rules if r["name"] == selected_rule_name), None
+        (r for r in rules if r["rule_id"] == selected_rule_id), None
     )
 
     if selected_rule:
@@ -276,10 +278,13 @@ st.subheader("Recent Alert Events")
 # Filters
 ef1, ef2 = st.columns(2)
 with ef1:
-    filter_options: list[str] = ["All"] + ([r["name"] for r in rules] if rules else [])
+    filter_labels = {"All": "All"} | {
+        r["rule_id"]: f"{r['name']} · {r['rule_id'][:8]}" for r in rules
+    }
     event_rule_filter: str = st.selectbox(
         "Filter by Rule",
-        filter_options,
+        list(filter_labels),
+        format_func=filter_labels.get,
         key="event_rule_filter",
     )  # type: ignore[assignment]
 with ef2:
@@ -287,9 +292,7 @@ with ef2:
         "Product ID", placeholder="Filter by product ID...", key="event_product_filter"
     )
 
-rule_id_filter: str | None = None
-if event_rule_filter != "All" and rules:
-    rule_id_filter = next((r["rule_id"] for r in rules if r["name"] == event_rule_filter), None)
+rule_id_filter: str | None = None if event_rule_filter == "All" else event_rule_filter
 
 # Fetch events with current page offset from session state
 if "alert_events_page" not in st.session_state:
@@ -343,6 +346,16 @@ if events:
             with badge_col:
                 st.markdown(suppressed_badge, unsafe_allow_html=True)
 
+            listing_price = evt.get("listing_price")
+            listing_parts = [
+                f"**{evt.get('listing_title') or 'Unknown listing'}**",
+                f"€{listing_price:,.2f}" if listing_price is not None else "price unknown",
+                evt.get("listing_source") or "unknown source",
+            ]
+            if evt.get("listing_url"):
+                listing_parts.append(f"[Open listing]({evt['listing_url']})")
+            st.markdown(" · ".join(listing_parts))
+
             st.caption(
                 f"Delivery attempts: {evt.get('delivery_attempts', 0)} · Next retry: {evt.get('next_attempt_at') or 'none'}"
             )
@@ -393,5 +406,5 @@ if events:
                     _submit_feedback(alert_id, "purchased")
     # Pagination controls
     paginator("alert_events_page", events_total, PAGE_SIZE)
-else:
+elif "error" not in events_data:
     st.info("No alert events found")

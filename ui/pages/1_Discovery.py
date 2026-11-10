@@ -50,9 +50,9 @@ with st.sidebar:
     if preset == "High Margin":
         default_discount, default_liq, default_trend = 20, None, None
     elif preset == "Fast Movers":
-        default_discount, default_liq, default_trend = 0, 0.8, None
+        default_discount, default_liq, default_trend = 0, 80.0, None
     elif preset == "Low Risk":
-        default_discount, default_liq, default_trend = 0, 0.6, None
+        default_discount, default_liq, default_trend = 0, 60.0, None
     elif preset == "Trending":
         default_discount, default_liq, default_trend = 0, None, 0.5
     else:
@@ -72,13 +72,15 @@ with st.sidebar:
         max_value=50,
         value=default_discount or 0,
         step=5,
-        key="discount_slider",
+        key=f"discount_slider_{preset}",
         help="Higher = better deal (% below PMN)",
     )
     liquidity_filter = st.slider(
-        "Min Liquidity", 0.0, 1.0, default_liq or 0.0, 0.1, key="liquidity"
+        "Min Liquidity", 0.0, 100.0, default_liq or 0.0, 5.0, key=f"liquidity_{preset}"
     )
-    trend_filter = st.slider("Min Trend", -1.0, 2.0, default_trend or -1.0, 0.1, key="trend")
+    trend_filter = st.slider(
+        "Min Trend", -1.0, 2.0, default_trend or -1.0, 0.1, key=f"trend_{preset}"
+    )
 
     st.divider()
     sort_by = st.selectbox(
@@ -212,7 +214,9 @@ with tab_opportunities:
             )
             _y = df["Discount %"] if "Discount %" in df.columns else pd.Series(dtype=float)
             _size_raw = (
-                df["trend_score"].abs() if "trend_score" in df.columns else pd.Series(dtype=float)
+                pd.to_numeric(df["trend_score"], errors="coerce").abs()
+                if "trend_score" in df.columns
+                else pd.Series(dtype=float)
             )
             # Normalise bubble size to [8, 40] to avoid invisible/huge dots
             _size_min, _size_max = _size_raw.min(), _size_raw.max()

@@ -89,7 +89,9 @@ if mode == "Edit Existing Product":
     if not products:
         st.warning("No products available to edit. Create one first!")
     else:
-        product_options = {f"{p['name']} ({p['brand'] or 'No brand'})": p for p in products}
+        product_options = {
+            f"{p['name']} ({p['brand'] or 'No brand'}) · {p['product_id'][:8]}": p for p in products
+        }
         selected_label = st.selectbox(
             "Select Product to Edit",
             options=list(product_options.keys()),
@@ -99,6 +101,7 @@ if mode == "Edit Existing Product":
         st.session_state.selected_edit_product = selected_product
 
 is_editing = selected_product is not None
+form_key = selected_product["product_id"] if selected_product else "new"
 
 if mode == "Create New Product" or (mode == "Edit Existing Product" and selected_product):
     # Derive defaults from the selected product (or blank for create)
@@ -142,21 +145,23 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
         else 0
     )
 
-    pf_name = st.text_input("Name *", value=default_name, key="pf_name")
-    pf_desc = st.text_area("Description", value=default_desc, key="pf_desc")
-    pf_query = st.text_input("Search Query *", value=default_query, key="pf_query")
+    pf_name = st.text_input("Name *", value=default_name, key=f"pf_name_{form_key}")
+    pf_desc = st.text_area("Description", value=default_desc, key=f"pf_desc_{form_key}")
+    pf_query = st.text_input("Search Query *", value=default_query, key=f"pf_query_{form_key}")
     pf_category = st.selectbox(
         "Category *",
         options=category_names,
         index=default_cat_index,
-        key="pf_category",
+        key=f"pf_category_{form_key}",
     )
 
     # ---------------------------------------------------------------------------
     # Pricing & Filters expander
     # ---------------------------------------------------------------------------
     with st.expander("Pricing & Filters", expanded=is_editing):
-        pf_brand = st.text_input("Brand (optional)", value=default_brand, key="pf_brand")
+        pf_brand = st.text_input(
+            "Brand (optional)", value=default_brand, key=f"pf_brand_{form_key}"
+        )
 
         col1, col2 = st.columns(2)
         with col1:
@@ -166,7 +171,7 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
                 value=default_price_min,
                 step=10.0,
                 format="%.2f",
-                key="pf_price_min",
+                key=f"pf_price_min_{form_key}",
             )
         with col2:
             pf_price_max = st.number_input(
@@ -175,13 +180,13 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
                 value=default_price_max,
                 step=10.0,
                 format="%.2f",
-                key="pf_price_max",
+                key=f"pf_price_max_{form_key}",
             )
 
         pf_words = st.text_area(
             "Words to Avoid (comma-separated)",
             value=default_words,
-            key="pf_words",
+            key=f"pf_words_{form_key}",
             help="Listings with these words in the title will be rejected",
         )
 
@@ -193,7 +198,7 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
             "Providers",
             options=SUPPORTED_PROVIDERS,
             default=default_providers,
-            key="pf_providers",
+            key=f"pf_providers_{form_key}",
         )
 
         pf_interval = st.number_input(
@@ -202,35 +207,38 @@ if mode == "Create New Product" or (mode == "Edit Existing Product" and selected
             max_value=1440,
             value=int((selected_product or {}).get("ingestion_interval_minutes", 60)),
             step=5,
+            key=f"pf_interval_{form_key}",
         )
 
         pf_llm = st.checkbox(
             "Enable LLM Validation",
             value=default_llm,
-            key="pf_llm",
+            key=f"pf_llm_{form_key}",
         )
 
-        pf_active = st.checkbox("Active", value=default_active, key="pf_active")
+        pf_active = st.checkbox("Active", value=default_active, key=f"pf_active_{form_key}")
 
     # ---------------------------------------------------------------------------
     # Submit button (outside expanders — required when not using st.form)
     # ---------------------------------------------------------------------------
     button_label = "Update Product" if selected_product else "Create Product"
     if st.button(button_label, type="primary"):
-        pf_name_val: str = st.session_state.get("pf_name", "")
-        pf_query_val: str = st.session_state.get("pf_query", "")
-        pf_category_val: str = st.session_state.get("pf_category", "")
-        pf_desc_val: str = st.session_state.get("pf_desc", "")
-        pf_brand_val: str = st.session_state.get("pf_brand", "")
-        pf_price_min_val: float = st.session_state.get("pf_price_min", 0.0)
-        pf_price_max_val: float = st.session_state.get("pf_price_max", 0.0)
-        pf_words_val: str = st.session_state.get("pf_words", "")
-        pf_providers_val: list[str] = st.session_state.get("pf_providers", SUPPORTED_PROVIDERS)
-        pf_llm_val: bool = st.session_state.get("pf_llm", False)
-        pf_active_val: bool = st.session_state.get("pf_active", True)
+        pf_name_val: str = pf_name or ""
+        pf_query_val: str = pf_query or ""
+        pf_category_val: str = pf_category or ""
+        pf_desc_val: str = pf_desc or ""
+        pf_brand_val: str = pf_brand or ""
+        pf_price_min_val: float = pf_price_min
+        pf_price_max_val: float = pf_price_max
+        pf_words_val: str = pf_words or ""
+        pf_providers_val: list[str] = pf_providers
+        pf_llm_val: bool = pf_llm
+        pf_active_val: bool = pf_active
 
         if not pf_name_val.strip() or not pf_query_val.strip() or not pf_category_val:
             st.error("Name, search query, and category are required.")
+        elif not pf_providers_val:
+            st.error("Select at least one provider; deactivate the product to stop scanning it.")
         else:
             try:
                 r = api_get("/categories", timeout=10.0)

@@ -326,8 +326,9 @@ def fetch_alert_events(
         r = api_get("/alerts/events", params=params, timeout=10.0)
         r.raise_for_status()
         return r.json()
-    except Exception:
-        return {"events": [], "total": 0, "limit": limit, "offset": offset}
+    except Exception as exc:
+        st.error(f"Failed to load alert events: {exc}")
+        return {"events": [], "total": 0, "limit": limit, "offset": offset, "error": str(exc)}
 
 
 @st.cache_data(ttl=30)
