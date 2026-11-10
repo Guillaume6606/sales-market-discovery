@@ -6,11 +6,17 @@ not resale valuations; the operator must validate them before activating a produ
 
 ``words_to_avoid`` is matched as a case-insensitive substring of the title, so every
 entry is a phrase that cannot occur inside the exact reference's own title.
+
+``required_tokens``/``excluded_tokens`` are the product identity used by title filtering
+(whole normalized tokens, see ``ingestion.relevance.TOKEN_ALIASES``). Rule applied to
+every reference: require the brand, both focal lengths, the mount brand of a third-party
+lens, and only the markers that separate real variants (GM/G, II, G2, aperture...);
+exclude neighbouring variants, other mounts and third-party brands.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass(frozen=True)
@@ -24,6 +30,8 @@ class CatalogProduct:
     words_to_avoid: tuple[str, ...]
     reference_tokens: tuple[str, ...] = field(default=())
     reference_excluded_tokens: tuple[str, ...] = field(default=())
+    required_tokens: tuple[str, ...] = field(default=())
+    excluded_tokens: tuple[str, ...] = field(default=())
 
     def description(self) -> str:
         return (
@@ -506,6 +514,127 @@ PILOT_LENSES: tuple[CatalogProduct, ...] = (
         OTHER_THAN_SONY_E,
         reference_tokens=("tamron", "150", "vxd", "sony"),
     ),
+)
+
+LENS_EXCLUDED = ("teleconvertisseur", "teleconverter", "multiplicateur", "tc")
+THIRD_PARTY = ("sigma", "tamron", "samyang", "viltrox", "laowa", "yongnuo", "ttartisan")
+SONY_NATIVE = LENS_EXCLUDED + THIRD_PARTY
+CANON_RF = LENS_EXCLUDED + THIRD_PARTY + ("ef", "efs")
+NIKON_Z = LENS_EXCLUDED + THIRD_PARTY + ("af", "afs", "ftz")
+FUJI_XF = LENS_EXCLUDED + THIRD_PARTY + ("xc",)
+NOT_SONY_E = LENS_EXCLUDED + (
+    "canon",
+    "ef",
+    "rf",
+    "nikon",
+    "z",
+    "fujifilm",
+    "x",
+    "l",
+    "leica",
+    "panasonic",
+    "lumix",
+    "pentax",
+)
+
+IDENTITY_TOKENS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "Sony FE 24-70mm f/2.8 GM II": (("sony", "24", "70", "gm", "ii"), SONY_NATIVE + ("f4", "za")),
+    "Sony FE 24-70mm f/2.8 GM": (
+        ("sony", "24", "70", "gm"),
+        SONY_NATIVE + ("ii", "mark", "mk", "f4", "za"),
+    ),
+    "Sony FE 70-200mm f/2.8 GM OSS II": (
+        ("sony", "70", "200", "gm", "ii"),
+        SONY_NATIVE + ("f4", "macro"),
+    ),
+    "Sony FE 70-200mm f/2.8 GM OSS": (
+        ("sony", "70", "200", "gm"),
+        SONY_NATIVE + ("ii", "mark", "mk", "f4", "macro"),
+    ),
+    "Sony FE 70-200mm f/4 G OSS": (
+        ("sony", "70", "200", "g"),
+        SONY_NATIVE + ("gm", "ii", "mark", "mk", "macro", "f2p8"),
+    ),
+    "Sony FE 16-35mm f/2.8 GM": (
+        ("sony", "16", "35", "gm"),
+        SONY_NATIVE + ("ii", "mark", "mk", "f4", "pz", "za"),
+    ),
+    "Sony FE 24-105mm f/4 G OSS": (("sony", "24", "105", "g"), SONY_NATIVE + ("ii",)),
+    "Sony FE 135mm f/1.8 GM": (("sony", "135", "gm"), SONY_NATIVE + ("ii",)),
+    "Sony FE 85mm f/1.4 GM": (
+        ("sony", "85", "gm"),
+        SONY_NATIVE + ("ii", "mark", "mk", "f1p8"),
+    ),
+    "Sony FE 100-400mm f/4.5-5.6 GM OSS": (("sony", "100", "400", "gm"), SONY_NATIVE + ("ii",)),
+    "Canon RF 24-70mm f/2.8 L IS USM": (("canon", "rf", "24", "70"), CANON_RF + ("f4", "stm")),
+    "Canon RF 70-200mm f/2.8 L IS USM": (("canon", "rf", "70", "200"), CANON_RF + ("f4", "z")),
+    "Canon RF 70-200mm f/4 L IS USM": (
+        ("canon", "rf", "70", "200", "f4"),
+        CANON_RF + ("f2p8", "z"),
+    ),
+    "Canon RF 15-35mm f/2.8 L IS USM": (("canon", "rf", "15", "35"), CANON_RF),
+    "Canon RF 24-105mm f/4 L IS USM": (
+        ("canon", "rf", "24", "105"),
+        CANON_RF + ("stm", "f2p8", "f7p1", "z"),
+    ),
+    "Canon RF 100mm f/2.8 L Macro IS USM": (
+        ("canon", "rf", "100", "macro"),
+        CANON_RF + ("85", "400", "500"),
+    ),
+    "Canon RF 14-35mm f/4 L IS USM": (("canon", "rf", "14", "35"), CANON_RF),
+    "Nikon Z 24-70mm f/2.8 S": (("nikon", "z", "24", "70"), NIKON_Z + ("f4", "ii")),
+    "Nikon Z 70-200mm f/2.8 VR S": (("nikon", "z", "70", "200"), NIKON_Z + ("f4", "ii")),
+    "Nikon Z 14-24mm f/2.8 S": (("nikon", "z", "14", "24"), NIKON_Z),
+    "Nikon Z 24-120mm f/4 S": (("nikon", "z", "24", "120"), NIKON_Z),
+    "Nikon Z 100-400mm f/4.5-5.6 VR S": (("nikon", "z", "100", "400"), NIKON_Z),
+    "Nikon Z 50mm f/1.2 S": (("nikon", "z", "50", "f1p2"), NIKON_Z + ("f1p8",)),
+    "Fujifilm XF 16-55mm f/2.8 R LM WR": (("xf", "16", "55"), FUJI_XF + ("ii", "wr2")),
+    "Fujifilm XF 16-55mm f/2.8 R LM WR II": (("xf", "16", "55", "ii"), FUJI_XF),
+    "Fujifilm XF 50-140mm f/2.8 R LM OIS WR": (("xf", "50", "140"), FUJI_XF),
+    "Fujifilm XF 56mm f/1.2 R WR": (("xf", "56", "wr"), FUJI_XF + ("apd",)),
+    "Fujifilm XF 8-16mm f/2.8 R LM WR": (("xf", "8", "16"), FUJI_XF),
+    "Sigma 24-70mm f/2.8 DG DN Art (Sony E)": (
+        ("sigma", "24", "70", "sony"),
+        NOT_SONY_E + ("ii", "hsm"),
+    ),
+    "Sigma 24-70mm f/2.8 DG DN II Art (Sony E)": (
+        ("sigma", "24", "70", "ii", "sony"),
+        NOT_SONY_E + ("hsm",),
+    ),
+    "Sigma 14-24mm f/2.8 DG DN Art (Sony E)": (
+        ("sigma", "14", "24", "sony"),
+        NOT_SONY_E + ("hsm",),
+    ),
+    "Sigma 85mm f/1.4 DG DN Art (Sony E)": (("sigma", "85", "sony"), NOT_SONY_E + ("hsm",)),
+    "Tamron 28-75mm f/2.8 Di III VXD G2 (Sony E)": (
+        ("tamron", "28", "75", "g2", "sony"),
+        NOT_SONY_E + ("rxd", "a036"),
+    ),
+    "Tamron 70-180mm f/2.8 Di III VXD (Sony E)": (
+        ("tamron", "70", "180", "sony"),
+        NOT_SONY_E + ("g2",),
+    ),
+    "Tamron 70-180mm f/2.8 Di III VXD G2 (Sony E)": (
+        ("tamron", "70", "180", "g2", "sony"),
+        NOT_SONY_E,
+    ),
+    "Tamron 35-150mm f/2-2.8 Di III VXD (Sony E)": (
+        ("tamron", "35", "150", "sony"),
+        NOT_SONY_E + ("osd", "vc"),
+    ),
+    "Tamron 150-500mm f/5-6.7 Di III VC VXD (Sony E)": (
+        ("tamron", "150", "500", "sony"),
+        NOT_SONY_E,
+    ),
+}
+
+PILOT_LENSES = tuple(
+    replace(
+        product,
+        required_tokens=IDENTITY_TOKENS[product.name][0],
+        excluded_tokens=IDENTITY_TOKENS[product.name][1],
+    )
+    for product in PILOT_LENSES
 )
 
 CATALOGS: dict[str, tuple[CatalogProduct, ...]] = {"pilot-lenses": PILOT_LENSES}

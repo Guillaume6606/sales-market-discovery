@@ -50,6 +50,8 @@ class ProductTemplate(Base):
     price_max = Column(Numeric)
     providers = Column(ARRAY(Text), default=list)
     words_to_avoid = Column(ARRAY(Text), default=list)
+    required_tokens = Column(ARRAY(Text), nullable=False, default=list, server_default="{}")
+    excluded_tokens = Column(ARRAY(Text), nullable=False, default=list, server_default="{}")
     enable_llm_validation = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())

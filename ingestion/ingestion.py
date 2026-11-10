@@ -51,6 +51,8 @@ def _snapshot_product(product: ProductTemplate) -> ProductTemplateSnapshot:
         words_to_avoid=list(words_to_avoid),
         enable_llm_validation=product.enable_llm_validation,
         is_active=product.is_active,
+        required_tokens=list(product.required_tokens or []),
+        excluded_tokens=list(product.excluded_tokens or []),
     )
 
 
